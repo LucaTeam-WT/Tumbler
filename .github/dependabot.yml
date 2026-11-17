@@ -7,6 +7,9 @@ updates:
     commit-message:
       prefix: "build(deps)"
     open-pull-requests-limit: 5
+    groups:
+      androidx:
+        patterns: ["androidx.*"]
 
   - package-ecosystem: github-actions
     directory: /
@@ -14,3 +17,6 @@ updates:
       interval: weekly
     commit-message:
       prefix: "ci(deps)"
+    groups:
+      actions:
+        patterns: ["*"]
