@@ -16,7 +16,7 @@ Status legend: ✅ implemented and covered by tests · 🚧 partly done · ⬜ n
 | Core | Parse `otpauth://` URIs (Key URI Format) | ✅ |
 | Core | Add account via QR scanner | ⬜ |
 | Core | Add account via manual secret entry | ⬜ |
-| Security | Secrets encrypted with Android Keystore | ⬜ |
+| Security | Secrets encrypted with Android Keystore | 🚧 AES-GCM cipher + Keystore key implemented; not wired to storage yet |
 | Security | Biometric / device-credential app lock | ⬜ |
 | Security | `FLAG_SECURE`, hidden codes by default, clipboard auto-clear | ⬜ |
 | Backup | Encrypted export / import (AES-256-GCM + password KDF) | ⬜ |
@@ -35,7 +35,7 @@ Current (in the build files today):
 Planned (not added yet):
 
 - MVVM + `StateFlow`, Hilt
-- Room (+ Keystore-backed encryption), DataStore
+- Room (storing secrets encrypted with the Keystore-backed `SecretCipher`), DataStore
 - CameraX + ML Kit barcode scanning
 - `androidx.biometric`
 
