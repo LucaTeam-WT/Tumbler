@@ -23,3 +23,4 @@
 - [ ] No new permissions or dependencies (or they are justified above)
 - [ ] UI uses Material 3 theme tokens; checked in dark mode
 - [ ] Docs updated (README / CONTRIBUTING) if behavior changed
+- [ ] README.md matches the code (Features table, tech stack, commands, doc links), checked against the source files

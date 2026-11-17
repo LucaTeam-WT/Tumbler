@@ -12,8 +12,9 @@ import java.io.ByteArrayOutputStream
  * otpauth://hotp/Issuer:account?secret=BASE32&counter=0
  * ```
  *
- * Pure Kotlin so it runs on the plain JVM. Components are percent-decoded only;
- * `+` is kept as a literal plus sign.
+ * Pure Kotlin so it runs on the plain JVM. The label (path) is percent-decoded only,
+ * so `+` stays a literal plus sign there. Query parameter values are form-decoded:
+ * `+` becomes a space, and a literal plus must be sent as `%2B`.
  */
 object OtpAuthUri {
 
@@ -59,7 +60,6 @@ object OtpAuthUri {
         val secretText = params["secret"]
         require(!secretText.isNullOrBlank()) { "Missing secret" }
         val secret = Base32.decode(secretText)
-        require(secret.isNotEmpty()) { "Missing secret" }
 
         val algorithm = params["algorithm"]?.let { name ->
             OtpAlgorithm.entries.firstOrNull { it.name.equals(name, ignoreCase = true) }
@@ -68,24 +68,20 @@ object OtpAuthUri {
 
         val digits = params["digits"]?.let { requireNotNull(it.toIntOrNull()) { "Invalid digits" } }
             ?: Hotp.DEFAULT_DIGITS
-        require(digits in Hotp.MIN_DIGITS..Hotp.MAX_DIGITS) {
-            "Digits must be in ${Hotp.MIN_DIGITS}..${Hotp.MAX_DIGITS}"
-        }
 
         var period = Totp.DEFAULT_PERIOD_SECONDS
         var counter = 0L
         when (type) {
-            OtpType.TOTP -> {
-                params["period"]?.let { period = requireNotNull(it.toIntOrNull()) { "Invalid period" } }
-                require(period > 0) { "Period must be positive" }
+            OtpType.TOTP -> params["period"]?.let {
+                period = requireNotNull(it.toIntOrNull()) { "Invalid period" }
             }
             OtpType.HOTP -> {
                 val counterText = requireNotNull(params["counter"]) { "Missing counter" }
                 counter = requireNotNull(counterText.toLongOrNull()) { "Invalid counter" }
-                require(counter >= 0) { "Counter must not be negative" }
             }
         }
 
+        // Ranges (digits, period, counter, non-empty secret) are validated by OtpAccount.
         return OtpAccount(
             issuer = params["issuer"]?.trim()?.takeIf { it.isNotEmpty() } ?: labelIssuer,
             accountName = accountName,
@@ -98,20 +94,27 @@ object OtpAuthUri {
         )
     }
 
-    /** Splits a query string into decoded name/value pairs; names are lower-cased. */
+    /**
+     * Splits a query string into decoded name/value pairs. Names are lower-cased;
+     * in values `+` is decoded as a space.
+     */
     private fun parseQuery(query: String): Map<String, String> {
         val params = HashMap<String, String>()
         for (pair in query.split('&')) {
             if (pair.isEmpty()) continue
             val name = percentDecode(pair.substringBefore('=')).lowercase()
-            params[name] = percentDecode(pair.substringAfter('=', missingDelimiterValue = ""))
+            val value = pair.substringAfter('=', missingDelimiterValue = "")
+            params[name] = percentDecode(value, plusAsSpace = true)
         }
         return params
     }
 
-    /** Decodes `%XX` escapes as UTF-8. Unlike form decoding, `+` is left unchanged. */
-    private fun percentDecode(text: String): String {
-        if ('%' !in text) return text
+    /**
+     * Decodes `%XX` escapes as UTF-8. `+` becomes a space only if [plusAsSpace] is set;
+     * otherwise it is left unchanged.
+     */
+    private fun percentDecode(text: String, plusAsSpace: Boolean = false): String {
+        if ('%' !in text && !(plusAsSpace && '+' in text)) return text
         val result = StringBuilder(text.length)
         val pending = ByteArrayOutputStream()
         fun flush() {
@@ -133,7 +136,7 @@ object OtpAuthUri {
                 i += 3
             } else {
                 flush()
-                result.append(char)
+                result.append(if (plusAsSpace && char == '+') ' ' else char)
                 i++
             }
         }

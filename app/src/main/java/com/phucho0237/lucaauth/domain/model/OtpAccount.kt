@@ -10,6 +10,10 @@ import com.phucho0237.lucaauth.domain.otp.Totp
  * [toString] never includes the secret, and [equals]/[hashCode] compare the secret
  * by content.
  *
+ * @throws IllegalArgumentException if [secret] is empty, [digits] is outside
+ *   [Hotp.MIN_DIGITS]..[Hotp.MAX_DIGITS], [period] is not positive or [counter] is
+ *   negative. Messages never include the secret.
+ *
  * @property issuer provider name; empty if unknown.
  * @property accountName user or account identifier.
  * @property secret raw shared secret (already Base32-decoded).
@@ -26,6 +30,15 @@ data class OtpAccount(
     val period: Int = Totp.DEFAULT_PERIOD_SECONDS,
     val counter: Long = 0L,
 ) {
+
+    init {
+        require(secret.isNotEmpty()) { "Secret must not be empty" }
+        require(digits in Hotp.MIN_DIGITS..Hotp.MAX_DIGITS) {
+            "Digits must be in ${Hotp.MIN_DIGITS}..${Hotp.MAX_DIGITS}"
+        }
+        require(period > 0) { "Period must be positive" }
+        require(counter >= 0) { "Counter must not be negative" }
+    }
 
     override fun equals(other: Any?): Boolean {
         if (this === other) return true

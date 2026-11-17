@@ -83,10 +83,21 @@ class OtpAuthUriTest {
     }
 
     @Test
-    fun parse_percentDecodesUtf8AndKeepsPlus() {
-        val account = totp("Caf%C3%A9:a+b%40example.com", "&issuer=Caf%C3%A9+Bank")
-        assertEquals("Café+Bank", account.issuer)
+    fun parse_labelPercentDecodesUtf8AndKeepsPlus() {
+        val account = totp("Caf%C3%A9:a+b%40example.com")
+        assertEquals("Café", account.issuer)
         assertEquals("a+b@example.com", account.accountName)
+    }
+
+    @Test
+    fun parse_queryValueDecodesPlusAsSpace() {
+        assertEquals("Example Inc", totp("a", "&issuer=Example+Inc").issuer)
+        assertEquals("Café Bank", totp("a", "&issuer=Caf%C3%A9+Bank").issuer)
+    }
+
+    @Test
+    fun parse_queryValueKeepsEncodedPlus() {
+        assertEquals("A+B", totp("a", "&issuer=A%2BB").issuer)
     }
 
     @Test
