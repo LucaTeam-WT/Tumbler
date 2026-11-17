@@ -34,7 +34,8 @@ Run all three before declaring a task done.
 com.phucho0237.lucaauth
 ├── data/      # Room, Keystore crypto, backup import/export, repositories
 │   ├── crypto/    # AES-GCM SecretCipher impl, Android Keystore key provider
-│   └── db/        # Room database, AccountEntity, AccountDao, summary projection
+│   ├── db/        # Room database, AccountEntity, AccountDao, summary projection
+│   └── repository/ # RoomAccountRepository (encrypts secrets), entity/domain mappers
 ├── domain/    # OTP generators (TOTP/HOTP), models, use cases
 │   ├── crypto/    # SecretCipher interface + exceptions
 │   ├── model/     # OtpAccount, OtpType, AccountSummary
