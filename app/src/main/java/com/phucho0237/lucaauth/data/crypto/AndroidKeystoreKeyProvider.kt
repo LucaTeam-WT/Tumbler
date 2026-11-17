@@ -3,9 +3,9 @@ package com.phucho0237.lucaauth.data.crypto
 import android.os.Build
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
-import android.security.keystore.StrongBoxUnavailableException
 import androidx.annotation.RequiresApi
 import java.security.KeyStore
+import java.security.ProviderException
 import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
 
@@ -33,11 +33,14 @@ class AndroidKeystoreKeyProvider(
         return strongBoxKey ?: generate(specBuilder().build())
     }
 
-    /** Returns `null` if the device has no StrongBox, so the caller falls back to the TEE. */
+    /**
+     * Returns `null` if StrongBox key generation fails for any reason (no StrongBox,
+     * or any other [ProviderException]), so the caller falls back to the TEE.
+     */
     @RequiresApi(Build.VERSION_CODES.P)
     private fun createStrongBoxKeyOrNull(): SecretKey? = try {
         generate(specBuilder().setIsStrongBoxBacked(true).build())
-    } catch (e: StrongBoxUnavailableException) {
+    } catch (e: ProviderException) {
         null
     }
 

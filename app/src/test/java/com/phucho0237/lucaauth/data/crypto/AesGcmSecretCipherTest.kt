@@ -6,7 +6,9 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertThrows
 import org.junit.Test
+import java.io.IOException
 import java.security.KeyStoreException
+import java.security.ProviderException
 import javax.crypto.KeyGenerator
 import kotlin.random.Random
 
@@ -109,6 +111,20 @@ class AesGcmSecretCipherTest {
     @Test
     fun keyProviderFailure_becomesSecretCipherException() {
         val failing = AesGcmSecretCipher { throw KeyStoreException("boom") }
+        assertThrows(SecretCipherException::class.java) { failing.encrypt(plaintext) }
+        assertThrows(SecretCipherException::class.java) { failing.decrypt(cipher.encrypt(plaintext)) }
+    }
+
+    @Test
+    fun keyProviderIoException_becomesSecretCipherException() {
+        val failing = AesGcmSecretCipher { throw IOException("boom") }
+        assertThrows(SecretCipherException::class.java) { failing.encrypt(plaintext) }
+        assertThrows(SecretCipherException::class.java) { failing.decrypt(cipher.encrypt(plaintext)) }
+    }
+
+    @Test
+    fun keyProviderProviderException_becomesSecretCipherException() {
+        val failing = AesGcmSecretCipher { throw ProviderException("boom") }
         assertThrows(SecretCipherException::class.java) { failing.encrypt(plaintext) }
         assertThrows(SecretCipherException::class.java) { failing.decrypt(cipher.encrypt(plaintext)) }
     }

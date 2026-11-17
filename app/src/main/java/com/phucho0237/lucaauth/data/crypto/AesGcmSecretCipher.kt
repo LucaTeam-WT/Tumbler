@@ -2,6 +2,7 @@ package com.phucho0237.lucaauth.data.crypto
 
 import com.phucho0237.lucaauth.domain.crypto.SecretCipher
 import com.phucho0237.lucaauth.domain.crypto.SecretCipherException
+import java.io.IOException
 import java.security.GeneralSecurityException
 import java.security.ProviderException
 import javax.crypto.Cipher
@@ -33,6 +34,8 @@ class AesGcmSecretCipher(private val keyProvider: KeyProvider) : SecretCipher {
         } catch (e: GeneralSecurityException) {
             throw SecretCipherException("Encryption failed", e)
         } catch (e: ProviderException) {
+            throw SecretCipherException("Encryption failed", e)
+        } catch (e: IOException) {
             throw SecretCipherException("Encryption failed", e)
         }
 
@@ -68,6 +71,8 @@ class AesGcmSecretCipher(private val keyProvider: KeyProvider) : SecretCipher {
         } catch (e: GeneralSecurityException) {
             throw SecretCipherException("Decryption failed", e)
         } catch (e: ProviderException) {
+            throw SecretCipherException("Decryption failed", e)
+        } catch (e: IOException) {
             throw SecretCipherException("Decryption failed", e)
         }
     }
