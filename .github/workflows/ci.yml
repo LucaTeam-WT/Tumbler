@@ -26,7 +26,7 @@ jobs:
           distribution: temurin
           java-version: 21
 
-      - uses: gradle/actions/setup-gradle@v4
+      - uses: gradle/actions/setup-gradle@v6
 
       # gradlew loses its executable bit when committed from Windows
       - name: Make gradlew executable
