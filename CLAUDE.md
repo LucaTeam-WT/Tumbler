@@ -33,11 +33,13 @@ Run all three before declaring a task done.
 ```
 com.phucho0237.lucaauth
 ├── data/      # Room, Keystore crypto, backup import/export, repositories
-│   └── crypto/    # AES-GCM SecretCipher impl, Android Keystore key provider
+│   ├── crypto/    # AES-GCM SecretCipher impl, Android Keystore key provider
+│   └── db/        # Room database, AccountEntity, AccountDao, summary projection
 ├── domain/    # OTP generators (TOTP/HOTP), models, use cases
 │   ├── crypto/    # SecretCipher interface + exceptions
-│   ├── model/     # OtpAccount, OtpType
-│   └── otp/       # Base32, Hotp, Totp, OtpAuthUri parser
+│   ├── model/     # OtpAccount, OtpType, AccountSummary
+│   ├── otp/       # Base32, Hotp, Totp, OtpAuthUri parser
+│   └── repository/ # AccountRepository interface
 ├── ui/        # Compose screens, components, theme, navigation
 └── di/        # Hilt modules
 ```

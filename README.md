@@ -29,13 +29,15 @@ Current (in the build files today):
 
 - Kotlin, Jetpack Compose (BOM), Material 3
 - AndroidX `core-ktx`, `activity-compose`, `lifecycle-runtime-ktx`
+- Room 2.8.5 (`room-runtime`, `room-ktx`, `room-compiler` via KSP 2.3.14). Schemas are exported to `app/schemas` and committed.
+- Kotlin coroutines `Flow` (transitive through AndroidX, not declared directly)
 - Tests: JUnit 4 (unit); AndroidX Test, Espresso, Compose UI test (instrumented)
 - minSdk 26, targetSdk / compileSdk 37, Java 11
 
 Planned (not added yet):
 
 - MVVM + `StateFlow`, Hilt
-- Room (storing secrets encrypted with the Keystore-backed `SecretCipher`), DataStore
+- DataStore
 - CameraX + ML Kit barcode scanning
 - `androidx.biometric`
 
