@@ -1,10 +1,14 @@
 package com.phucho0237.lucaauth.data.crypto
 
 import androidx.test.ext.junit.runners.AndroidJUnit4
-import com.phucho0237.lucaauth.domain.crypto.SecretCipherException
+import com.phucho0237.lucaauth.domain.crypto.KeyUnavailableException
 import org.junit.After
 import org.junit.Assert.assertArrayEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertThrows
+import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
 import java.security.KeyStore
@@ -18,9 +22,12 @@ class AndroidKeystoreSecretCipherTest {
 
     private fun newCipher() = AesGcmSecretCipher(AndroidKeystoreKeyProvider(alias))
 
+    private fun keyStore(): KeyStore = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
+
+    @Before
     @After
     fun deleteTestKey() {
-        KeyStore.getInstance("AndroidKeyStore").apply { load(null) }.deleteEntry(alias)
+        keyStore().deleteEntry(alias)
     }
 
     @Test
@@ -36,9 +43,27 @@ class AndroidKeystoreSecretCipherTest {
     }
 
     @Test
-    fun decryptFailsAfterKeyIsDeleted() {
+    fun decryptAfterKeyIsDeleted_throwsKeyUnavailableAndDoesNotRecreateKey() {
         val payload = newCipher().encrypt(plaintext, aad)
         deleteTestKey()
-        assertThrows(SecretCipherException::class.java) { newCipher().decrypt(payload, aad) }
+        assertFalse(keyStore().containsAlias(alias))
+
+        assertThrows(KeyUnavailableException::class.java) { newCipher().decrypt(payload, aad) }
+
+        // Decrypt must not have silently created a new key: a second call still finds none.
+        assertFalse(keyStore().containsAlias(alias))
+        assertNull(AndroidKeystoreKeyProvider(alias).getExistingKey())
+        assertThrows(KeyUnavailableException::class.java) { newCipher().decrypt(payload, aad) }
+        assertFalse(keyStore().containsAlias(alias))
+    }
+
+    @Test
+    fun getExistingKey_neverCreatesKey() {
+        val provider = AndroidKeystoreKeyProvider(alias)
+        assertNull(provider.getExistingKey())
+        assertFalse(keyStore().containsAlias(alias))
+
+        provider.getOrCreateKey()
+        assertNotNull(provider.getExistingKey())
     }
 }

@@ -12,19 +12,39 @@ import javax.crypto.SecretKey
 /**
  * [KeyProvider] backed by a non-exportable AES-256 key in the Android Keystore.
  *
- * The key is created on first use (StrongBox-backed when the device supports it)
- * and reused on later calls, including from other instances with the same [alias].
- * Creation is serialized process-wide, so concurrent first calls cannot create two
- * keys. The key does not require user authentication; app lock is a separate
- * feature. Key material never leaves the Keystore.
+ * [getOrCreateKey] creates the key on first use (StrongBox-backed when the device
+ * supports it, otherwise TEE-backed) and reuses it on later calls, including from
+ * other instances with the same [alias]. Creation is serialized process-wide, so
+ * concurrent first calls cannot create two keys. [getExistingKey] only loads the key
+ * and never creates one.
+ *
+ * The key does not require user authentication; app lock is a separate feature. Key
+ * material never leaves the Keystore, so the key is lost when app data is cleared or
+ * the app is uninstalled, and it is not part of backups or device transfers.
+ *
+ * Both methods can throw:
+ * - [java.security.KeyStoreException] or another
+ *   [java.security.GeneralSecurityException] if the Keystore cannot be opened or the
+ *   entry cannot be read ([java.security.UnrecoverableKeyException]) or, for
+ *   [getOrCreateKey], generated;
+ * - [java.io.IOException] from loading the Keystore;
+ * - [ProviderException] for internal Keystore or secure-hardware errors. A
+ *   [ProviderException] during StrongBox key generation is not thrown; generation then
+ *   falls back to the TEE, whose errors are thrown.
  */
 class AndroidKeystoreKeyProvider(
     private val alias: String = DEFAULT_ALIAS,
 ) : KeyProvider {
 
-    override fun getKey(): SecretKey = synchronized(LOCK) {
+    override fun getOrCreateKey(): SecretKey = synchronized(LOCK) {
+        loadKey() ?: createKey()
+    }
+
+    override fun getExistingKey(): SecretKey? = loadKey()
+
+    private fun loadKey(): SecretKey? {
         val keyStore = KeyStore.getInstance(ANDROID_KEYSTORE).apply { load(null) }
-        keyStore.getKey(alias, null) as? SecretKey ?: createKey()
+        return keyStore.getKey(alias, null) as? SecretKey
     }
 
     private fun createKey(): SecretKey {

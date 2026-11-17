@@ -1,23 +1,46 @@
 package com.phucho0237.lucaauth.data.crypto
 
+import com.phucho0237.lucaauth.domain.crypto.KeyUnavailableException
 import com.phucho0237.lucaauth.domain.crypto.SecretCipherException
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertThrows
 import org.junit.Test
 import java.io.IOException
 import java.security.KeyStoreException
 import java.security.ProviderException
 import javax.crypto.KeyGenerator
+import javax.crypto.SecretKey
 import kotlin.random.Random
 
 class AesGcmSecretCipherTest {
 
-    private fun newKeyProvider(): KeyProvider {
-        val key = KeyGenerator.getInstance("AES").apply { init(256) }.generateKey()
-        return KeyProvider { key }
+    /** In-memory [KeyProvider] that counts how many keys it created. */
+    private class FakeKeyProvider(private var key: SecretKey? = null) : KeyProvider {
+        var createdKeys = 0
+            private set
+
+        override fun getOrCreateKey(): SecretKey =
+            key ?: newAesKey().also {
+                key = it
+                createdKeys++
+            }
+
+        override fun getExistingKey(): SecretKey? = key
     }
+
+    private class FailingKeyProvider(private val error: Exception) : KeyProvider {
+        override fun getOrCreateKey(): SecretKey = throw error
+        override fun getExistingKey(): SecretKey = throw error
+    }
+
+    private companion object {
+        fun newAesKey(): SecretKey = KeyGenerator.getInstance("AES").apply { init(256) }.generateKey()
+    }
+
+    private fun newKeyProvider(): KeyProvider = FakeKeyProvider(newAesKey())
 
     private val cipher = AesGcmSecretCipher(newKeyProvider())
     private val plaintextText = "JBSWY3DPEHPK3PXP-super-secret"
@@ -110,22 +133,49 @@ class AesGcmSecretCipherTest {
 
     @Test
     fun keyProviderFailure_becomesSecretCipherException() {
-        val failing = AesGcmSecretCipher { throw KeyStoreException("boom") }
+        val failing = AesGcmSecretCipher(FailingKeyProvider(KeyStoreException("boom")))
         assertThrows(SecretCipherException::class.java) { failing.encrypt(plaintext) }
         assertThrows(SecretCipherException::class.java) { failing.decrypt(cipher.encrypt(plaintext)) }
     }
 
     @Test
     fun keyProviderIoException_becomesSecretCipherException() {
-        val failing = AesGcmSecretCipher { throw IOException("boom") }
+        val failing = AesGcmSecretCipher(FailingKeyProvider(IOException("boom")))
         assertThrows(SecretCipherException::class.java) { failing.encrypt(plaintext) }
         assertThrows(SecretCipherException::class.java) { failing.decrypt(cipher.encrypt(plaintext)) }
     }
 
     @Test
     fun keyProviderProviderException_becomesSecretCipherException() {
-        val failing = AesGcmSecretCipher { throw ProviderException("boom") }
+        val failing = AesGcmSecretCipher(FailingKeyProvider(ProviderException("boom")))
         assertThrows(SecretCipherException::class.java) { failing.encrypt(plaintext) }
         assertThrows(SecretCipherException::class.java) { failing.decrypt(cipher.encrypt(plaintext)) }
+    }
+
+    @Test
+    fun decrypt_withoutKey_throwsKeyUnavailableAndDoesNotCreateKey() {
+        val payload = cipher.encrypt(plaintext)
+        val provider = FakeKeyProvider(key = null)
+        val keyless = AesGcmSecretCipher(provider)
+
+        val error = assertThrows(KeyUnavailableException::class.java) { keyless.decrypt(payload) }
+
+        assertEquals("Encryption key unavailable", error.message)
+        assertEquals(0, provider.createdKeys)
+        assertNull(provider.getExistingKey())
+    }
+
+    @Test
+    fun encrypt_withoutKey_createsKeyOnceAndRoundTrips() {
+        val provider = FakeKeyProvider(key = null)
+        val fresh = AesGcmSecretCipher(provider)
+
+        val first = fresh.encrypt(plaintext)
+        val second = fresh.encrypt(plaintext)
+
+        assertEquals(1, provider.createdKeys)
+        assertArrayEquals(plaintext, fresh.decrypt(first))
+        assertArrayEquals(plaintext, fresh.decrypt(second))
+        assertEquals(1, provider.createdKeys)
     }
 }

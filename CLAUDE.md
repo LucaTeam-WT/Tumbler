@@ -35,7 +35,7 @@ com.phucho0237.lucaauth
 ├── data/      # Room, Keystore crypto, backup import/export, repositories
 │   └── crypto/    # AES-GCM SecretCipher impl, Android Keystore key provider
 ├── domain/    # OTP generators (TOTP/HOTP), models, use cases
-│   ├── crypto/    # SecretCipher interface + exception
+│   ├── crypto/    # SecretCipher interface + exceptions
 │   ├── model/     # OtpAccount, OtpType
 │   └── otp/       # Base32, Hotp, Totp, OtpAuthUri parser
 ├── ui/        # Compose screens, components, theme, navigation

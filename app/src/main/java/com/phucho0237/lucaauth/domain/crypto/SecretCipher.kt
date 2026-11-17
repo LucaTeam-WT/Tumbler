@@ -21,11 +21,11 @@ interface SecretCipher {
     fun encrypt(plaintext: ByteArray, associatedData: ByteArray = ByteArray(0)): ByteArray
 
     /**
-     * Decrypts and authenticates a payload returned by [encrypt].
+     * Decrypts and authenticates a payload returned by [encrypt]. Never creates a key.
      *
+     * @throws KeyUnavailableException if the key does not exist.
      * @throws SecretCipherException if the payload is malformed or was tampered with,
-     *   the key is wrong or missing, [associatedData] does not match, or any other
-     *   failure occurs.
+     *   the key is wrong, [associatedData] does not match, or any other failure occurs.
      */
     fun decrypt(payload: ByteArray, associatedData: ByteArray = ByteArray(0)): ByteArray
 }
