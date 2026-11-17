@@ -14,9 +14,10 @@ Status legend: ✅ implemented and covered by tests · 🚧 partly done · ⬜ n
 | Core | TOTP (RFC 6238), SHA-1/256/512, 6–8 digits | ✅ engine only, no UI yet |
 | Core | HOTP (RFC 4226) | ✅ engine only, no UI yet |
 | Core | Parse `otpauth://` URIs (Key URI Format) | ✅ |
+| Core | Accounts stored locally (Room database, secret encrypted per account) | ✅ storage layer only; not wired into the app yet, no UI |
 | Core | Add account via QR scanner | ⬜ |
 | Core | Add account via manual secret entry | ⬜ |
-| Security | Secrets encrypted with Android Keystore | 🚧 AES-GCM cipher + Keystore key implemented; not wired to storage yet |
+| Security | Secrets encrypted with Android Keystore | ✅ AES-GCM with a non-exportable Keystore key, bound to the account id; used by the account repository (not wired into the app yet) |
 | Security | Biometric / device-credential app lock | ⬜ |
 | Security | `FLAG_SECURE`, hidden codes by default, clipboard auto-clear | ⬜ |
 | Backup | Encrypted export / import (AES-256-GCM + password KDF) | ⬜ |
