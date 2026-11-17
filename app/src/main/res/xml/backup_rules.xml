@@ -1,13 +1,22 @@
 <?xml version="1.0" encoding="utf-8"?><!--
-   Sample backup rules file; uncomment and customize as necessary.
+   Backup rules for Android 11 (API 30) and lower.
    See https://developer.android.com/guide/topics/data/autobackup
    for details.
-   Note: This file is ignored for devices older than API 31
+   On API 31 and higher, data_extraction_rules.xml is used instead.
    See https://developer.android.com/about/versions/12/backup-restore
+
+   LucaAuth excludes all app data from backup. Secrets are encrypted with an Android
+   Keystore key that is never backed up, so restored data could not be decrypted.
+   Auto Backup is also disabled with android:allowBackup="false" in the manifest.
 -->
 <full-backup-content>
-    <!--
-   <include domain="sharedpref" path="."/>
-   <exclude domain="sharedpref" path="device.xml"/>
--->
+    <exclude domain="root" path="." />
+    <exclude domain="file" path="." />
+    <exclude domain="database" path="." />
+    <exclude domain="sharedpref" path="." />
+    <exclude domain="external" path="." />
+    <exclude domain="device_root" path="." />
+    <exclude domain="device_file" path="." />
+    <exclude domain="device_database" path="." />
+    <exclude domain="device_sharedpref" path="." />
 </full-backup-content>
