@@ -1,5 +1,6 @@
 package com.phucho0237.lucaauth.data.crypto
 
+import com.phucho0237.lucaauth.domain.crypto.KeyUnavailableException
 import com.phucho0237.lucaauth.domain.crypto.SecretCipher
 import com.phucho0237.lucaauth.domain.crypto.SecretCipherException
 import java.io.IOException
@@ -17,6 +18,10 @@ import javax.crypto.spec.GCMParameterSpec
  * The IV is never supplied by this class: the provider generates a fresh random IV
  * on every encryption (Android Keystore requires randomized encryption). A new
  * [Cipher] is created per call, so instances are thread-safe.
+ *
+ * [encrypt] uses [KeyProvider.getOrCreateKey]; [decrypt] uses
+ * [KeyProvider.getExistingKey] and throws [KeyUnavailableException] instead of
+ * creating a key.
  */
 class AesGcmSecretCipher(private val keyProvider: KeyProvider) : SecretCipher {
 
@@ -27,7 +32,7 @@ class AesGcmSecretCipher(private val keyProvider: KeyProvider) : SecretCipher {
         val sealed: ByteArray
         try {
             val cipher = Cipher.getInstance(TRANSFORMATION)
-            cipher.init(Cipher.ENCRYPT_MODE, keyProvider.getKey())
+            cipher.init(Cipher.ENCRYPT_MODE, keyProvider.getOrCreateKey())
             iv = cipher.iv ?: throw SecretCipherException("Encryption failed")
             if (associatedData.isNotEmpty()) cipher.updateAAD(associatedData)
             sealed = cipher.doFinal(plaintext)
@@ -63,9 +68,10 @@ class AesGcmSecretCipher(private val keyProvider: KeyProvider) : SecretCipher {
 
         val sealedOffset = HEADER_LENGTH + IV_LENGTH
         try {
+            val key = keyProvider.getExistingKey() ?: throw KeyUnavailableException()
             val cipher = Cipher.getInstance(TRANSFORMATION)
             val spec = GCMParameterSpec(TAG_LENGTH_BITS, payload, HEADER_LENGTH, IV_LENGTH)
-            cipher.init(Cipher.DECRYPT_MODE, keyProvider.getKey(), spec)
+            cipher.init(Cipher.DECRYPT_MODE, key, spec)
             if (associatedData.isNotEmpty()) cipher.updateAAD(associatedData)
             return cipher.doFinal(payload, sealedOffset, payload.size - sealedOffset)
         } catch (e: GeneralSecurityException) {
