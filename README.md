@@ -7,28 +7,37 @@ A privacy-first, offline two-factor authentication (TOTP/HOTP) app for Android.
 
 ## Features
 
-Status legend: ✅ done · 🚧 in progress · ⬜ planned
+Status legend: ✅ implemented and covered by tests · 🚧 partly done · ⬜ not started
 
 | Area | Feature | Status |
 |---|---|---|
-| Core | TOTP (RFC 6238), SHA-1/256/512, 6–8 digits | ⬜ |
-| Core | HOTP (RFC 4226) | ⬜ |
-| Core | Add account via QR (`otpauth://`) or manual secret | ⬜ |
+| Core | TOTP (RFC 6238), SHA-1/256/512, 6–8 digits | ✅ engine only, no UI yet |
+| Core | HOTP (RFC 4226) | ✅ engine only, no UI yet |
+| Core | Parse `otpauth://` URIs (Key URI Format) | ✅ |
+| Core | Add account via QR scanner | ⬜ |
+| Core | Add account via manual secret entry | ⬜ |
 | Security | Secrets encrypted with Android Keystore | ⬜ |
 | Security | Biometric / device-credential app lock | ⬜ |
 | Security | `FLAG_SECURE`, hidden codes by default, clipboard auto-clear | ⬜ |
 | Backup | Encrypted export / import (AES-256-GCM + password KDF) | ⬜ |
 | Backup | Import from Google Authenticator (`otpauth-migration://`) | ⬜ |
-| UX | Material 3, dynamic color, dark mode, search, labels | ⬜ |
+| UX | Material 3, dynamic color, dark mode, search, labels | 🚧 theme with dynamic color and dark mode only; no screens, search or labels |
 
 ## Tech stack
 
-- Kotlin, Jetpack Compose, Material 3
+Current (in the build files today):
+
+- Kotlin, Jetpack Compose (BOM), Material 3
+- AndroidX `core-ktx`, `activity-compose`, `lifecycle-runtime-ktx`
+- Tests: JUnit 4 (unit); AndroidX Test, Espresso, Compose UI test (instrumented)
+- minSdk 26, targetSdk / compileSdk 37, Java 11
+
+Planned (not added yet):
+
 - MVVM + `StateFlow`, Hilt
 - Room (+ Keystore-backed encryption), DataStore
 - CameraX + ML Kit barcode scanning
 - `androidx.biometric`
-- minSdk 26
 
 ## Getting started
 
