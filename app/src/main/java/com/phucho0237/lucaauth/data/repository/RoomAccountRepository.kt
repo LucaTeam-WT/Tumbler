@@ -17,13 +17,14 @@ import java.util.UUID
  * to its account id as associated data, so a secret copied into another row fails to
  * decrypt.
  *
- * Cipher calls run on [dispatcher] because Keystore operations can be slow. Cipher
+ * Cipher calls run on [dispatcher] (by default [Dispatchers.IO]) because Android
+ * Keystore operations block on IPC to the keystore service and secure hardware. Cipher
  * exceptions propagate unchanged; secrets are never logged or put in messages.
  */
 class RoomAccountRepository(
     private val dao: AccountDao,
     private val cipher: SecretCipher,
-    private val dispatcher: CoroutineDispatcher = Dispatchers.Default,
+    private val dispatcher: CoroutineDispatcher = Dispatchers.IO,
     private val idGenerator: () -> String = { UUID.randomUUID().toString() },
     private val clock: () -> Long = { System.currentTimeMillis() },
 ) : AccountRepository {
