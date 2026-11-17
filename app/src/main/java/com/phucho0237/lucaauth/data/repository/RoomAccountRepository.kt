@@ -56,7 +56,7 @@ class RoomAccountRepository(
 
     override suspend fun updateCounter(id: String, counter: Long) {
         require(counter >= 0) { "Counter must not be negative" }
-        dao.updateCounter(id, counter)
+        if (dao.updateCounter(id, counter) == 0) throw NoSuchElementException("No HOTP account to update")
     }
 
     override suspend fun delete(id: String) {

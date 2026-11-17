@@ -130,19 +130,44 @@ class RoomAccountRepositoryTest {
     }
 
     @Test
-    fun updateCounter_changesOnlyHotpCounter() = runBlocking {
-        val totpId = repository.add(totp)
+    fun updateCounter_hotpRow_changesOnlyTheCounter() = runBlocking {
         val hotpId = repository.add(hotp)
 
         repository.updateCounter(hotpId, 42)
-        repository.updateCounter(totpId, 42)
 
         assertEquals(hotp.copy(counter = 42), repository.getAccount(hotpId))
+    }
+
+    @Test
+    fun updateCounter_totpRow_throwsAndChangesNothing() = runBlocking {
+        val totpId = repository.add(totp)
+
+        val error = assertThrows(NoSuchElementException::class.java) {
+            runBlocking { repository.updateCounter(totpId, 42) }
+        }
+
+        assertFalse(error.message.orEmpty().contains(totpId))
         assertEquals(totp, repository.getAccount(totpId))
+    }
+
+    @Test
+    fun updateCounter_unknownId_throws() = runBlocking {
+        repository.add(hotp)
+
+        val error = assertThrows(NoSuchElementException::class.java) {
+            runBlocking { repository.updateCounter("missing", 42) }
+        }
+        assertFalse(error.message.orEmpty().contains("missing"))
+    }
+
+    @Test
+    fun updateCounter_negative_throwsAndChangesNothing() = runBlocking {
+        val hotpId = repository.add(hotp)
+
         assertThrows(IllegalArgumentException::class.java) {
             runBlocking { repository.updateCounter(hotpId, -1) }
         }
-        Unit
+        assertEquals(hotp, repository.getAccount(hotpId))
     }
 
     @Test

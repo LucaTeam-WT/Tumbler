@@ -86,7 +86,9 @@ class RoomAccountRepositoryInstrumentedTest {
         val totpId = repository.add(totp)
         val hotpId = repository.add(hotp)
 
-        repository.updateCounter(totpId, 9)
+        // Real SQL reports 0 rows updated for a TOTP row or an unknown id.
+        assertThrows(NoSuchElementException::class.java) { runBlocking { repository.updateCounter(totpId, 9) } }
+        assertThrows(NoSuchElementException::class.java) { runBlocking { repository.updateCounter("missing", 9) } }
         repository.updateCounter(hotpId, 9)
 
         assertEquals(totp, repository.getAccount(totpId))
