@@ -4,9 +4,13 @@ import androidx.annotation.DrawableRes
 import androidx.annotation.StringRes
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.Crossfade
 import androidx.compose.animation.EnterTransition
 import androidx.compose.animation.ExitTransition
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.expandIn
 import androidx.compose.animation.expandVertically
@@ -62,6 +66,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.MotionDurationScale
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalHapticFeedback
@@ -77,6 +82,7 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import com.phucho0237.lucaauth.R
 import kotlinx.coroutines.launch
@@ -95,6 +101,23 @@ private const val NEXT_CODE_MOTION_MILLIS = 400
 
 /** Duration of the exit of the next TOTP code (fade, shrink, slide). */
 internal const val NEXT_CODE_EXIT_MILLIS = 300
+
+/** Motion of rows when accounts are added, deleted or reordered. */
+private const val ITEM_FADE_IN_MILLIS = 250
+private const val ITEM_FADE_OUT_MILLIS = 200
+private const val ITEM_PLACEMENT_MILLIS = 300
+
+/** Crossfade between the loading, empty, error and list states. */
+private const val CONTENT_FADE_MILLIS = 300
+
+/** One tick of the view model; the ring sweeps for exactly this long. */
+private const val RING_SWEEP_MILLIS = 1000
+
+/** Fade of the ring color when it enters or leaves the attention state. */
+private const val RING_COLOR_MILLIS = 300
+
+/** "No tick seen yet" marker for the ring; a live tick is always at least 1. */
+private const val NO_SECONDS = -1
 
 private val FAB_CLEARANCE = 88.dp
 private val ROW_MIN_HEIGHT = 72.dp
@@ -227,43 +250,78 @@ fun AccountListScreen(
         },
         snackbarHost = { SnackbarHost(snackbarHostState) },
     ) { innerPadding ->
-        when {
-            state.isLoading -> LoadingState(Modifier.fillMaxSize().padding(innerPadding))
-            state.accounts.isEmpty() && state.loadFailed ->
-                MessageState(
-                    title = stringResource(R.string.accounts_load_failed_title),
-                    body = stringResource(R.string.accounts_load_failed_body),
-                    modifier = Modifier.fillMaxSize().padding(innerPadding),
-                )
-            state.accounts.isEmpty() ->
-                MessageState(
-                    title = stringResource(R.string.accounts_empty_title),
-                    body = stringResource(R.string.accounts_empty_body),
-                    modifier = Modifier.fillMaxSize().padding(innerPadding),
-                )
-            else -> {
-                val layoutDirection = LocalLayoutDirection.current
-                LazyColumn(
-                    modifier = Modifier.fillMaxSize(),
-                    contentPadding = PaddingValues(
-                        start = innerPadding.calculateStartPadding(layoutDirection) + 16.dp,
-                        top = innerPadding.calculateTopPadding() + 8.dp,
-                        end = innerPadding.calculateEndPadding(layoutDirection) + 16.dp,
-                        bottom = innerPadding.calculateBottomPadding() + FAB_CLEARANCE,
-                    ),
-                    verticalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    if (state.loadFailed) {
-                        item(key = "load-failed") {
-                            Text(
-                                text = stringResource(R.string.accounts_load_failed_body),
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = MaterialTheme.colorScheme.error,
+        val contentKind = when {
+            state.isLoading -> ContentKind.Loading
+            state.accounts.isEmpty() && state.loadFailed -> ContentKind.Failed
+            state.accounts.isEmpty() -> ContentKind.Empty
+            else -> ContentKind.List
+        }
+        // The list that fades out after the last account was deleted keeps drawing its old rows.
+        val lastAccounts = remember { arrayOfNulls<List<AccountItem>>(1) }
+        if (state.accounts.isNotEmpty()) lastAccounts[0] = state.accounts
+        Crossfade(
+            targetState = contentKind,
+            animationSpec = tween(CONTENT_FADE_MILLIS, easing = FastOutSlowInEasing),
+            label = "accounts-content",
+        ) { shown ->
+            // Content that is fading out is only drawn: it has no semantics, so TalkBack and
+            // tests never see two states at once.
+            val exiting = shown != contentKind
+            val frame = Modifier
+                .fillMaxSize()
+                .then(if (exiting) Modifier.clearAndSetSemantics { } else Modifier)
+            when (shown) {
+                ContentKind.Loading -> LoadingState(frame.padding(innerPadding))
+                ContentKind.Failed ->
+                    MessageState(
+                        title = stringResource(R.string.accounts_load_failed_title),
+                        body = stringResource(R.string.accounts_load_failed_body),
+                        modifier = frame.padding(innerPadding),
+                    )
+                ContentKind.Empty ->
+                    MessageState(
+                        title = stringResource(R.string.accounts_empty_title),
+                        body = stringResource(R.string.accounts_empty_body),
+                        modifier = frame.padding(innerPadding),
+                    )
+                ContentKind.List -> {
+                    val accounts = if (exiting) lastAccounts[0].orEmpty() else state.accounts
+                    val layoutDirection = LocalLayoutDirection.current
+                    LazyColumn(
+                        modifier = frame,
+                        contentPadding = PaddingValues(
+                            start = innerPadding.calculateStartPadding(layoutDirection) + 16.dp,
+                            top = innerPadding.calculateTopPadding() + 8.dp,
+                            end = innerPadding.calculateEndPadding(layoutDirection) + 16.dp,
+                            bottom = innerPadding.calculateBottomPadding() + FAB_CLEARANCE,
+                        ),
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        if (state.loadFailed) {
+                            item(key = "load-failed") {
+                                Text(
+                                    text = stringResource(R.string.accounts_load_failed_body),
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = MaterialTheme.colorScheme.error,
+                                    modifier = Modifier.animateItem(
+                                        fadeInSpec = itemFadeIn(),
+                                        placementSpec = itemPlacement(),
+                                        fadeOutSpec = itemFadeOut(),
+                                    ),
+                                )
+                            }
+                        }
+                        items(accounts, key = { it.id }) { item ->
+                            AccountRow(
+                                item = item,
+                                onAction = { performAction(item, it) },
+                                modifier = Modifier.animateItem(
+                                    fadeInSpec = itemFadeIn(),
+                                    placementSpec = itemPlacement(),
+                                    fadeOutSpec = itemFadeOut(),
+                                ),
                             )
                         }
-                    }
-                    items(state.accounts, key = { it.id }) { item ->
-                        AccountRow(item = item, onAction = { performAction(item, it) })
                     }
                 }
             }
@@ -282,6 +340,15 @@ fun AccountListScreen(
         )
     }
 }
+
+/** Which of the mutually exclusive contents the accounts screen shows. */
+private enum class ContentKind { Loading, Failed, Empty, List }
+
+private fun itemFadeIn() = tween<Float>(ITEM_FADE_IN_MILLIS, easing = FastOutSlowInEasing)
+
+private fun itemFadeOut() = tween<Float>(ITEM_FADE_OUT_MILLIS, easing = FastOutSlowInEasing)
+
+private fun itemPlacement() = tween<IntOffset>(ITEM_PLACEMENT_MILLIS, easing = FastOutSlowInEasing)
 
 @Composable
 private fun LoadingState(modifier: Modifier = Modifier) {
@@ -321,7 +388,7 @@ private fun MessageState(title: String, body: String, modifier: Modifier = Modif
  */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun AccountRow(item: AccountItem, onAction: (RowAction) -> Unit) {
+private fun AccountRow(item: AccountItem, onAction: (RowAction) -> Unit, modifier: Modifier = Modifier) {
     val haptics = LocalHapticFeedback.current
     var menuOpen by remember { mutableStateOf(false) }
     val name = item.displayName()
@@ -337,7 +404,7 @@ private fun AccountRow(item: AccountItem, onAction: (RowAction) -> Unit) {
     val tapLabel = if (hasCode) stringResource(R.string.action_copy_code) else showOptionsLabel
 
     Surface(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = modifier.fillMaxWidth(),
         shape = MaterialTheme.shapes.large,
         color = MaterialTheme.colorScheme.surfaceContainer,
     ) {
@@ -603,21 +670,52 @@ private fun NextCode(item: AccountItem.TotpItem, flow: Boolean, modifier: Modifi
     }
 }
 
+/**
+ * The countdown ring. The view model ticks once per second, so the ring starts every second at
+ * that tick's value and sweeps linearly to the next second's value ([ringProgressAtEnd]); it
+ * snaps (never animates backwards) when the period restarts or ticks are missed, see
+ * [ringShouldSnap]. The animated value is read only in the indicator's draw phase, so a frame of
+ * the sweep redraws the ring and recomposes nothing. The accessibility node is the wrapper with
+ * a fixed description, so the continuously changing progress is never announced.
+ */
 @Composable
 private fun CountdownRing(secondsRemaining: Int, period: Int) {
-    val color = if (secondsRemaining <= ATTENTION_SECONDS) {
-        MaterialTheme.colorScheme.error
-    } else {
-        MaterialTheme.colorScheme.primary
+    val progress = remember { Animatable(ringProgressAtStart(secondsRemaining, period)) }
+    val lastSeconds = remember { intArrayOf(NO_SECONDS) }
+    LaunchedEffect(secondsRemaining, period) {
+        val previous = lastSeconds[0].takeIf { it != NO_SECONDS }
+        lastSeconds[0] = secondsRemaining
+        val start = ringProgressAtStart(secondsRemaining, period)
+        if (ringShouldSnap(previous, secondsRemaining)) progress.snapTo(start)
+        if (coroutineContext[MotionDurationScale]?.scaleFactor == 0f) {
+            // Animations are off in the system settings: show this second's value, not the next.
+            progress.snapTo(start)
+        } else {
+            progress.animateTo(
+                ringProgressAtEnd(secondsRemaining, period),
+                tween(RING_SWEEP_MILLIS, easing = LinearEasing),
+            )
+        }
     }
-    val description = stringResource(R.string.account_seconds_remaining, secondsRemaining)
-    CircularProgressIndicator(
-        progress = { secondsRemaining.toFloat() / period },
-        modifier = Modifier.size(RING_SIZE).semantics { contentDescription = description },
-        color = color,
-        strokeWidth = 3.dp,
-        trackColor = MaterialTheme.colorScheme.surfaceVariant,
+    val color by animateColorAsState(
+        targetValue = if (secondsRemaining <= ATTENTION_SECONDS) {
+            MaterialTheme.colorScheme.error
+        } else {
+            MaterialTheme.colorScheme.primary
+        },
+        animationSpec = tween(RING_COLOR_MILLIS, easing = FastOutSlowInEasing),
+        label = "ring-color",
     )
+    val description = stringResource(R.string.account_seconds_remaining, secondsRemaining)
+    Box(Modifier.size(RING_SIZE).clearAndSetSemantics { contentDescription = description }) {
+        CircularProgressIndicator(
+            progress = { progress.value },
+            modifier = Modifier.size(RING_SIZE),
+            color = color,
+            strokeWidth = 3.dp,
+            trackColor = MaterialTheme.colorScheme.surfaceVariant,
+        )
+    }
 }
 
 @Composable
