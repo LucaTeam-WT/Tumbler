@@ -42,5 +42,6 @@ com.phucho0237.lucaauth
 │   ├── otp/       # Base32, Hotp, Totp, OtpAuthUri parser
 │   └── repository/ # AccountRepository interface
 ├── ui/        # Compose screens, components, theme, navigation
-└── di/        # Hilt modules
+├── di/        # AppContainer (manual DI, lazy; Hilt is not used yet)
+└── LucaAuthApplication.kt  # owns the AppContainer
 ```
