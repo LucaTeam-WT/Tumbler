@@ -21,3 +21,7 @@ Out of scope: a rooted device with an active attacker, malware with accessibilit
 - Offline by default; no network permission, no telemetry.
 - Secrets never leave the device unencrypted. Backups are encrypted client-side with a user-supplied password.
 - Secrets, codes and passwords are never logged.
+
+## Known limitations
+
+- Only the OTP secret is encrypted (AES-GCM with an Android Keystore key, bound to the account id). Issuer and account name, along with OTP type, algorithm, digits, period, counter and creation time, are stored in plaintext in the app-private Room database. Other apps cannot read it, and it is excluded from cloud backup and device-to-device transfer, but anyone who can read the app's private storage (for example on a rooted device) can see which accounts exist.

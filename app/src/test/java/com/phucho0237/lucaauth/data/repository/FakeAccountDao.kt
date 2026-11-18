@@ -33,9 +33,11 @@ class FakeAccountDao : AccountDao {
         it + (entity.id to entity)
     }
 
-    override suspend fun updateCounter(id: String, counter: Long) = rows.update { map ->
-        val row = map[id]
-        if (row == null || row.type != "HOTP") map else map + (id to row.copyWith(counter = counter))
+    override suspend fun updateCounter(id: String, counter: Long): Int {
+        val row = rows.value[id]
+        if (row == null || row.type != "HOTP") return 0
+        put(row.copyWith(counter = counter))
+        return 1
     }
 
     override suspend fun delete(id: String) = rows.update { it - id }

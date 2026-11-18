@@ -26,9 +26,11 @@ interface AccountDao {
     /**
      * Updates only the counter, and only of a HOTP row. `'HOTP'` is the stored name of
      * [com.phucho0237.lucaauth.domain.model.OtpType.HOTP].
+     *
+     * @return the number of rows updated: 1, or 0 if [id] is unknown or not a HOTP row.
      */
     @Query("UPDATE accounts SET counter = :counter WHERE id = :id AND type = 'HOTP'")
-    suspend fun updateCounter(id: String, counter: Long)
+    suspend fun updateCounter(id: String, counter: Long): Int
 
     @Query("DELETE FROM accounts WHERE id = :id")
     suspend fun delete(id: String)

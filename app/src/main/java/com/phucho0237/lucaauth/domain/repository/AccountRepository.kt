@@ -31,10 +31,12 @@ interface AccountRepository {
     suspend fun getAccount(id: String): OtpAccount?
 
     /**
-     * Sets the HOTP moving factor of the account with [id]. Does nothing if there is no
-     * HOTP account with [id]; TOTP accounts are never changed.
+     * Sets the HOTP moving factor of the account with [id]. TOTP accounts are never
+     * changed.
      *
      * @throws IllegalArgumentException if [counter] is negative.
+     * @throws NoSuchElementException if there is no HOTP account with [id] (unknown id or a
+     *   TOTP account); nothing is changed. The message is fixed and never contains the id.
      */
     suspend fun updateCounter(id: String, counter: Long)
 
