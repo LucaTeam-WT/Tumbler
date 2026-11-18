@@ -2,6 +2,10 @@ package com.phucho0237.lucaauth.ui.accounts
 
 import androidx.activity.ComponentActivity
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.hasAnyAncestor
+import androidx.compose.ui.test.hasClickAction
+import androidx.compose.ui.test.hasText
+import androidx.compose.ui.test.isDialog
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
@@ -69,9 +73,20 @@ class AccountListScreenTest {
         composeRule.onNodeWithText(string(R.string.account_next_code)).assertIsDisplayed()
     }
 
-    @Test
-    fun deleteAsksForConfirmationBeforeDeleting() {
-        var deleted: String? = null
+    /**
+     * The card's delete button and the dialog's confirm button have the same text
+     * ("Delete") and are both in the semantics tree while the dialog is open, so each is
+     * selected by whether it lives inside the dialog window.
+     */
+    private fun cardDeleteButton() = composeRule.onNode(
+        hasText(string(R.string.account_delete)) and hasClickAction() and hasAnyAncestor(isDialog()).not(),
+    )
+
+    private fun dialogButton(textRes: Int) = composeRule.onNode(
+        hasText(string(textRes)) and hasClickAction() and hasAnyAncestor(isDialog()),
+    )
+
+    private fun showDeletableAccount(onDelete: (String) -> Unit) {
         composeRule.setContent {
             LucaAuthTheme {
                 AccountListScreen(
@@ -82,18 +97,39 @@ class AccountListScreenTest {
                     onAddClick = {},
                     onCopyCode = {},
                     onNextHotpCode = {},
-                    onDelete = { deleted = it },
+                    onDelete = onDelete,
                     onActionFailureShown = {},
                 )
             }
         }
+    }
 
-        composeRule.onNodeWithText(string(R.string.account_delete)).performClick()
+    @Test
+    fun deleteAsksForConfirmationBeforeDeleting() {
+        var deleted: String? = null
+        showDeletableAccount { deleted = it }
+
+        cardDeleteButton().performClick()
         assertEquals(null, deleted)
         composeRule.onNodeWithText(string(R.string.delete_dialog_title)).assertIsDisplayed()
-        composeRule.onNodeWithText(string(R.string.delete_dialog_confirm)).performClick()
+        dialogButton(R.string.delete_dialog_confirm).performClick()
 
         assertEquals("1", deleted)
+        composeRule.onNodeWithText(string(R.string.delete_dialog_title)).assertDoesNotExist()
+    }
+
+    @Test
+    fun cancellingTheDeleteConfirmationKeepsTheAccount() {
+        var deleted: String? = null
+        showDeletableAccount { deleted = it }
+
+        cardDeleteButton().performClick()
+        composeRule.onNodeWithText(string(R.string.delete_dialog_title)).assertIsDisplayed()
+        dialogButton(R.string.add_cancel).performClick()
+
+        assertEquals(null, deleted)
+        composeRule.onNodeWithText(string(R.string.delete_dialog_title)).assertDoesNotExist()
+        composeRule.onNodeWithText("alice").assertIsDisplayed()
     }
 
     @Test
