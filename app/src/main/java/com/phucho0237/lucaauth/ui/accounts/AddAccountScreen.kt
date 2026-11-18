@@ -1,17 +1,24 @@
 package com.phucho0237.lucaauth.ui.accounts
 
+import androidx.annotation.DrawableRes
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
@@ -24,6 +31,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
@@ -54,7 +62,19 @@ fun AddAccountScreen(
 
     Scaffold(
         modifier = modifier,
-        topBar = { TopAppBar(title = { Text(stringResource(R.string.add_title)) }) },
+        topBar = {
+            TopAppBar(
+                title = { Text(stringResource(R.string.add_title)) },
+                navigationIcon = {
+                    IconButton(onClick = onCancel) {
+                        Icon(
+                            painter = painterResource(R.drawable.ic_arrow_back),
+                            contentDescription = stringResource(R.string.add_back),
+                        )
+                    }
+                },
+            )
+        },
     ) { innerPadding ->
         Column(
             modifier = Modifier
@@ -93,11 +113,26 @@ fun AddAccountScreen(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End),
             ) {
-                TextButton(onClick = onCancel) { Text(stringResource(R.string.add_cancel)) }
+                TextButton(onClick = onCancel) {
+                    ButtonIcon(R.drawable.ic_close)
+                    Text(stringResource(R.string.add_cancel))
+                }
                 Button(onClick = { onSave(link.trim()) }, enabled = link.isNotBlank() && !saving) {
+                    ButtonIcon(R.drawable.ic_check)
                     Text(stringResource(R.string.add_save))
                 }
             }
         }
     }
+}
+
+/** Decorative icon in front of a button label; the label already says what the button does. */
+@Composable
+private fun ButtonIcon(@DrawableRes icon: Int) {
+    Icon(
+        painter = painterResource(icon),
+        contentDescription = null,
+        modifier = Modifier.size(ButtonDefaults.IconSize),
+    )
+    Spacer(Modifier.width(ButtonDefaults.IconSpacing))
 }

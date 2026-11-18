@@ -11,7 +11,13 @@
     <string name="accounts_action_failed">Thao tác không thành công do lỗi lưu trữ. Vui lòng thử lại.</string>
     <string name="account_code_copied">Đã sao chép mã</string>
     <string name="account_next_code">Mã tiếp theo</string>
-    <string name="account_hotp_no_code">Nhấn “Mã tiếp theo” để tạo mã.</string>
+    <string name="account_hotp_no_code_placeholder">••• •••</string>
+    <string name="account_hotp_no_code_description">Chưa có mã</string>
+    <string name="action_copy_code">Sao chép mã</string>
+    <string name="action_show_options">Hiện tùy chọn</string>
+    <string name="action_copy_code_for">Sao chép mã của %1$s</string>
+    <string name="action_next_code_for">Mã tiếp theo của %1$s</string>
+    <string name="action_delete_for">Xóa %1$s</string>
     <string name="account_unavailable_title">Không có mã</string>
     <string name="account_unavailable_body">Không thể giải mã tài khoản này trên thiết bị này nên không thể hiển thị mã. Bạn có thể xóa tài khoản.</string>
     <string name="account_seconds_remaining">Còn %1$d giây</string>
@@ -24,6 +30,7 @@
     <string name="add_title">Thêm tài khoản</string>
     <string name="add_link_label">Liên kết otpauth://</string>
     <string name="add_link_hint">Dán liên kết từ trang thiết lập của dịch vụ.</string>
+    <string name="add_back">Quay lại</string>
     <string name="add_save">Lưu</string>
     <string name="add_cancel">Hủy</string>
     <string name="add_error_invalid_link">Đây không phải là liên kết otpauth:// hợp lệ.</string>

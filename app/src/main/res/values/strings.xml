@@ -11,7 +11,13 @@
     <string name="accounts_action_failed">That did not work: storage failed. Please try again.</string>
     <string name="account_code_copied">Code copied</string>
     <string name="account_next_code">Next code</string>
-    <string name="account_hotp_no_code">Tap “Next code” to generate one.</string>
+    <string name="account_hotp_no_code_placeholder">••• •••</string>
+    <string name="account_hotp_no_code_description">No code yet</string>
+    <string name="action_copy_code">Copy code</string>
+    <string name="action_show_options">Show options</string>
+    <string name="action_copy_code_for">Copy code for %1$s</string>
+    <string name="action_next_code_for">Next code for %1$s</string>
+    <string name="action_delete_for">Delete %1$s</string>
     <string name="account_unavailable_title">Code unavailable</string>
     <string name="account_unavailable_body">This account cannot be decrypted on this device, so no code can be shown. You can delete it.</string>
     <string name="account_seconds_remaining">%1$d seconds left</string>
@@ -24,6 +30,7 @@
     <string name="add_title">Add account</string>
     <string name="add_link_label">otpauth:// link</string>
     <string name="add_link_hint">Paste the link from the setup page of the service.</string>
+    <string name="add_back">Back</string>
     <string name="add_save">Save</string>
     <string name="add_cancel">Cancel</string>
     <string name="add_error_invalid_link">This is not a valid otpauth:// link.</string>

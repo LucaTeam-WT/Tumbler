@@ -5,6 +5,7 @@ import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
+import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performTextInput
@@ -52,6 +53,26 @@ class AddAccountScreenTest {
         show(error = AddError.STORAGE_FAILED)
 
         composeRule.onNodeWithText(string(R.string.add_error_storage)).assertIsDisplayed()
+    }
+
+    @Test
+    fun backButtonLeavesTheScreen() {
+        var cancelled = false
+        show(onCancel = { cancelled = true })
+
+        composeRule.onNodeWithContentDescription(string(R.string.add_back)).performClick()
+
+        assertEquals(true, cancelled)
+    }
+
+    @Test
+    fun cancelButtonLeavesTheScreen() {
+        var cancelled = false
+        show(onCancel = { cancelled = true })
+
+        composeRule.onNodeWithText(string(R.string.add_cancel)).performClick()
+
+        assertEquals(true, cancelled)
     }
 
     @Test
