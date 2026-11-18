@@ -3,10 +3,15 @@ package com.phucho0237.lucaauth.ui.accounts
 import androidx.annotation.DrawableRes
 import androidx.annotation.StringRes
 import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -47,6 +52,8 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalHapticFeedback
@@ -55,6 +62,7 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.CustomAccessibilityAction
+import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.customActions
 import androidx.compose.ui.semantics.semantics
@@ -62,6 +70,7 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.isSpecified
 import com.phucho0237.lucaauth.R
 import kotlinx.coroutines.launch
 
@@ -74,6 +83,9 @@ private const val STACKED_FONT_SCALE = 1.5f
 /** From this font scale on, issuer and account name may use two lines instead of one. */
 private const val LARGE_FONT_SCALE = 1.3f
 
+/** Duration of the fade-in of the next TOTP code. */
+private const val NEXT_CODE_FADE_MILLIS = 400
+
 private val FAB_CLEARANCE = 88.dp
 private val ROW_MIN_HEIGHT = 72.dp
 private val RING_SIZE = 28.dp
@@ -84,6 +96,7 @@ internal object AccountListTags {
     const val MENU_COPY = "account-menu-copy"
     const val MENU_NEXT_CODE = "account-menu-next-code"
     const val MENU_DELETE = "account-menu-delete"
+    const val NEXT_CODE = "account-next-code"
 }
 
 /**
@@ -430,11 +443,7 @@ private fun Names(item: AccountItem, modifier: Modifier = Modifier) {
 private fun CodeAndCountdown(item: AccountItem) {
     Row(verticalAlignment = Alignment.CenterVertically) {
         when (item) {
-            is AccountItem.TotpItem -> {
-                Code(item.code)
-                Spacer(Modifier.width(12.dp))
-                CountdownRing(item.secondsRemaining, item.period)
-            }
+            is AccountItem.TotpItem -> TotpCodeBlock(item)
             is AccountItem.HotpItem -> if (item.code != null) {
                 Code(item.code)
             } else {
@@ -462,6 +471,89 @@ private fun Code(code: String) {
         style = codeStyle(),
         color = MaterialTheme.colorScheme.primary,
     )
+}
+
+/**
+ * Current code, the next code (see [NextCode]) and the countdown ring. The ring is centered on
+ * the current code's line, not on the whole block.
+ *
+ * Normal font scales: the next code sits under the current code, aligned to its end edge.
+ * From [STACKED_FONT_SCALE]: both codes share one line and the next code wraps below the
+ * current one only if they do not fit, so nothing is clipped.
+ */
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun TotpCodeBlock(item: AccountItem.TotpItem) {
+    val stacked = LocalDensity.current.fontScale >= STACKED_FONT_SCALE
+    val codeLine = codeStyle().lineHeight
+    val ringSlotHeight = with(LocalDensity.current) {
+        if (codeLine.isSpecified) maxOf(codeLine.toDp(), RING_SIZE) else RING_SIZE
+    }
+    Row(verticalAlignment = Alignment.Top) {
+        if (stacked) {
+            FlowRow(
+                modifier = Modifier.weight(1f, fill = false),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                itemVerticalAlignment = Alignment.CenterVertically,
+            ) {
+                Code(item.code)
+                NextCode(item)
+            }
+        } else {
+            Column(horizontalAlignment = Alignment.End) {
+                Code(item.code)
+                NextCode(item)
+            }
+        }
+        Spacer(Modifier.width(12.dp))
+        Box(Modifier.height(ringSlotHeight), contentAlignment = Alignment.Center) {
+            CountdownRing(item.secondsRemaining, item.period)
+        }
+    }
+}
+
+/**
+ * The code that replaces the current one, shown in the last seconds of a step. It is
+ * display-only: tapping the row copies the current code. Its semantics (description and test
+ * tag) exist as soon as [AccountItem.TotpItem.nextCode] is set; the fade-in only affects what
+ * is drawn, and there is no fade-out. Outside the window the line is still laid out,
+ * invisible and without semantics, from the current code's digits (same text shape, so the
+ * same size), so the row keeps its size when the next code appears or disappears.
+ */
+@Composable
+private fun NextCode(item: AccountItem.TotpItem) {
+    val style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace)
+    val nextCode = item.nextCode
+    if (nextCode == null) {
+        Text(
+            text = stringResource(R.string.account_next_totp_code, formatCode(item.code)),
+            style = style,
+            maxLines = 1,
+            modifier = Modifier.alpha(0f).clearAndSetSemantics { },
+        )
+    } else {
+        // This branch enters the composition when the next code appears, so the fade runs
+        // once per step and not on every tick.
+        var shown by remember { mutableStateOf(false) }
+        LaunchedEffect(Unit) { shown = true }
+        val alpha by animateFloatAsState(
+            targetValue = if (shown) 1f else 0f,
+            animationSpec = tween(durationMillis = NEXT_CODE_FADE_MILLIS, easing = FastOutSlowInEasing),
+            label = "nextCodeAlpha",
+        )
+        val formatted = formatCode(nextCode)
+        val description = stringResource(R.string.account_next_totp_code_description, formatted)
+        Text(
+            text = stringResource(R.string.account_next_totp_code, formatted),
+            style = style,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 1,
+            modifier = Modifier
+                .graphicsLayer { this.alpha = alpha }
+                .testTag(AccountListTags.NEXT_CODE)
+                .semantics { contentDescription = description },
+        )
+    }
 }
 
 @Composable

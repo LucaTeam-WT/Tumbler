@@ -21,6 +21,8 @@
     <string name="account_unavailable_title">Code unavailable</string>
     <string name="account_unavailable_body">This account cannot be decrypted on this device, so no code can be shown. You can delete it.</string>
     <string name="account_seconds_remaining">%1$d seconds left</string>
+    <string name="account_next_totp_code" translatable="false">→ %1$s</string>
+    <string name="account_next_totp_code_description">Next code %1$s</string>
     <string name="account_delete">Delete</string>
 
     <string name="delete_dialog_title">Delete account?</string>

@@ -5,8 +5,11 @@ import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.semantics.SemanticsProperties
+import androidx.compose.ui.test.SemanticsMatcher
 import androidx.compose.ui.test.SemanticsNodeInteraction
+import androidx.compose.ui.test.assert
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.assertTextEquals
 import androidx.compose.ui.test.hasAnyAncestor
 import androidx.compose.ui.test.hasClickAction
 import androidx.compose.ui.test.hasContentDescription
@@ -340,7 +343,134 @@ class AccountListScreenTest {
         composeRule.onNodeWithText(string(R.string.account_unavailable_body)).assertIsDisplayed()
     }
 
-    private val longIssuer = "An extremely long issuer name that keeps going ".repeat(6).trim()
+    private val totpWithNext = totp.copy(secondsRemaining = 4, nextCode = "654321")
+
+    private fun nextCodeNode() = composeRule.onNodeWithTag(AccountListTags.NEXT_CODE, useUnmergedTree = true)
+
+    @Test
+    fun nextCodeIsShownWithTextAndItsOwnDescription() {
+        show(stateOf(totpWithNext))
+
+        nextCodeNode().assertIsDisplayed()
+        nextCodeNode().assertTextEquals(string(R.string.account_next_totp_code, "654 321"))
+        nextCodeNode().assert(
+            SemanticsMatcher.expectValue(
+                SemanticsProperties.ContentDescription,
+                listOf(string(R.string.account_next_totp_code_description, "654 321")),
+            ),
+        )
+        composeRule.onNodeWithText("123 456").assertIsDisplayed()
+    }
+
+    @Test
+    fun nextCodeIsAbsentWhenNull() {
+        show(stateOf(totp))
+
+        nextCodeNode().assertDoesNotExist()
+        composeRule.onNodeWithText(string(R.string.account_next_totp_code, "123 456"), substring = true)
+            .assertDoesNotExist()
+    }
+
+    @Test
+    fun tappingARowWithANextCodeCopiesOnlyTheCurrentCode() {
+        val copied = mutableListOf<String>()
+        show(stateOf(totpWithNext), onCopyCode = { copied += it })
+
+        row(totpWithNext).performClick()
+
+        assertEquals(listOf("123456"), copied)
+    }
+
+    @Test
+    fun nextCodeAddsNoMenuItemOrCustomAction() {
+        show(stateOf(totpWithNext))
+
+        assertEquals(
+            row(totp).customActionLabels().size,
+            row(totpWithNext).customActionLabels().size,
+        )
+        longPress(totpWithNext)
+        menuItem(AccountListTags.MENU_COPY).assertIsDisplayed()
+        menuItem(AccountListTags.MENU_DELETE).assertIsDisplayed()
+        menuItem(AccountListTags.MENU_NEXT_CODE).assertDoesNotExist()
+    }
+
+    @Test
+    fun rowKeepsItsHeightWhenTheNextCodeAppears() {
+        val other = totp.copy(id = "t2", accountName = "dave")
+        val otherWithNext = totpWithNext.copy(id = "t3", accountName = "erin")
+        show(stateOf(other, otherWithNext))
+
+        assertEquals(
+            row(other).fetchSemanticsNode().size.height,
+            row(otherWithNext).fetchSemanticsNode().size.height,
+        )
+    }
+
+    private fun assertRowHeightsMatchAt(fontScale: Float) {
+        val other = totp.copy(id = "t2", accountName = "dave")
+        val otherWithNext = totpWithNext.copy(id = "t3", accountName = "erin")
+        show(stateOf(other, otherWithNext), fontScale = fontScale)
+
+        assertEquals(
+            "fontScale=$fontScale",
+            row(other).fetchSemanticsNode().size.height,
+            row(otherWithNext).fetchSemanticsNode().size.height,
+        )
+    }
+
+    @Test
+    fun rowKeepsItsHeightWhenTheNextCodeAppearsAtFontScale13() = assertRowHeightsMatchAt(1.3f)
+
+    @Test
+    fun rowKeepsItsHeightWhenTheNextCodeAppearsAtFontScale15() = assertRowHeightsMatchAt(1.5f)
+
+    @Test
+    fun rowKeepsItsHeightWhenTheNextCodeAppearsAtFontScale20() = assertRowHeightsMatchAt(2f)
+
+    @Test
+    fun stackedLayoutShowsBothCodesWithoutClippingAtTwoHundredPercentFontScale() {
+        show(stateOf(totpWithNext), fontScale = 2f)
+
+        val currentCode = composeRule.onNodeWithText("123 456", useUnmergedTree = true)
+        currentCode.assertIsDisplayed()
+        nextCodeNode().assertIsDisplayed()
+        composeRule.onNodeWithContentDescription(string(R.string.account_seconds_remaining, 4)).assertIsDisplayed()
+        // Same line if both fit, otherwise the next code wraps below; either way it stays inside the row.
+        val rowBounds = row(totpWithNext).fetchSemanticsNode().boundsInRoot
+        val next = nextCodeNode().fetchSemanticsNode().boundsInRoot
+        assertEquals(true, next.left >= rowBounds.left)
+        assertEquals(true, next.right <= rowBounds.right)
+        assertEquals(true, next.bottom <= rowBounds.bottom)
+    }
+
+    @Test
+    fun nextCodeSemanticsExistBeforeTheFadeInHasRun() {
+        composeRule.mainClock.autoAdvance = false
+        show(stateOf(totpWithNext))
+
+        // No animation frame has been advanced: only what is drawn can still be transparent.
+        nextCodeNode().assertExists()
+        nextCodeNode().assert(
+            SemanticsMatcher.expectValue(
+                SemanticsProperties.ContentDescription,
+                listOf(string(R.string.account_next_totp_code_description, "654 321")),
+            ),
+        )
+    }
+
+    @Test
+    fun nextCodeIsEndAlignedUnderTheCurrentCodeAtNormalFontScale() {
+        show(stateOf(totpWithNext))
+
+        val code = composeRule.onNodeWithText("123 456", useUnmergedTree = true)
+            .fetchSemanticsNode().boundsInRoot
+        val next = nextCodeNode().fetchSemanticsNode().boundsInRoot
+        assertEquals(code.right, next.right, 1f)
+        assertEquals(true, next.top >= code.bottom - 1f)
+    }
+
+    private val longIssuer ="An extremely long issuer name that keeps going ".repeat(6).trim()
     private val longAccountName = "someone.with.a.very.long.account.name.".repeat(6) + "@example.com"
     private val longTotp = AccountItem.TotpItem(
         id = "long1",

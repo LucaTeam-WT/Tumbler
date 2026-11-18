@@ -21,6 +21,7 @@
     <string name="account_unavailable_title">Không có mã</string>
     <string name="account_unavailable_body">Không thể giải mã tài khoản này trên thiết bị này nên không thể hiển thị mã. Bạn có thể xóa tài khoản.</string>
     <string name="account_seconds_remaining">Còn %1$d giây</string>
+    <string name="account_next_totp_code_description">Mã tiếp theo %1$s</string>
     <string name="account_delete">Xóa</string>
 
     <string name="delete_dialog_title">Xóa tài khoản?</string>

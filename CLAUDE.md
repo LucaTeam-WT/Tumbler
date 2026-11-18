@@ -43,7 +43,7 @@ com.phucho0237.lucaauth
 │   ├── otp/       # Base32, Hotp, Totp, OtpAuthUri parser
 │   └── repository/ # AccountRepository interface
 ├── ui/        # Compose screens, components, theme
-│   ├── accounts/  # compact-row accounts list (long-press menu), add screen, AccountListViewModel, UI state, clipboard copy
+│   ├── accounts/  # compact-row accounts list (long-press menu; the next TOTP code shows in the last 10 s and is never stored), add screen, AccountListViewModel, UI state, clipboard copy
 │   ├── theme/     # Material 3 theme (dynamic color, dark mode)
 │   └── LucaAuthApp.kt  # root composable: switches list <-> add screen (no navigation library)
 ├── di/        # AppContainer (manual DI, lazy; Hilt is not used yet)
