@@ -8,6 +8,7 @@ import androidx.compose.ui.test.SemanticsNodeInteraction
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.hasAnyAncestor
 import androidx.compose.ui.test.hasClickAction
+import androidx.compose.ui.test.hasContentDescription
 import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.isDialog
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
@@ -81,6 +82,14 @@ class AccountListScreenTest {
         hasText(string(textRes)) and hasClickAction() and hasAnyAncestor(isDialog()),
     )
 
+    /**
+     * The extended FAB removes its label from the semantics tree and takes its accessible name
+     * from the icon's content description, so it is found by that description and click action.
+     */
+    private fun addButton() = composeRule.onNode(
+        hasContentDescription(string(R.string.accounts_add)) and hasClickAction(),
+    )
+
     private fun SemanticsNodeInteraction.customActionLabels(): List<String> =
         fetchSemanticsNode().config[SemanticsActions.CustomActions].map { it.label }
 
@@ -89,7 +98,29 @@ class AccountListScreenTest {
         show(AccountListUiState(isLoading = false))
 
         composeRule.onNodeWithText(string(R.string.accounts_empty_title)).assertIsDisplayed()
-        composeRule.onNodeWithText(string(R.string.accounts_add)).assertIsDisplayed()
+        composeRule.onNodeWithText(string(R.string.accounts_empty_body)).assertIsDisplayed()
+        addButton().assertIsDisplayed()
+    }
+
+    @Test
+    fun addButtonHasAnAccessibleNameAndRequestsTheAddScreen() {
+        var addClicks = 0
+        composeRule.setContent {
+            LucaAuthTheme {
+                AccountListScreen(
+                    state = AccountListUiState(isLoading = false),
+                    onAddClick = { addClicks++ },
+                    onCopyCode = {},
+                    onNextHotpCode = {},
+                    onDelete = {},
+                    onActionFailureShown = {},
+                )
+            }
+        }
+
+        addButton().performClick()
+
+        assertEquals(1, addClicks)
     }
 
     @Test

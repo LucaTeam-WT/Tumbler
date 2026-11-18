@@ -186,7 +186,14 @@ fun AccountListScreen(
         floatingActionButton = {
             ExtendedFloatingActionButton(
                 onClick = onAddClick,
-                icon = { Icon(painterResource(R.drawable.ic_add), contentDescription = null) },
+                // The extended FAB hides its label from accessibility and takes the button's name
+                // from the icon, so the icon carries the description (not null).
+                icon = {
+                    Icon(
+                        painter = painterResource(R.drawable.ic_add),
+                        contentDescription = stringResource(R.string.accounts_add),
+                    )
+                },
                 text = { Text(stringResource(R.string.accounts_add)) },
             )
         },
