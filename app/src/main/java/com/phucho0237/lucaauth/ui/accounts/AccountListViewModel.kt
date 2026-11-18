@@ -1,5 +1,6 @@
 package com.phucho0237.lucaauth.ui.accounts
 
+import android.database.SQLException
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
@@ -32,6 +33,11 @@ import kotlinx.coroutines.sync.withLock
  * Holds the decrypted accounts in memory only (never in saved state, never logged) and
  * turns them into [AccountListUiState], recomputed every second.
  *
+ * Storage failures ([SecretCipherException], [SQLException]) never crash the app: they
+ * become [AddError.STORAGE_FAILED], [AccountListUiState.loadFailed] or
+ * [AccountListUiState.actionFailed]. Nothing is logged and no failure text reaches the UI.
+ * Cancellation is never caught.
+ *
  * @param clock current Unix time in seconds.
  */
 class AccountListViewModel(
@@ -56,6 +62,8 @@ class AccountListViewModel(
     /** `null` until the first load has finished. */
     private val entries = MutableStateFlow<List<Entry>?>(null)
     private val hotpCodes = MutableStateFlow<Map<String, String>>(emptyMap())
+    private val loadFailed = MutableStateFlow(false)
+    private val actionFailed = MutableStateFlow(false)
     private val hotpMutex = Mutex()
 
     private val ticker: Flow<Long> = flow {
@@ -66,12 +74,13 @@ class AccountListViewModel(
     }
 
     val uiState: StateFlow<AccountListUiState> =
-        combine(entries, hotpCodes, ticker) { loaded, codes, now ->
-            if (loaded == null) {
-                AccountListUiState()
-            } else {
-                AccountListUiState(isLoading = false, accounts = loaded.map { it.toItem(codes, now) })
-            }
+        combine(entries, hotpCodes, ticker, loadFailed, actionFailed) { loaded, codes, now, loadError, actionError ->
+            AccountListUiState(
+                isLoading = loaded == null && !loadError,
+                accounts = loaded.orEmpty().map { it.toItem(codes, now) },
+                loadFailed = loadError,
+                actionFailed = actionError,
+            )
         }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(STOP_TIMEOUT_MILLIS), AccountListUiState())
 
     private val _addState = MutableStateFlow(AddState())
@@ -79,17 +88,28 @@ class AccountListViewModel(
 
     init {
         viewModelScope.launch {
-            repository.observeAccounts().collectLatest { summaries ->
-                val loaded = summaries.mapNotNull { load(it) }
-                val ids = loaded.mapTo(HashSet()) { it.summary.id }
-                hotpCodes.update { codes -> codes.filterKeys { it in ids } }
-                entries.value = loaded
+            try {
+                repository.observeAccounts().collectLatest { summaries ->
+                    val loaded = summaries.mapNotNull { load(it) }
+                    val ids = loaded.mapTo(HashSet()) { it.summary.id }
+                    hotpCodes.update { codes -> codes.filterKeys { it in ids } }
+                    entries.value = loaded
+                }
+            } catch (_: SQLException) {
+                loadFailed.value = true
+            } catch (_: SecretCipherException) {
+                loadFailed.value = true
             }
         }
     }
 
-    /** Parses [uri] and stores the account; the outcome is published in [addState]. */
+    /**
+     * Parses [uri] and stores the account; the outcome is published in [addState]. Ignored
+     * while a previous call is still saving, so a double tap stores one account.
+     */
     fun add(uri: String) {
+        if (_addState.value.saving) return
+        _addState.value = AddState(saving = true)
         viewModelScope.launch {
             _addState.value = try {
                 repository.add(OtpAuthUri.parse(uri))
@@ -98,23 +118,41 @@ class AccountListViewModel(
                 AddState(error = AddError.INVALID_LINK)
             } catch (_: SecretCipherException) {
                 AddState(error = AddError.STORAGE_FAILED)
+            } catch (_: SQLException) {
+                AddState(error = AddError.STORAGE_FAILED)
             }
         }
     }
 
-    /** Clears the outcome of the last [add], for example when the add screen is left. */
+    /**
+     * Clears the outcome of the last [add], for example when the add screen is left. A save
+     * that is still running keeps [AddState.saving] set, so it cannot be started twice.
+     */
     fun resetAddState() {
-        _addState.value = AddState()
+        _addState.value = AddState(saving = _addState.value.saving)
     }
 
+    /** Deletes the account; if storage fails, [AccountListUiState.actionFailed] is set. */
     fun delete(id: String) {
-        viewModelScope.launch { repository.delete(id) }
+        viewModelScope.launch {
+            try {
+                repository.delete(id)
+            } catch (_: SQLException) {
+                actionFailed.value = true
+            }
+        }
+    }
+
+    /** Call after the UI has shown the [AccountListUiState.actionFailed] message. */
+    fun actionFailureShown() {
+        actionFailed.value = false
     }
 
     /**
      * Shows the code for the HOTP account's current counter and stores the next counter.
      * The counter is saved first, so a code is never shown that could be generated again.
-     * Does nothing if the account is gone or is not a usable HOTP account.
+     * Does nothing if the account is gone or is not a usable HOTP account; if storage
+     * fails no code is shown and [AccountListUiState.actionFailed] is set.
      */
     fun nextHotpCode(id: String) {
         viewModelScope.launch {
@@ -126,6 +164,9 @@ class AccountListViewModel(
                 try {
                     repository.updateCounter(id, counter + 1)
                 } catch (_: NoSuchElementException) {
+                    return@withLock
+                } catch (_: SQLException) {
+                    actionFailed.value = true
                     return@withLock
                 }
                 val code = Hotp(account.secret, account.algorithm, account.digits).generate(counter)
