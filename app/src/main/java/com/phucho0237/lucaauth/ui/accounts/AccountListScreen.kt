@@ -1,5 +1,9 @@
 package com.phucho0237.lucaauth.ui.accounts
 
+import androidx.annotation.DrawableRes
+import androidx.annotation.StringRes
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -11,21 +15,25 @@ import androidx.compose.foundation.layout.calculateStartPadding
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExtendedFloatingActionButton
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
@@ -39,10 +47,18 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.LocalLayoutDirection
+import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.CustomAccessibilityAction
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.customActions
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.phucho0237.lucaauth.R
@@ -50,6 +66,76 @@ import kotlinx.coroutines.launch
 
 /** Seconds left at which the countdown switches to the attention color. */
 private const val ATTENTION_SECONDS = 5
+
+/** From this font scale on, the code moves under the names so nothing gets squeezed or clipped. */
+private const val STACKED_FONT_SCALE = 1.5f
+
+private val FAB_CLEARANCE = 88.dp
+private val ROW_MIN_HEIGHT = 72.dp
+private val RING_SIZE = 28.dp
+
+/** Test tags for the parts of the list that tests need to reach. */
+internal object AccountListTags {
+    fun row(id: String) = "account-row-$id"
+    const val MENU_COPY = "account-menu-copy"
+    const val MENU_NEXT_CODE = "account-menu-next-code"
+    const val MENU_DELETE = "account-menu-delete"
+}
+
+/**
+ * Something the user can do with an account row. Each action is offered in the long-press
+ * menu and as a TalkBack custom action; to add one (edit, show QR, pin), add a value here,
+ * list it in [rowActions] and handle it in [AccountListScreen].
+ *
+ * @property label menu item text.
+ * @property labelForAccount accessibility label that names the account (one `%1$s`).
+ */
+private enum class RowAction(
+    @StringRes val label: Int,
+    @StringRes val labelForAccount: Int,
+    @DrawableRes val icon: Int,
+    val tag: String,
+) {
+    COPY_CODE(
+        R.string.action_copy_code,
+        R.string.action_copy_code_for,
+        R.drawable.ic_content_copy,
+        AccountListTags.MENU_COPY,
+    ),
+    NEXT_CODE(
+        R.string.account_next_code,
+        R.string.action_next_code_for,
+        R.drawable.ic_refresh,
+        AccountListTags.MENU_NEXT_CODE,
+    ),
+    DELETE(
+        R.string.account_delete,
+        R.string.action_delete_for,
+        R.drawable.ic_delete,
+        AccountListTags.MENU_DELETE,
+    ),
+}
+
+/** The code the row can copy, or `null` if there is none (unavailable, or HOTP before the first code). */
+private fun AccountItem.copyableCode(): String? = when (this) {
+    is AccountItem.TotpItem -> code
+    is AccountItem.HotpItem -> code
+    is AccountItem.UnavailableItem -> null
+}
+
+private fun AccountItem.rowActions(): List<RowAction> = when (this) {
+    is AccountItem.TotpItem -> listOf(RowAction.COPY_CODE, RowAction.DELETE)
+    is AccountItem.HotpItem -> listOfNotNull(
+        RowAction.COPY_CODE.takeIf { code != null },
+        RowAction.NEXT_CODE,
+        RowAction.DELETE,
+    )
+    is AccountItem.UnavailableItem -> listOf(RowAction.DELETE)
+}
+
+/** "Issuer (name)", or just the name when there is no issuer. */
+private fun AccountItem.displayName(): String =
+    if (issuer.isEmpty()) accountName else "$issuer ($accountName)"
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -80,13 +166,29 @@ fun AccountListScreen(
         }
     }
 
+    val performAction: (AccountItem, RowAction) -> Unit = { item, action ->
+        when (action) {
+            RowAction.COPY_CODE -> item.copyableCode()?.let { code ->
+                onCopyCode(code)
+                scope.launch {
+                    snackbarHostState.currentSnackbarData?.dismiss()
+                    snackbarHostState.showSnackbar(copiedMessage)
+                }
+            }
+            RowAction.NEXT_CODE -> onNextHotpCode(item.id)
+            RowAction.DELETE -> pendingDeleteId = item.id
+        }
+    }
+
     Scaffold(
         modifier = modifier,
         topBar = { TopAppBar(title = { Text(stringResource(R.string.accounts_title)) }) },
         floatingActionButton = {
-            ExtendedFloatingActionButton(onClick = onAddClick) {
-                Text(stringResource(R.string.accounts_add))
-            }
+            ExtendedFloatingActionButton(
+                onClick = onAddClick,
+                icon = { Icon(painterResource(R.drawable.ic_add), contentDescription = null) },
+                text = { Text(stringResource(R.string.accounts_add)) },
+            )
         },
         snackbarHost = { SnackbarHost(snackbarHostState) },
     ) { innerPadding ->
@@ -114,7 +216,7 @@ fun AccountListScreen(
                         end = innerPadding.calculateEndPadding(layoutDirection) + 16.dp,
                         bottom = innerPadding.calculateBottomPadding() + FAB_CLEARANCE,
                     ),
-                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
                     if (state.loadFailed) {
                         item(key = "load-failed") {
@@ -126,18 +228,7 @@ fun AccountListScreen(
                         }
                     }
                     items(state.accounts, key = { it.id }) { item ->
-                        AccountCard(
-                            item = item,
-                            onCopy = { code ->
-                                onCopyCode(code)
-                                scope.launch {
-                                    snackbarHostState.currentSnackbarData?.dismiss()
-                                    snackbarHostState.showSnackbar(copiedMessage)
-                                }
-                            },
-                            onNextHotpCode = { onNextHotpCode(item.id) },
-                            onDelete = { pendingDeleteId = item.id },
-                        )
+                        AccountRow(item = item, onAction = { performAction(item, it) })
                     }
                 }
             }
@@ -156,8 +247,6 @@ fun AccountListScreen(
         )
     }
 }
-
-private val FAB_CLEARANCE = 88.dp
 
 @Composable
 private fun LoadingState(modifier: Modifier = Modifier) {
@@ -189,87 +278,167 @@ private fun MessageState(title: String, body: String, modifier: Modifier = Modif
     }
 }
 
+/**
+ * One compact account row. Tap copies the code (for rows without a code it opens the menu),
+ * long-press opens the options menu, and the same actions are TalkBack custom actions. The
+ * HOTP "next code" icon button sits beside the clickable area, not inside it, so the two
+ * never merge into one accessibility node.
+ */
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun AccountCard(
-    item: AccountItem,
-    onCopy: (String) -> Unit,
-    onNextHotpCode: () -> Unit,
-    onDelete: () -> Unit,
-) {
-    val code = when (item) {
-        is AccountItem.TotpItem -> item.code
-        is AccountItem.HotpItem -> item.code
-        is AccountItem.UnavailableItem -> null
+private fun AccountRow(item: AccountItem, onAction: (RowAction) -> Unit) {
+    val haptics = LocalHapticFeedback.current
+    var menuOpen by remember { mutableStateOf(false) }
+    val name = item.displayName()
+    val actions = item.rowActions()
+    val hasCode = item.copyableCode() != null
+    val customActions = actions.map { action ->
+        CustomAccessibilityAction(stringResource(action.labelForAccount, name)) {
+            onAction(action)
+            true
+        }
     }
-    val content: @Composable () -> Unit = {
-        Column(Modifier.fillMaxWidth().padding(16.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Column(Modifier.weight(1f)) {
-                    if (item.issuer.isNotEmpty()) {
-                        Text(item.issuer, style = MaterialTheme.typography.titleMedium)
-                    }
-                    Text(
-                        text = item.accountName,
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
+    val showOptionsLabel = stringResource(R.string.action_show_options)
+    val tapLabel = if (hasCode) stringResource(R.string.action_copy_code) else showOptionsLabel
+
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = MaterialTheme.shapes.large,
+        color = MaterialTheme.colorScheme.surfaceContainer,
+    ) {
+        Row(Modifier.heightIn(min = ROW_MIN_HEIGHT), verticalAlignment = Alignment.CenterVertically) {
+            Box(Modifier.weight(1f)) {
+                Box(
+                    Modifier
+                        .fillMaxWidth()
+                        .testTag(AccountListTags.row(item.id))
+                        .combinedClickable(
+                            onClickLabel = tapLabel,
+                            onClick = { if (hasCode) onAction(RowAction.COPY_CODE) else menuOpen = true },
+                            onLongClickLabel = showOptionsLabel,
+                            onLongClick = {
+                                haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                                menuOpen = true
+                            },
+                        )
+                        .semantics { this.customActions = customActions }
+                        .padding(
+                            start = 16.dp,
+                            top = 12.dp,
+                            bottom = 12.dp,
+                            end = if (item is AccountItem.HotpItem) 4.dp else 16.dp,
+                        ),
+                ) {
+                    RowContent(item)
                 }
-                if (item is AccountItem.TotpItem) {
-                    CountdownRing(item.secondsRemaining, item.period)
+                DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+                    actions.forEach { action ->
+                        DropdownMenuItem(
+                            text = { Text(stringResource(action.label)) },
+                            leadingIcon = { Icon(painterResource(action.icon), contentDescription = null) },
+                            onClick = {
+                                menuOpen = false
+                                onAction(action)
+                            },
+                            modifier = Modifier.testTag(action.tag),
+                        )
+                    }
                 }
             }
-            Spacer(Modifier.height(8.dp))
-            when (item) {
-                is AccountItem.TotpItem -> Code(item.code)
-                is AccountItem.HotpItem -> if (item.code != null) {
-                    Code(item.code)
-                } else {
-                    Text(
-                        text = stringResource(R.string.account_hotp_no_code),
-                        style = MaterialTheme.typography.bodyMedium,
+            if (item is AccountItem.HotpItem) {
+                IconButton(onClick = { onAction(RowAction.NEXT_CODE) }) {
+                    Icon(
+                        painter = painterResource(R.drawable.ic_refresh),
+                        contentDescription = stringResource(R.string.action_next_code_for, name),
                     )
-                }
-                is AccountItem.UnavailableItem -> {
-                    Text(
-                        text = stringResource(R.string.account_unavailable_title),
-                        style = MaterialTheme.typography.titleMedium,
-                        color = MaterialTheme.colorScheme.error,
-                    )
-                    Text(
-                        text = stringResource(R.string.account_unavailable_body),
-                        style = MaterialTheme.typography.bodyMedium,
-                    )
-                }
-            }
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-                if (item is AccountItem.HotpItem) {
-                    TextButton(onClick = onNextHotpCode) {
-                        Text(stringResource(R.string.account_next_code))
-                    }
-                    Spacer(Modifier.width(8.dp))
-                }
-                TextButton(onClick = onDelete) {
-                    Text(stringResource(R.string.account_delete))
                 }
             }
         }
     }
+}
 
-    if (code != null) {
-        Card(onClick = { onCopy(code) }, modifier = Modifier.fillMaxWidth()) { content() }
+@Composable
+private fun RowContent(item: AccountItem) {
+    val stacked = LocalDensity.current.fontScale >= STACKED_FONT_SCALE
+    if (stacked) {
+        Column {
+            Names(item, Modifier.fillMaxWidth())
+            if (item !is AccountItem.UnavailableItem) {
+                Spacer(Modifier.height(4.dp))
+                CodeAndCountdown(item)
+            }
+        }
     } else {
-        Card(
-            modifier = Modifier.fillMaxWidth(),
-            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
-        ) { content() }
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Names(item, Modifier.weight(1f))
+            if (item !is AccountItem.UnavailableItem) {
+                Spacer(Modifier.width(12.dp))
+                CodeAndCountdown(item)
+            }
+        }
     }
 }
+
+@Composable
+private fun Names(item: AccountItem, modifier: Modifier = Modifier) {
+    Column(modifier) {
+        if (item.issuer.isNotEmpty()) {
+            Text(item.issuer, style = MaterialTheme.typography.titleMedium)
+        }
+        Text(
+            text = item.accountName,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        if (item is AccountItem.UnavailableItem) {
+            Spacer(Modifier.height(4.dp))
+            Text(
+                text = stringResource(R.string.account_unavailable_title),
+                style = MaterialTheme.typography.labelLarge,
+                color = MaterialTheme.colorScheme.error,
+            )
+            Text(
+                text = stringResource(R.string.account_unavailable_body),
+                style = MaterialTheme.typography.bodySmall,
+            )
+        }
+    }
+}
+
+@Composable
+private fun CodeAndCountdown(item: AccountItem) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        when (item) {
+            is AccountItem.TotpItem -> {
+                Code(item.code)
+                Spacer(Modifier.width(12.dp))
+                CountdownRing(item.secondsRemaining, item.period)
+            }
+            is AccountItem.HotpItem -> if (item.code != null) {
+                Code(item.code)
+            } else {
+                val description = stringResource(R.string.account_hotp_no_code_description)
+                Text(
+                    text = stringResource(R.string.account_hotp_no_code_placeholder),
+                    style = codeStyle(),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.semantics { contentDescription = description },
+                )
+            }
+            is AccountItem.UnavailableItem -> Unit
+        }
+    }
+}
+
+/** Monospace so the width of the code does not jump from one code to the next. */
+@Composable
+private fun codeStyle() = MaterialTheme.typography.titleLarge.copy(fontFamily = FontFamily.Monospace)
 
 @Composable
 private fun Code(code: String) {
     Text(
         text = formatCode(code),
-        style = MaterialTheme.typography.headlineMedium,
+        style = codeStyle(),
         color = MaterialTheme.colorScheme.primary,
     )
 }
@@ -282,27 +451,21 @@ private fun CountdownRing(secondsRemaining: Int, period: Int) {
         MaterialTheme.colorScheme.primary
     }
     val description = stringResource(R.string.account_seconds_remaining, secondsRemaining)
-    Box(
-        modifier = Modifier.size(40.dp).semantics(mergeDescendants = true) { contentDescription = description },
-        contentAlignment = Alignment.Center,
-    ) {
-        CircularProgressIndicator(
-            progress = { secondsRemaining.toFloat() / period },
-            modifier = Modifier.fillMaxSize(),
-            color = color,
-            trackColor = MaterialTheme.colorScheme.surfaceVariant,
-        )
-        Text(text = secondsRemaining.toString(), style = MaterialTheme.typography.labelMedium, color = color)
-    }
+    CircularProgressIndicator(
+        progress = { secondsRemaining.toFloat() / period },
+        modifier = Modifier.size(RING_SIZE).semantics { contentDescription = description },
+        color = color,
+        strokeWidth = 3.dp,
+        trackColor = MaterialTheme.colorScheme.surfaceVariant,
+    )
 }
 
 @Composable
 private fun DeleteDialog(item: AccountItem, onConfirm: () -> Unit, onDismiss: () -> Unit) {
-    val name = if (item.issuer.isEmpty()) item.accountName else "${item.issuer} (${item.accountName})"
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text(stringResource(R.string.delete_dialog_title)) },
-        text = { Text(stringResource(R.string.delete_dialog_body, name)) },
+        text = { Text(stringResource(R.string.delete_dialog_body, item.displayName())) },
         confirmButton = {
             TextButton(onClick = onConfirm) { Text(stringResource(R.string.delete_dialog_confirm)) }
         },
