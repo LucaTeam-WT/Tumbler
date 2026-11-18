@@ -3,7 +3,7 @@
 
     <string name="accounts_title">Tài khoản</string>
     <string name="accounts_empty_title">Chưa có tài khoản nào</string>
-    <string name="accounts_empty_body">Thêm tài khoản đầu tiên từ một liên kết otpauth://.</string>
+    <string name="accounts_empty_body">Nhấn + để thêm tài khoản đầu tiên từ một liên kết otpauth://.</string>
     <string name="accounts_add">Thêm tài khoản</string>
     <string name="accounts_loading">Đang tải tài khoản</string>
     <string name="accounts_load_failed_title">Không thể tải tài khoản</string>

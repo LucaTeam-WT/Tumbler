@@ -41,7 +41,7 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.ExtendedFloatingActionButton
+import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -108,6 +108,7 @@ internal object AccountListTags {
     const val MENU_NEXT_CODE = "account-menu-next-code"
     const val MENU_DELETE = "account-menu-delete"
     const val NEXT_CODE = "account-next-code"
+    const val ADD_BUTTON = "account-add-button"
 }
 
 /**
@@ -212,18 +213,17 @@ fun AccountListScreen(
         modifier = modifier,
         topBar = { TopAppBar(title = { Text(stringResource(R.string.accounts_title)) }) },
         floatingActionButton = {
-            ExtendedFloatingActionButton(
+            FloatingActionButton(
                 onClick = onAddClick,
-                // The extended FAB hides its label from accessibility and takes the button's name
-                // from the icon, so the icon carries the description (not null).
-                icon = {
-                    Icon(
-                        painter = painterResource(R.drawable.ic_add),
-                        contentDescription = stringResource(R.string.accounts_add),
-                    )
-                },
-                text = { Text(stringResource(R.string.accounts_add)) },
-            )
+                modifier = Modifier.testTag(AccountListTags.ADD_BUTTON),
+            ) {
+                // Icon-only button: it gets its accessible name only from the icon, so the icon
+                // carries the description (null would make TalkBack announce an unnamed button).
+                Icon(
+                    painter = painterResource(R.drawable.ic_add),
+                    contentDescription = stringResource(R.string.accounts_add),
+                )
+            }
         },
         snackbarHost = { SnackbarHost(snackbarHostState) },
     ) { innerPadding ->
