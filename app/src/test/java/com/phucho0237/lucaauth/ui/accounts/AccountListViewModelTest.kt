@@ -5,6 +5,8 @@ import com.phucho0237.lucaauth.domain.crypto.KeyUnavailableException
 import com.phucho0237.lucaauth.domain.crypto.SecretCipherException
 import com.phucho0237.lucaauth.domain.model.OtpAccount
 import com.phucho0237.lucaauth.domain.model.OtpType
+import com.phucho0237.lucaauth.domain.otp.OtpAlgorithm
+import com.phucho0237.lucaauth.domain.otp.Totp
 import com.phucho0237.lucaauth.ui.accounts.AccountItem.HotpItem
 import com.phucho0237.lucaauth.ui.accounts.AccountItem.TotpItem
 import com.phucho0237.lucaauth.ui.accounts.AccountItem.UnavailableItem
@@ -23,6 +25,7 @@ import kotlinx.coroutines.test.setMain
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
@@ -326,6 +329,119 @@ class AccountListViewModelTest {
         repository.updateCounterFailure = null
         viewModel.nextHotpCode(id)
         assertEquals("755224", (viewModel.items().single() as HotpItem).code)
+    }
+
+    /** Start of the 30 s step that ends just before RFC 6238 vector time 1111111110. */
+    private val stepStart = 1_111_111_080L
+
+    @Test
+    fun `next code is null outside the window and set inside it`() = runTest {
+        repository.add(totpAccount())
+        val viewModel = createViewModel()
+
+        for (remaining in listOf(30, 15, 11)) {
+            now = stepStart + 30 - remaining
+            advanceTimeBy(1_000)
+            runCurrent()
+            assertNull("remaining=$remaining", (viewModel.items().single() as TotpItem).nextCode)
+        }
+        for (remaining in listOf(10, 5, 1)) {
+            now = stepStart + 30 - remaining
+            advanceTimeBy(1_000)
+            runCurrent()
+            val item = viewModel.items().single() as TotpItem
+            assertEquals(remaining, item.secondsRemaining)
+            assertNotNull("remaining=$remaining", item.nextCode)
+        }
+    }
+
+    @Test
+    fun `next code is the TOTP of the next step`() = runTest {
+        repository.add(totpAccount())
+        now = stepStart + 29 // = 1111111109, 1 second left
+        val item = createViewModel().items().single() as TotpItem
+
+        assertEquals("07081804", item.code)
+        assertEquals("14050471", item.nextCode) // RFC 6238 vector for time 1111111110
+        assertEquals(Totp(rfcSecret, OtpAlgorithm.SHA1, 8, 30).generate(now + 30), item.nextCode)
+    }
+
+    @Test
+    fun `at the step boundary the old next code is the new current code`() = runTest {
+        repository.add(totpAccount())
+        now = stepStart + 29
+        val viewModel = createViewModel()
+        val before = viewModel.items().single() as TotpItem
+        assertNotNull(before.nextCode)
+
+        now += 1
+        advanceTimeBy(1_000)
+        runCurrent()
+
+        val after = viewModel.items().single() as TotpItem
+        assertEquals(before.nextCode, after.code)
+        assertNull(after.nextCode)
+    }
+
+    @Test
+    fun `short period uses half the period as the window`() = runTest {
+        repository.add(totpAccount().copy(period = 10))
+        val viewModel = createViewModel()
+
+        // Period 10: window is 5 seconds, not 10.
+        now = 1_000L + 4 // remaining = 10 - (1004 mod 10) = 6
+        advanceTimeBy(1_000)
+        runCurrent()
+        val outside = viewModel.items().single() as TotpItem
+        assertEquals(6, outside.secondsRemaining)
+        assertNull(outside.nextCode)
+
+        now = 1_000L + 5 // remaining 5
+        advanceTimeBy(1_000)
+        runCurrent()
+        val inside = viewModel.items().single() as TotpItem
+        assertEquals(5, inside.secondsRemaining)
+        assertEquals(Totp(rfcSecret, OtpAlgorithm.SHA1, 8, 10).generate(now + 10), inside.nextCode)
+    }
+
+    @Test
+    fun `window rule`() {
+        assertEquals(10, nextCodeWindowSeconds(30))
+        assertEquals(10, nextCodeWindowSeconds(21))
+        assertEquals(10, nextCodeWindowSeconds(20))
+        assertEquals(5, nextCodeWindowSeconds(10))
+        assertEquals(NEXT_CODE_SECONDS, nextCodeWindowSeconds(60))
+    }
+
+    @Test
+    fun `hotp and unavailable items are unaffected by the window`() = runTest {
+        val hotpId = repository.add(hotpAccount())
+        val broken = repository.add(totpAccount(name = "broken"))
+        repository.getAccountFailures[broken] = KeyUnavailableException()
+        now = stepStart + 29
+        val viewModel = createViewModel()
+        viewModel.nextHotpCode(hotpId)
+
+        val items = viewModel.items()
+
+        assertEquals(HotpItem(hotpId, "Example", "bob", "755224"), items[0])
+        assertEquals(UnavailableItem(broken, "Example", "broken"), items[1])
+    }
+
+    @Test
+    fun `next code is not stored`() = runTest {
+        repository.add(totpAccount())
+        val stored = repository.storedAccounts
+        now = stepStart + 29
+        val viewModel = createViewModel()
+        assertNotNull((viewModel.items().single() as TotpItem).nextCode)
+
+        assertEquals(stored, repository.storedAccounts)
+        assertFalse(
+            "AccountItem must not be saved in instance state",
+            java.io.Serializable::class.java.isAssignableFrom(TotpItem::class.java) ||
+                android.os.Parcelable::class.java.isAssignableFrom(TotpItem::class.java),
+        )
     }
 
     @Test

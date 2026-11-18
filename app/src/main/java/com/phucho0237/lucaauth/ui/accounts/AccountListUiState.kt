@@ -18,7 +18,11 @@ sealed interface AccountItem {
     val issuer: String
     val accountName: String
 
-    /** A time-based account; [secondsRemaining] is in `1..period`. */
+    /**
+     * A time-based account; [secondsRemaining] is in `1..period`. [nextCode] is the code of
+     * the next time step, set only in the last seconds of the current one (derived on every
+     * tick, never stored); it is display-only and is never copied.
+     */
     data class TotpItem(
         override val id: String,
         override val issuer: String,
@@ -26,6 +30,7 @@ sealed interface AccountItem {
         val code: String,
         val secondsRemaining: Int,
         val period: Int,
+        val nextCode: String? = null,
     ) : AccountItem
 
     /** A counter-based account; [code] is `null` until the user asks for the next code. */

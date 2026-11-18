@@ -47,6 +47,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalHapticFeedback
@@ -55,6 +56,7 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.CustomAccessibilityAction
+import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.customActions
 import androidx.compose.ui.semantics.semantics
@@ -84,6 +86,7 @@ internal object AccountListTags {
     const val MENU_COPY = "account-menu-copy"
     const val MENU_NEXT_CODE = "account-menu-next-code"
     const val MENU_DELETE = "account-menu-delete"
+    const val NEXT_CODE = "account-next-code"
 }
 
 /**
@@ -431,7 +434,10 @@ private fun CodeAndCountdown(item: AccountItem) {
     Row(verticalAlignment = Alignment.CenterVertically) {
         when (item) {
             is AccountItem.TotpItem -> {
-                Code(item.code)
+                Column {
+                    Code(item.code)
+                    NextCode(item)
+                }
                 Spacer(Modifier.width(12.dp))
                 CountdownRing(item.secondsRemaining, item.period)
             }
@@ -462,6 +468,38 @@ private fun Code(code: String) {
         style = codeStyle(),
         color = MaterialTheme.colorScheme.primary,
     )
+}
+
+/**
+ * The code that replaces the current one, shown under it in the last seconds of a step. It is
+ * display-only: tapping the row copies the current code. Outside the window the line is still
+ * laid out, invisible and without semantics, using the current code's digits (same width,
+ * monospace) so the row keeps its size when the next code appears or disappears.
+ */
+@Composable
+private fun NextCode(item: AccountItem.TotpItem) {
+    val style = MaterialTheme.typography.bodyMedium.copy(fontFamily = FontFamily.Monospace)
+    val nextCode = item.nextCode
+    if (nextCode == null) {
+        Text(
+            text = stringResource(R.string.account_next_totp_code, formatCode(item.code)),
+            style = style,
+            maxLines = 1,
+            modifier = Modifier.alpha(0f).clearAndSetSemantics { },
+        )
+    } else {
+        val formatted = formatCode(nextCode)
+        val description = stringResource(R.string.account_next_totp_code_description, formatted)
+        Text(
+            text = stringResource(R.string.account_next_totp_code, formatted),
+            style = style,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 1,
+            modifier = Modifier
+                .testTag(AccountListTags.NEXT_CODE)
+                .semantics { contentDescription = description },
+        )
+    }
 }
 
 @Composable

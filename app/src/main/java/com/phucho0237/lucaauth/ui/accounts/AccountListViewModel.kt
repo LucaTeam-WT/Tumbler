@@ -29,6 +29,17 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 
+/** Seconds before a TOTP code expires from which the code for the next step is shown as well. */
+internal const val NEXT_CODE_SECONDS = 10
+
+/**
+ * How many last seconds of a step show the next code: [NEXT_CODE_SECONDS], or half the
+ * [period] for periods of 20 seconds or less, so a short period does not show it for most
+ * of its life.
+ */
+internal fun nextCodeWindowSeconds(period: Int): Int =
+    if (period <= 2 * NEXT_CODE_SECONDS) period / 2 else NEXT_CODE_SECONDS
+
 /**
  * Holds the decrypted accounts in memory only (never in saved state, never logged) and
  * turns them into [AccountListUiState], recomputed every second.
@@ -192,13 +203,20 @@ class AccountListViewModel(
         return when (this) {
             is Entry.Unavailable -> AccountItem.UnavailableItem(id, summary.issuer, summary.accountName)
             is Entry.Ready -> if (totp != null) {
+                val secondsRemaining = totp.secondsRemaining(now)
                 AccountItem.TotpItem(
                     id = id,
                     issuer = summary.issuer,
                     accountName = summary.accountName,
                     code = totp.generate(now),
-                    secondsRemaining = totp.secondsRemaining(now),
+                    secondsRemaining = secondsRemaining,
                     period = totp.period,
+                    // Derived from the same `now` as the current code and never stored.
+                    nextCode = if (secondsRemaining <= nextCodeWindowSeconds(totp.period)) {
+                        totp.generate(now + totp.period)
+                    } else {
+                        null
+                    },
                 )
             } else {
                 AccountItem.HotpItem(id, summary.issuer, summary.accountName, codes[id])
