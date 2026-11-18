@@ -23,6 +23,7 @@ Run all three before declaring a task done.
 - Security rules in CONTRIBUTING.md are hard constraints: never log secrets/OTP codes, no plaintext secret storage, no `INTERNET` permission, no telemetry.
 - OTP logic must have unit tests using RFC 4226 / RFC 6238 test vectors.
 - UI: Material 3 components and theme tokens only; no hard-coded colors; support dark mode and dynamic color.
+- Icons: do not add `material-icons-core` or `-extended`; add a small vector drawable `res/drawable/ic_*.xml` (Material Icons, Apache-2.0, `fillColor` `@android:color/white`, tinted by `Icon`). Decorative icons use `contentDescription = null`; icon-only buttons need a localized one that names the account where there are several.
 - User-facing strings go in `res/values/strings.xml` (with Vietnamese in `values-vi/`).
 - Prefer the Gradle version catalog (`gradle/libs.versions.toml`) for dependencies.
 - Do not commit generated files, `local.properties`, keystores, or IDE settings.
@@ -42,7 +43,7 @@ com.phucho0237.lucaauth
 │   ├── otp/       # Base32, Hotp, Totp, OtpAuthUri parser
 │   └── repository/ # AccountRepository interface
 ├── ui/        # Compose screens, components, theme
-│   ├── accounts/  # accounts list + add screens, AccountListViewModel, UI state, clipboard copy
+│   ├── accounts/  # compact-row accounts list (long-press menu), add screen, AccountListViewModel, UI state, clipboard copy
 │   ├── theme/     # Material 3 theme (dynamic color, dark mode)
 │   └── LucaAuthApp.kt  # root composable: switches list <-> add screen (no navigation library)
 ├── di/        # AppContainer (manual DI, lazy; Hilt is not used yet)
