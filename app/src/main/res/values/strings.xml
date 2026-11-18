@@ -3,7 +3,7 @@
 
     <string name="accounts_title">Accounts</string>
     <string name="accounts_empty_title">No accounts yet</string>
-    <string name="accounts_empty_body">Add your first account from an otpauth:// link.</string>
+    <string name="accounts_empty_body">Tap + to add your first account from an otpauth:// link.</string>
     <string name="accounts_add">Add account</string>
     <string name="accounts_loading">Loading accounts</string>
     <string name="accounts_load_failed_title">Accounts could not be loaded</string>

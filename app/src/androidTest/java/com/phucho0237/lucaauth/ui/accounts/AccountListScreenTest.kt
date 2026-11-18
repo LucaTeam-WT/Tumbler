@@ -10,6 +10,7 @@ import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.SemanticsMatcher
 import androidx.compose.ui.test.SemanticsNodeInteraction
 import androidx.compose.ui.test.assert
+import androidx.compose.ui.test.assertHasClickAction
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertTextEquals
 import androidx.compose.ui.test.hasAnyAncestor
@@ -103,13 +104,8 @@ class AccountListScreenTest {
         hasText(string(textRes)) and hasClickAction() and hasAnyAncestor(isDialog()),
     )
 
-    /**
-     * The extended FAB removes its label from the semantics tree and takes its accessible name
-     * from the icon's content description, so it is found by that description and click action.
-     */
-    private fun addButton() = composeRule.onNode(
-        hasContentDescription(string(R.string.accounts_add)) and hasClickAction(),
-    )
+    /** The icon-only add button, found by its test tag. */
+    private fun addButton() = composeRule.onNodeWithTag(AccountListTags.ADD_BUTTON)
 
     private fun SemanticsNodeInteraction.customActionLabels(): List<String> =
         fetchSemanticsNode().config[SemanticsActions.CustomActions].map { it.label }
@@ -142,6 +138,23 @@ class AccountListScreenTest {
         addButton().performClick()
 
         assertEquals(1, addClicks)
+    }
+
+    @Test
+    fun addButtonIsIconOnlyAndNamedByItsContentDescription() {
+        show(AccountListUiState(isLoading = false))
+
+        addButton().assertHasClickAction()
+        addButton().assert(
+            SemanticsMatcher.expectValue(
+                SemanticsProperties.ContentDescription,
+                listOf(string(R.string.accounts_add)),
+            ),
+        )
+        composeRule.onNode(hasContentDescription(string(R.string.accounts_add)) and hasClickAction())
+            .assertIsDisplayed()
+        // No visible text label: the "Add account" string is only the content description.
+        composeRule.onNodeWithText(string(R.string.accounts_add)).assertDoesNotExist()
     }
 
     @Test
