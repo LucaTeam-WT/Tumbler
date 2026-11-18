@@ -22,10 +22,13 @@ android {
 
     buildTypes {
         release {
-            optimization {
-                enable = true
-                packageScope = setOf("androidx.**", "kotlin.**", "kotlinx.**")
-            }
+            isMinifyEnabled = true
+            isShrinkResources = true
+            isDebuggable = false
+            proguardFiles(
+                getDefaultProguardFile("proguard-android-optimize.txt"),
+                "proguard-rules.pro",
+            )
         }
     }
     compileOptions {
@@ -63,6 +66,16 @@ dependencies {
     androidTestImplementation(libs.androidx.compose.ui.test.junit4)
     androidTestImplementation(libs.androidx.espresso.core)
     androidTestImplementation(libs.androidx.junit)
+    androidTestImplementation(libs.androidx.room.testing)
+    // room-testing (androidTest) brings kotlinx-serialization-json 1.8.1, which needs
+    // serialization-core 1.8.1 at runtime (1.7.3 throws AbstractMethodError). AGP pins the
+    // androidTest classpath to the debug app's versions, so raise it for the debug variant
+    // only; the release classpath is untouched. Remove once the AndroidX libraries resolve 1.8.x.
+    constraints {
+        debugImplementation(libs.kotlinx.serialization.bom) { version { strictly(libs.versions.kotlinxSerialization.get()) } }
+        debugImplementation(libs.kotlinx.serialization.core) { version { strictly(libs.versions.kotlinxSerialization.get()) } }
+        debugImplementation(libs.kotlinx.serialization.core.jvm) { version { strictly(libs.versions.kotlinxSerialization.get()) } }
+    }
     debugImplementation(libs.androidx.compose.ui.test.manifest)
     debugImplementation(libs.androidx.compose.ui.tooling)
 }

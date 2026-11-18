@@ -27,6 +27,7 @@ Run all three before declaring a task done.
 - User-facing strings go in `res/values/strings.xml` (with Vietnamese in `values-vi/`).
 - Prefer the Gradle version catalog (`gradle/libs.versions.toml`) for dependencies.
 - Do not commit generated files, `local.properties`, keystores, or IDE settings.
+- SECURITY.md describes only what the code does today. Whenever crypto, storage, Room schema, release build or manifest code changes, re-verify every security-relevant claim in SECURITY.md against the source in the same PR, and move items between "implemented" and "planned" accordingly.
 - Keep README.md in sync with the real state of the code. Any PR that adds, changes or removes a feature, dependency, command or folder updates README.md in the same PR: the Features table (✅ implemented and covered by tests, 🚧 partly done with what is missing, ⬜ not started), tech stack, build commands and doc links when they change. Verify by opening the source files, never from memory or from the plan; never mark something ✅ that is not in the code, and remove outdated claims. Update the "target layout" below when the package structure changes.
 
 ## Architecture (target layout)
