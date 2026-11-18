@@ -4,6 +4,7 @@ import androidx.activity.ComponentActivity
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.SemanticsActions
+import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.SemanticsNodeInteraction
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.hasAnyAncestor
@@ -337,5 +338,67 @@ class AccountListScreenTest {
         composeRule.onNodeWithText("755 224").assertIsDisplayed()
         composeRule.onNodeWithText("bob").assertIsDisplayed()
         composeRule.onNodeWithText(string(R.string.account_unavailable_body)).assertIsDisplayed()
+    }
+
+    private val longIssuer = "An extremely long issuer name that keeps going ".repeat(6).trim()
+    private val longAccountName = "someone.with.a.very.long.account.name.".repeat(6) + "@example.com"
+    private val longTotp = AccountItem.TotpItem(
+        id = "long1",
+        issuer = longIssuer,
+        accountName = longAccountName,
+        code = "654321",
+        secondsRemaining = 7,
+        period = 30,
+    )
+    private val longDisplayName = "$longIssuer ($longAccountName)"
+
+    private fun SemanticsNodeInteraction.mergedTexts(): List<String> =
+        fetchSemanticsNode().config[SemanticsProperties.Text].map { it.text }
+
+    @Test
+    fun veryLongNamesDoNotMakeARowTallerAndKeepTheirFullTextInSemantics() {
+        show(stateOf(totp, longTotp))
+
+        // The row is cut to one line per name, so it is as tall as a row with short names.
+        assertEquals(
+            row(totp).fetchSemanticsNode().size.height,
+            row(longTotp).fetchSemanticsNode().size.height,
+        )
+        // The ellipsis only affects drawing: the full text is still in the row's semantics...
+        val texts = row(longTotp).mergedTexts()
+        assertEquals(true, longIssuer in texts)
+        assertEquals(true, longAccountName in texts)
+        // ... and in the accessibility actions.
+        assertEquals(
+            listOf(
+                string(R.string.action_copy_code_for, longDisplayName),
+                string(R.string.action_delete_for, longDisplayName),
+            ),
+            row(longTotp).customActionLabels(),
+        )
+        // The code and the countdown are still shown.
+        composeRule.onNodeWithText("654 321").assertIsDisplayed()
+        composeRule.onNodeWithContentDescription(string(R.string.account_seconds_remaining, 7)).assertIsDisplayed()
+    }
+
+    @Test
+    fun veryLongNamesStayBoundedAndCompleteAtLargeFontScale() {
+        show(stateOf(longTotp), fontScale = 1.3f)
+
+        assertEquals(true, longIssuer in row(longTotp).mergedTexts())
+        assertEquals(true, longAccountName in row(longTotp).mergedTexts())
+        composeRule.onNodeWithText("654 321").assertIsDisplayed()
+        composeRule.onNodeWithContentDescription(string(R.string.account_seconds_remaining, 7)).assertIsDisplayed()
+    }
+
+    @Test
+    fun deleteConfirmationShowsTheFullLongName() {
+        show(stateOf(longTotp))
+
+        longPress(longTotp)
+        menuItem(AccountListTags.MENU_DELETE).performClick()
+
+        composeRule.onNode(hasText(longDisplayName, substring = true) and hasAnyAncestor(isDialog()))
+            .assertIsDisplayed()
     }
 }

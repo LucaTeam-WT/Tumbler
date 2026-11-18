@@ -60,6 +60,7 @@ import androidx.compose.ui.semantics.customActions
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.phucho0237.lucaauth.R
 import kotlinx.coroutines.launch
@@ -69,6 +70,9 @@ private const val ATTENTION_SECONDS = 5
 
 /** From this font scale on, the code moves under the names so nothing gets squeezed or clipped. */
 private const val STACKED_FONT_SCALE = 1.5f
+
+/** From this font scale on, issuer and account name may use two lines instead of one. */
+private const val LARGE_FONT_SCALE = 1.3f
 
 private val FAB_CLEARANCE = 88.dp
 private val ROW_MIN_HEIGHT = 72.dp
@@ -388,14 +392,24 @@ private fun RowContent(item: AccountItem) {
 
 @Composable
 private fun Names(item: AccountItem, modifier: Modifier = Modifier) {
+    // Long names are cut with an ellipsis so one row cannot grow much taller than the others.
+    // The Text semantics (and the dialog and custom actions) still carry the full text.
+    val nameMaxLines = if (LocalDensity.current.fontScale >= LARGE_FONT_SCALE) 2 else 1
     Column(modifier) {
         if (item.issuer.isNotEmpty()) {
-            Text(item.issuer, style = MaterialTheme.typography.titleMedium)
+            Text(
+                text = item.issuer,
+                style = MaterialTheme.typography.titleMedium,
+                maxLines = nameMaxLines,
+                overflow = TextOverflow.Ellipsis,
+            )
         }
         Text(
             text = item.accountName,
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = nameMaxLines,
+            overflow = TextOverflow.Ellipsis,
         )
         if (item is AccountItem.UnavailableItem) {
             Spacer(Modifier.height(4.dp))
