@@ -1,0 +1,31 @@
+<resources>
+    <string name="app_name">LucaAuth</string>
+
+    <string name="accounts_title">Tài khoản</string>
+    <string name="accounts_empty_title">Chưa có tài khoản nào</string>
+    <string name="accounts_empty_body">Thêm tài khoản đầu tiên từ một liên kết otpauth://.</string>
+    <string name="accounts_add">Thêm tài khoản</string>
+    <string name="accounts_loading">Đang tải tài khoản</string>
+    <string name="accounts_load_failed_title">Không thể tải tài khoản</string>
+    <string name="accounts_load_failed_body">Không thể đọc tài khoản từ bộ nhớ. Hãy khởi động lại ứng dụng và thử lại.</string>
+    <string name="accounts_action_failed">Thao tác không thành công do lỗi lưu trữ. Vui lòng thử lại.</string>
+    <string name="account_code_copied">Đã sao chép mã</string>
+    <string name="account_next_code">Mã tiếp theo</string>
+    <string name="account_hotp_no_code">Nhấn “Mã tiếp theo” để tạo mã.</string>
+    <string name="account_unavailable_title">Không có mã</string>
+    <string name="account_unavailable_body">Không thể giải mã tài khoản này trên thiết bị này nên không thể hiển thị mã. Bạn có thể xóa tài khoản.</string>
+    <string name="account_seconds_remaining">Còn %1$d giây</string>
+    <string name="account_delete">Xóa</string>
+
+    <string name="delete_dialog_title">Xóa tài khoản?</string>
+    <string name="delete_dialog_body">Ứng dụng sẽ không còn hiển thị mã của %1$s. Hãy chắc chắn bạn vẫn có cách khác để đăng nhập.</string>
+    <string name="delete_dialog_confirm">Xóa</string>
+
+    <string name="add_title">Thêm tài khoản</string>
+    <string name="add_link_label">Liên kết otpauth://</string>
+    <string name="add_link_hint">Dán liên kết từ trang thiết lập của dịch vụ.</string>
+    <string name="add_save">Lưu</string>
+    <string name="add_cancel">Hủy</string>
+    <string name="add_error_invalid_link">Đây không phải là liên kết otpauth:// hợp lệ.</string>
+    <string name="add_error_storage">Không thể lưu tài khoản. Vui lòng thử lại.</string>
+</resources>

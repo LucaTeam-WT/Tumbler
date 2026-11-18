@@ -1,3 +1,31 @@
 <resources>
     <string name="app_name">LucaAuth</string>
+
+    <string name="accounts_title">Accounts</string>
+    <string name="accounts_empty_title">No accounts yet</string>
+    <string name="accounts_empty_body">Add your first account from an otpauth:// link.</string>
+    <string name="accounts_add">Add account</string>
+    <string name="accounts_loading">Loading accounts</string>
+    <string name="accounts_load_failed_title">Accounts could not be loaded</string>
+    <string name="accounts_load_failed_body">The accounts could not be read from storage. Restart the app and try again.</string>
+    <string name="accounts_action_failed">That did not work: storage failed. Please try again.</string>
+    <string name="account_code_copied">Code copied</string>
+    <string name="account_next_code">Next code</string>
+    <string name="account_hotp_no_code">Tap “Next code” to generate one.</string>
+    <string name="account_unavailable_title">Code unavailable</string>
+    <string name="account_unavailable_body">This account cannot be decrypted on this device, so no code can be shown. You can delete it.</string>
+    <string name="account_seconds_remaining">%1$d seconds left</string>
+    <string name="account_delete">Delete</string>
+
+    <string name="delete_dialog_title">Delete account?</string>
+    <string name="delete_dialog_body">Codes for %1$s will no longer be available in this app. Make sure you can still sign in some other way.</string>
+    <string name="delete_dialog_confirm">Delete</string>
+
+    <string name="add_title">Add account</string>
+    <string name="add_link_label">otpauth:// link</string>
+    <string name="add_link_hint">Paste the link from the setup page of the service.</string>
+    <string name="add_save">Save</string>
+    <string name="add_cancel">Cancel</string>
+    <string name="add_error_invalid_link">This is not a valid otpauth:// link.</string>
+    <string name="add_error_storage">The account could not be saved. Please try again.</string>
 </resources>
