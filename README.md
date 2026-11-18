@@ -29,10 +29,11 @@ Status legend: ✅ implemented and covered by tests · 🚧 partly done · ⬜ n
 Current (in the build files today):
 
 - Kotlin, Jetpack Compose (BOM), Material 3
-- AndroidX `core-ktx`, `activity-compose`, `lifecycle-runtime-ktx`
+- AndroidX `core-ktx`, `activity-compose`, `lifecycle-runtime-ktx`, `lifecycle-viewmodel-compose`
+- Manual dependency injection: `AppContainer`, created lazily by `LucaAuthApplication`, so the database and Keystore are not opened at app start (no Hilt yet). `lifecycle-viewmodel-compose` is declared but not used yet.
 - Room 2.8.5 (`room-runtime`, `room-ktx`, `room-compiler` via KSP 2.3.14). Schemas are exported to `app/schemas` and committed.
 - Kotlin coroutines `Flow` (transitive through AndroidX, not declared directly)
-- Tests: JUnit 4 (unit); AndroidX Test, Espresso, Compose UI test (instrumented)
+- Tests: JUnit 4 and `kotlinx-coroutines-test` (unit); AndroidX Test, Espresso, Compose UI test (instrumented)
 - minSdk 26, targetSdk / compileSdk 37, Java 11
 
 Planned (not added yet):
