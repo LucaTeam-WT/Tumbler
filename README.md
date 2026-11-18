@@ -25,6 +25,7 @@ Status legend: ✅ implemented and covered by tests · 🚧 partly done · ⬜ n
 | Backup | Encrypted export / import (AES-256-GCM + password KDF) | ⬜ |
 | Backup | Import from Google Authenticator (`otpauth-migration://`) | ⬜ |
 | UX | Material 3, dynamic color, dark mode, search, labels | 🚧 accounts list and add screens with icons, dynamic color and dark mode; no search or labels |
+| UX | Motion polish: rows animate on add, delete and reorder (`animateItem`, 200–300 ms); the accounts list and the add screen switch with a short horizontal slide and fade; the countdown ring sweeps continuously within each second and fades to the error color in the last 5 s; the empty state and the list crossfade. All follow the system animation scale (off means no motion) | 🚧 ring snap/sweep logic covered by JVM tests; the Compose UI tests for row removal and the empty/list switch are written and compile but have not been run on a device yet; the screen transition has no automated test |
 
 ## Tech stack
 

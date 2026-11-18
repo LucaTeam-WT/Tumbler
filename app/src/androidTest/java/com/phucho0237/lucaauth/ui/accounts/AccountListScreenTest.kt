@@ -556,6 +556,94 @@ class AccountListScreenTest {
         assertEquals(true, next.top >= code.bottom - 1f)
     }
 
+    /** Shows a list whose accounts the test can change afterwards; time only moves when the test says so. */
+    private fun showChangingList(vararg first: AccountItem): MutableState<List<AccountItem>> {
+        val accounts = mutableStateOf(first.toList())
+        showState { AccountListUiState(isLoading = false, accounts = accounts.value) }
+        return accounts
+    }
+
+    @Test
+    fun deletedRowIsRemovedFromTheTreeAfterTheAnimation() {
+        composeRule.mainClock.autoAdvance = false
+        val accounts = showChangingList(totp, hotp)
+        row(totp).assertExists()
+        row(hotp).assertExists()
+
+        accounts.value = listOf(hotp)
+        composeRule.mainClock.advanceTimeBy(1_000)
+
+        row(totp).assertDoesNotExist()
+        row(hotp).assertExists()
+        composeRule.onNodeWithText("alice").assertDoesNotExist()
+    }
+
+    @Test
+    fun rowsStayFindableWithOneNodeEachAfterAnAddAndADelete() {
+        composeRule.mainClock.autoAdvance = false
+        val accounts = showChangingList(totp)
+
+        accounts.value = listOf(totp, hotp)
+        composeRule.mainClock.advanceTimeBy(1_000)
+        row(totp).assertExists()
+        row(hotp).assertExists()
+
+        accounts.value = listOf(hotp)
+        composeRule.mainClock.advanceTimeBy(1_000)
+        row(totp).assertDoesNotExist()
+        row(hotp).assertExists()
+    }
+
+    @Test
+    fun switchingFromEmptyToTheListShowsTheListAndDropsTheEmptyState() {
+        composeRule.mainClock.autoAdvance = false
+        val accounts = showChangingList()
+        composeRule.onNodeWithText(string(R.string.accounts_empty_title)).assertExists()
+
+        accounts.value = listOf(totp)
+        composeRule.mainClock.advanceTimeByFrame()
+        // The empty state is fading out: drawn, but already gone from the semantics tree.
+        composeRule.onNodeWithText(string(R.string.accounts_empty_title)).assertDoesNotExist()
+        composeRule.mainClock.advanceTimeBy(1_000)
+
+        row(totp).assertIsDisplayed()
+        composeRule.onNodeWithText(string(R.string.accounts_empty_title)).assertDoesNotExist()
+    }
+
+    @Test
+    fun deletingTheLastAccountShowsTheEmptyStateAndRemovesTheRow() {
+        composeRule.mainClock.autoAdvance = false
+        val accounts = showChangingList(totp)
+        row(totp).assertExists()
+
+        accounts.value = emptyList()
+        composeRule.mainClock.advanceTimeByFrame()
+        row(totp).assertDoesNotExist()
+        composeRule.mainClock.advanceTimeBy(1_000)
+
+        composeRule.onNodeWithText(string(R.string.accounts_empty_title)).assertIsDisplayed()
+        row(totp).assertDoesNotExist()
+    }
+
+    @Test
+    fun ringDescriptionIsOneNodeThatFollowsTheSecondsWhileTheRingSweeps() {
+        composeRule.mainClock.autoAdvance = false
+        val item = showChanging(totp)
+        composeRule.onNodeWithContentDescription(string(R.string.account_seconds_remaining, 12)).assertExists()
+
+        item.value = totp.copy(secondsRemaining = 11)
+        composeRule.mainClock.advanceTimeByFrame()
+        composeRule.mainClock.advanceTimeBy(500)
+
+        composeRule.onNodeWithContentDescription(string(R.string.account_seconds_remaining, 11)).assertExists()
+        composeRule.onNodeWithContentDescription(string(R.string.account_seconds_remaining, 12)).assertDoesNotExist()
+
+        // The period restarts: the description follows, still a single node.
+        item.value = totp.copy(secondsRemaining = 30)
+        composeRule.mainClock.advanceTimeBy(1_500)
+        composeRule.onNodeWithContentDescription(string(R.string.account_seconds_remaining, 30)).assertExists()
+    }
+
     private val longIssuer ="An extremely long issuer name that keeps going ".repeat(6).trim()
     private val longAccountName = "someone.with.a.very.long.account.name.".repeat(6) + "@example.com"
     private val longTotp = AccountItem.TotpItem(
