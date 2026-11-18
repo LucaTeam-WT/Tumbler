@@ -1,5 +1,6 @@
 package com.phucho0237.lucaauth.ui.accounts
 
+import android.database.SQLException
 import com.phucho0237.lucaauth.domain.crypto.KeyUnavailableException
 import com.phucho0237.lucaauth.domain.crypto.SecretCipherException
 import com.phucho0237.lucaauth.domain.model.OtpAccount
@@ -7,6 +8,8 @@ import com.phucho0237.lucaauth.domain.model.OtpType
 import com.phucho0237.lucaauth.ui.accounts.AccountItem.HotpItem
 import com.phucho0237.lucaauth.ui.accounts.AccountItem.TotpItem
 import com.phucho0237.lucaauth.ui.accounts.AccountItem.UnavailableItem
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.launch
@@ -173,6 +176,96 @@ class AccountListViewModelTest {
         viewModel.add("otpauth://totp/Example:alice?secret=$rfcBase32Secret")
 
         assertEquals(AddState(error = AddError.STORAGE_FAILED), viewModel.addState.value)
+    }
+
+    @Test
+    fun `add reports a database failure as a storage failure`() = runTest {
+        repository.addFailure = SQLException("disk full")
+        val viewModel = createViewModel()
+
+        viewModel.add("otpauth://totp/Example:alice?secret=$rfcBase32Secret")
+
+        assertEquals(AddState(error = AddError.STORAGE_FAILED), viewModel.addState.value)
+    }
+
+    @Test
+    fun `second add while saving is ignored and stores one account`() = runTest {
+        val gate = CompletableDeferred<Unit>()
+        repository.addGate = gate
+        val viewModel = createViewModel()
+        val link = "otpauth://totp/Example:alice?secret=$rfcBase32Secret"
+
+        viewModel.add(link)
+        assertTrue(viewModel.addState.value.saving)
+        viewModel.add(link)
+        gate.complete(Unit)
+        runCurrent()
+
+        assertEquals(1, repository.storedAccounts.size)
+        assertEquals(AddState(saved = true), viewModel.addState.value)
+    }
+
+    @Test
+    fun `resetAddState keeps saving while a save is running`() = runTest {
+        val gate = CompletableDeferred<Unit>()
+        repository.addGate = gate
+        val viewModel = createViewModel()
+        viewModel.add("otpauth://totp/Example:alice?secret=$rfcBase32Secret")
+
+        viewModel.resetAddState()
+
+        assertTrue(viewModel.addState.value.saving)
+        gate.complete(Unit)
+    }
+
+    @Test
+    fun `cancellation is not turned into a storage failure`() = runTest {
+        repository.addFailure = CancellationException("cancelled")
+        val viewModel = createViewModel()
+
+        viewModel.add("otpauth://totp/Example:alice?secret=$rfcBase32Secret")
+
+        assertNull(viewModel.addState.value.error)
+        assertFalse(viewModel.addState.value.saved)
+    }
+
+    @Test
+    fun `delete failure sets the action flag until it is shown`() = runTest {
+        val id = repository.add(totpAccount())
+        val viewModel = createViewModel()
+        repository.deleteFailure = SQLException("locked")
+
+        viewModel.delete(id)
+
+        assertTrue(viewModel.uiState.value.actionFailed)
+        assertEquals(1, viewModel.items().size)
+
+        viewModel.actionFailureShown()
+        assertFalse(viewModel.uiState.value.actionFailed)
+    }
+
+    @Test
+    fun `next code failure in storage shows no code and sets the action flag`() = runTest {
+        val id = repository.add(hotpAccount())
+        val viewModel = createViewModel()
+        repository.updateCounterFailure = SQLException("locked")
+
+        viewModel.nextHotpCode(id)
+
+        assertTrue(viewModel.uiState.value.actionFailed)
+        assertNull((viewModel.items().single() as HotpItem).code)
+        assertEquals(0L, repository.counterOf(id))
+    }
+
+    @Test
+    fun `failure while observing accounts sets loadFailed instead of crashing`() = runTest {
+        repository.observeFailure = SQLException("corrupt")
+
+        val state = createViewModel().uiState.value
+
+        assertTrue(state.loadFailed)
+        assertFalse(state.isLoading)
+        assertTrue(state.accounts.isEmpty())
     }
 
     @Test

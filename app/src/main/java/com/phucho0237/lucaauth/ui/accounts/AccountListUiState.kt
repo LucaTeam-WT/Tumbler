@@ -7,6 +7,10 @@ package com.phucho0237.lucaauth.ui.accounts
 data class AccountListUiState(
     val isLoading: Boolean = true,
     val accounts: List<AccountItem> = emptyList(),
+    /** The accounts could not be read from storage; [accounts] may be stale or empty. */
+    val loadFailed: Boolean = false,
+    /** A delete or next-code action failed in storage; clear it with `actionFailureShown()`. */
+    val actionFailed: Boolean = false,
 )
 
 sealed interface AccountItem {
@@ -47,4 +51,6 @@ enum class AddError { INVALID_LINK, STORAGE_FAILED }
 data class AddState(
     val error: AddError? = null,
     val saved: Boolean = false,
+    /** A save is running; further saves are ignored and the Save button is disabled. */
+    val saving: Boolean = false,
 )

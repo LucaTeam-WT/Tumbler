@@ -3,8 +3,10 @@ package com.phucho0237.lucaauth.ui.accounts
 import com.phucho0237.lucaauth.domain.model.AccountSummary
 import com.phucho0237.lucaauth.domain.model.OtpAccount
 import com.phucho0237.lucaauth.domain.repository.AccountRepository
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.flow
 
 /** In-memory [AccountRepository] whose failures can be switched on per test. */
 class FakeAccountRepository : AccountRepository {
@@ -22,14 +24,27 @@ class FakeAccountRepository : AccountRepository {
     /** If set, [updateCounter] throws it and changes nothing. */
     var updateCounterFailure: Exception? = null
 
+    /** If set, [delete] throws it. */
+    var deleteFailure: Exception? = null
+
+    /** If set, the flow from [observeAccounts] fails with it. */
+    var observeFailure: Exception? = null
+
+    /** If set, [add] suspends until it is completed, after checking [addFailure]. */
+    var addGate: CompletableDeferred<Unit>? = null
+
     val storedAccounts: List<OtpAccount> get() = accounts.values.toList()
 
     fun counterOf(id: String): Long = accounts.getValue(id).counter
 
-    override fun observeAccounts(): Flow<List<AccountSummary>> = summaries
+    override fun observeAccounts(): Flow<List<AccountSummary>> {
+        observeFailure?.let { failure -> return flow { throw failure } }
+        return summaries
+    }
 
     override suspend fun add(account: OtpAccount): String {
         addFailure?.let { throw it }
+        addGate?.await()
         val id = "id-${nextId++}"
         accounts[id] = account
         publish()
@@ -49,6 +64,7 @@ class FakeAccountRepository : AccountRepository {
     }
 
     override suspend fun delete(id: String) {
+        deleteFailure?.let { throw it }
         accounts.remove(id)
         publish()
     }
