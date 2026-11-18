@@ -2,6 +2,8 @@ package com.phucho0237.lucaauth.ui.accounts
 
 import androidx.activity.ComponentActivity
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.MutableState
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.semantics.SemanticsProperties
@@ -56,6 +58,21 @@ class AccountListScreenTest {
         onNextHotpCode: (String) -> Unit = {},
         onDelete: (String) -> Unit = {},
         fontScale: Float? = null,
+    ) = showState(onCopyCode, onNextHotpCode, onDelete, fontScale) { state }
+
+    /** Shows a single TOTP row that the test can change afterwards through the returned state. */
+    private fun showChanging(first: AccountItem.TotpItem, fontScale: Float? = null): MutableState<AccountItem.TotpItem> {
+        val item = mutableStateOf(first)
+        showState(fontScale = fontScale) { stateOf(item.value) }
+        return item
+    }
+
+    private fun showState(
+        onCopyCode: (String) -> Unit = {},
+        onNextHotpCode: (String) -> Unit = {},
+        onDelete: (String) -> Unit = {},
+        fontScale: Float? = null,
+        state: () -> AccountListUiState,
     ) {
         composeRule.setContent {
             LucaAuthTheme {
@@ -64,7 +81,7 @@ class AccountListScreenTest {
                     LocalDensity provides if (fontScale == null) density else Density(density.density, fontScale),
                 ) {
                     AccountListScreen(
-                        state = state,
+                        state = state(),
                         onAddClick = {},
                         onCopyCode = onCopyCode,
                         onNextHotpCode = onNextHotpCode,
@@ -395,61 +412,79 @@ class AccountListScreenTest {
         menuItem(AccountListTags.MENU_NEXT_CODE).assertDoesNotExist()
     }
 
+    private fun rowHeight(id: String) = composeRule.onNodeWithTag(AccountListTags.row(id)).fetchSemanticsNode().size.height
+
     @Test
-    fun rowKeepsItsHeightWhenTheNextCodeAppears() {
-        val other = totp.copy(id = "t2", accountName = "dave")
-        val otherWithNext = totpWithNext.copy(id = "t3", accountName = "erin")
-        show(stateOf(other, otherWithNext))
+    fun currentCodeIsVerticallyCenteredInTheRowWithoutANextCode() {
+        show(stateOf(totp))
 
-        assertEquals(
-            row(other).fetchSemanticsNode().size.height,
-            row(otherWithNext).fetchSemanticsNode().size.height,
-        )
-    }
-
-    private fun assertRowHeightsMatchAt(fontScale: Float) {
-        val other = totp.copy(id = "t2", accountName = "dave")
-        val otherWithNext = totpWithNext.copy(id = "t3", accountName = "erin")
-        show(stateOf(other, otherWithNext), fontScale = fontScale)
-
-        assertEquals(
-            "fontScale=$fontScale",
-            row(other).fetchSemanticsNode().size.height,
-            row(otherWithNext).fetchSemanticsNode().size.height,
-        )
+        val rowBounds = row(totp).fetchSemanticsNode().boundsInRoot
+        val code = composeRule.onNodeWithText("123 456", useUnmergedTree = true).fetchSemanticsNode().boundsInRoot
+        val tolerancePx = 2 * composeRule.density.density
+        assertEquals(rowBounds.center.y, code.center.y, tolerancePx)
     }
 
     @Test
-    fun rowKeepsItsHeightWhenTheNextCodeAppearsAtFontScale13() = assertRowHeightsMatchAt(1.3f)
+    fun rowHeightIsTheSameWithAndWithoutTheNextCodeAtNormalFontScale() {
+        val item = showChanging(totp)
+        val without = rowHeight("t1")
 
-    @Test
-    fun rowKeepsItsHeightWhenTheNextCodeAppearsAtFontScale15() = assertRowHeightsMatchAt(1.5f)
+        item.value = totpWithNext
+        composeRule.mainClock.advanceTimeBy(1_000)
+        composeRule.waitForIdle()
 
-    @Test
-    fun rowKeepsItsHeightWhenTheNextCodeAppearsAtFontScale20() = assertRowHeightsMatchAt(2f)
-
-    @Test
-    fun stackedLayoutShowsBothCodesWithoutClippingAtTwoHundredPercentFontScale() {
-        show(stateOf(totpWithNext), fontScale = 2f)
-
-        val currentCode = composeRule.onNodeWithText("123 456", useUnmergedTree = true)
-        currentCode.assertIsDisplayed()
         nextCodeNode().assertIsDisplayed()
-        composeRule.onNodeWithContentDescription(string(R.string.account_seconds_remaining, 4)).assertIsDisplayed()
-        // Same line if both fit, otherwise the next code wraps below; either way it stays inside the row.
-        val rowBounds = row(totpWithNext).fetchSemanticsNode().boundsInRoot
+        assertEquals(without, rowHeight("t1"))
+    }
+
+    private fun assertNextCodeFitsAndRowReturnsAt(fontScale: Float) {
+        val item = showChanging(totp, fontScale = fontScale)
+        val original = rowHeight("t1")
+
+        item.value = totpWithNext
+        composeRule.mainClock.advanceTimeBy(1_000)
+        composeRule.waitForIdle()
+
+        composeRule.onNodeWithText("123 456", useUnmergedTree = true).assertIsDisplayed()
+        nextCodeNode().assertIsDisplayed()
+        // Both codes stay inside the row, whether they share a line or the next code wraps below.
+        val rowBounds = row(totp).fetchSemanticsNode().boundsInRoot
+        val code = composeRule.onNodeWithText("123 456", useUnmergedTree = true).fetchSemanticsNode().boundsInRoot
         val next = nextCodeNode().fetchSemanticsNode().boundsInRoot
-        assertEquals(true, next.left >= rowBounds.left)
-        assertEquals(true, next.right <= rowBounds.right)
-        assertEquals(true, next.bottom <= rowBounds.bottom)
+        for (bounds in listOf(code, next)) {
+            assertEquals("fontScale=$fontScale", true, bounds.left >= rowBounds.left)
+            assertEquals("fontScale=$fontScale", true, bounds.right <= rowBounds.right)
+            assertEquals("fontScale=$fontScale", true, bounds.top >= rowBounds.top)
+            assertEquals("fontScale=$fontScale", true, bounds.bottom <= rowBounds.bottom)
+        }
+
+        item.value = totp
+        composeRule.mainClock.advanceTimeBy(1_000)
+        composeRule.waitForIdle()
+
+        nextCodeNode().assertDoesNotExist()
+        assertEquals("fontScale=$fontScale", original, rowHeight("t1"))
     }
 
     @Test
-    fun nextCodeSemanticsExistBeforeTheFadeInHasRun() {
-        composeRule.mainClock.autoAdvance = false
-        show(stateOf(totpWithNext))
+    fun nextCodeFitsAndRowReturnsAtFontScale13() = assertNextCodeFitsAndRowReturnsAt(1.3f)
 
-        // No animation frame has been advanced: only what is drawn can still be transparent.
+    @Test
+    fun nextCodeFitsAndRowReturnsAtFontScale15() = assertNextCodeFitsAndRowReturnsAt(1.5f)
+
+    @Test
+    fun nextCodeFitsAndRowReturnsAtFontScale20() = assertNextCodeFitsAndRowReturnsAt(2f)
+
+    @Test
+    fun nextCodeSemanticsExistFromTheFirstFrameOfTheEntrance() {
+        composeRule.mainClock.autoAdvance = false
+        val item = showChanging(totp)
+        nextCodeNode().assertDoesNotExist()
+
+        item.value = totpWithNext
+        // One frame only: recomposed, but the 400 ms entrance has barely started.
+        composeRule.mainClock.advanceTimeByFrame()
+
         nextCodeNode().assertExists()
         nextCodeNode().assert(
             SemanticsMatcher.expectValue(

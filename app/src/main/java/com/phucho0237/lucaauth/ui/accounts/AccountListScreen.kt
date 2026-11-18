@@ -3,9 +3,15 @@ package com.phucho0237.lucaauth.ui.accounts
 import androidx.annotation.DrawableRes
 import androidx.annotation.StringRes
 import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.EnterTransition
+import androidx.compose.animation.ExitTransition
 import androidx.compose.animation.core.FastOutSlowInEasing
-import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.expandIn
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.slideInVertically
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -52,8 +58,6 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.alpha
-import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalHapticFeedback
@@ -62,7 +66,6 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.CustomAccessibilityAction
-import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.customActions
 import androidx.compose.ui.semantics.semantics
@@ -70,7 +73,6 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.isSpecified
 import com.phucho0237.lucaauth.R
 import kotlinx.coroutines.launch
 
@@ -83,12 +85,13 @@ private const val STACKED_FONT_SCALE = 1.5f
 /** From this font scale on, issuer and account name may use two lines instead of one. */
 private const val LARGE_FONT_SCALE = 1.3f
 
-/** Duration of the fade-in of the next TOTP code. */
-private const val NEXT_CODE_FADE_MILLIS = 400
+/** Duration of every part of the entrance of the next TOTP code (fade, expand, slide). */
+private const val NEXT_CODE_MOTION_MILLIS = 400
 
 private val FAB_CLEARANCE = 88.dp
 private val ROW_MIN_HEIGHT = 72.dp
 private val RING_SIZE = 28.dp
+private val RING_GAP = 12.dp
 
 /** Test tags for the parts of the list that tests need to reach. */
 internal object AccountListTags {
@@ -335,6 +338,9 @@ private fun AccountRow(item: AccountItem, onAction: (RowAction) -> Unit) {
                 Box(
                     Modifier
                         .fillMaxWidth()
+                        // The whole 72 dp row is the tap target, so its size does not depend on
+                        // whether the next code line is present.
+                        .heightIn(min = ROW_MIN_HEIGHT)
                         .testTag(AccountListTags.row(item.id))
                         .combinedClickable(
                             onClickLabel = tapLabel,
@@ -352,6 +358,7 @@ private fun AccountRow(item: AccountItem, onAction: (RowAction) -> Unit) {
                             bottom = 12.dp,
                             end = if (item is AccountItem.HotpItem) 4.dp else 16.dp,
                         ),
+                    contentAlignment = Alignment.CenterStart,
                 ) {
                     RowContent(item)
                 }
@@ -474,85 +481,99 @@ private fun Code(code: String) {
 }
 
 /**
- * Current code, the next code (see [NextCode]) and the countdown ring. The ring is centered on
- * the current code's line, not on the whole block.
+ * Current code, the next code (see [NextCode]) and the countdown ring. The ring is always
+ * centered on the current code's line, not on the whole block, and moves with it while the
+ * next code animates in.
  *
- * Normal font scales: the next code sits under the current code, aligned to its end edge.
- * From [STACKED_FONT_SCALE]: both codes share one line and the next code wraps below the
- * current one only if they do not fit, so nothing is clipped.
+ * Normal font scales: the next code line exists only while there is a next code and sits under
+ * the current code, aligned to its end edge. The block is centered in the row, so the current
+ * code is exactly centered when there is no next code. From [STACKED_FONT_SCALE]: both codes
+ * share one line and the next code wraps below the current one only if they do not fit, so
+ * nothing is clipped; the row may grow while the next code is present, animated.
  */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun TotpCodeBlock(item: AccountItem.TotpItem) {
     val stacked = LocalDensity.current.fontScale >= STACKED_FONT_SCALE
-    val codeLine = codeStyle().lineHeight
-    val ringSlotHeight = with(LocalDensity.current) {
-        if (codeLine.isSpecified) maxOf(codeLine.toDp(), RING_SIZE) else RING_SIZE
-    }
-    Row(verticalAlignment = Alignment.Top) {
-        if (stacked) {
+    if (stacked) {
+        val codeLine = codeStyle().lineHeight
+        val ringSlotHeight = with(LocalDensity.current) {
+            if (codeLine.isSp) maxOf(codeLine.toDp(), RING_SIZE) else RING_SIZE
+        }
+        Row(verticalAlignment = Alignment.Top) {
             FlowRow(
                 modifier = Modifier.weight(1f, fill = false),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                 itemVerticalAlignment = Alignment.CenterVertically,
             ) {
                 Code(item.code)
-                NextCode(item)
+                NextCode(item, flow = true)
             }
-        } else {
-            Column(horizontalAlignment = Alignment.End) {
-                Code(item.code)
-                NextCode(item)
+            Spacer(Modifier.width(RING_GAP))
+            Box(Modifier.height(ringSlotHeight), contentAlignment = Alignment.Center) {
+                CountdownRing(item.secondsRemaining, item.period)
             }
         }
-        Spacer(Modifier.width(12.dp))
-        Box(Modifier.height(ringSlotHeight), contentAlignment = Alignment.Center) {
-            CountdownRing(item.secondsRemaining, item.period)
+    } else {
+        Column(horizontalAlignment = Alignment.End) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Code(item.code)
+                Spacer(Modifier.width(RING_GAP))
+                CountdownRing(item.secondsRemaining, item.period)
+            }
+            // Same end edge as the current code: skip the ring and the gap.
+            NextCode(item, flow = false, modifier = Modifier.padding(end = RING_GAP + RING_SIZE))
         }
     }
 }
 
+private fun nextCodeEnter(flow: Boolean): EnterTransition {
+    val fade = fadeIn(tween(NEXT_CODE_MOTION_MILLIS, easing = FastOutSlowInEasing))
+    val expand = if (flow) {
+        expandIn(tween(NEXT_CODE_MOTION_MILLIS, easing = FastOutSlowInEasing), expandFrom = Alignment.TopStart)
+    } else {
+        expandVertically(tween(NEXT_CODE_MOTION_MILLIS, easing = FastOutSlowInEasing), expandFrom = Alignment.Top)
+    }
+    // The line starts half its height lower, so it slides up into place.
+    val slide = slideInVertically(tween(NEXT_CODE_MOTION_MILLIS, easing = FastOutSlowInEasing)) { it / 2 }
+    return fade + expand + slide
+}
+
 /**
  * The code that replaces the current one, shown in the last seconds of a step. It is
- * display-only: tapping the row copies the current code. Its semantics (description and test
- * tag) exist as soon as [AccountItem.TotpItem.nextCode] is set; the fade-in only affects what
- * is drawn, and there is no fade-out. Outside the window the line is still laid out,
- * invisible and without semantics, from the current code's digits (same text shape, so the
- * same size), so the row keeps its size when the next code appears or disappears.
+ * display-only: tapping the row copies the current code. The line exists in the composition
+ * only while [AccountItem.TotpItem.nextCode] is set, so nothing is reserved outside the
+ * window. Its semantics (description and test tag) are there from the first frame of the
+ * entrance; the animation only affects what is drawn. There is no exit animation: the line
+ * disappears at the step boundary, when the whole row changes at once.
  */
 @Composable
-private fun NextCode(item: AccountItem.TotpItem) {
-    val style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace)
+private fun NextCode(item: AccountItem.TotpItem, flow: Boolean, modifier: Modifier = Modifier) {
     val nextCode = item.nextCode
-    if (nextCode == null) {
-        Text(
-            text = stringResource(R.string.account_next_totp_code, formatCode(item.code)),
-            style = style,
-            maxLines = 1,
-            modifier = Modifier.alpha(0f).clearAndSetSemantics { },
-        )
-    } else {
-        // This branch enters the composition when the next code appears, so the fade runs
-        // once per step and not on every tick.
-        var shown by remember { mutableStateOf(false) }
-        LaunchedEffect(Unit) { shown = true }
-        val alpha by animateFloatAsState(
-            targetValue = if (shown) 1f else 0f,
-            animationSpec = tween(durationMillis = NEXT_CODE_FADE_MILLIS, easing = FastOutSlowInEasing),
-            label = "nextCodeAlpha",
-        )
-        val formatted = formatCode(nextCode)
-        val description = stringResource(R.string.account_next_totp_code_description, formatted)
-        Text(
-            text = stringResource(R.string.account_next_totp_code, formatted),
-            style = style,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            maxLines = 1,
-            modifier = Modifier
-                .graphicsLayer { this.alpha = alpha }
-                .testTag(AccountListTags.NEXT_CODE)
-                .semantics { contentDescription = description },
-        )
+    // The content lambda can still run once when visibility turns false; it then falls back to
+    // the last code of this row instead of using `!!`. A new window always sets it first.
+    val last = remember { arrayOfNulls<String>(1) }
+    if (nextCode != null) last[0] = nextCode
+    AnimatedVisibility(
+        visible = nextCode != null,
+        modifier = modifier,
+        enter = nextCodeEnter(flow),
+        exit = ExitTransition.None,
+    ) {
+        val shown = nextCode ?: last[0]
+        if (shown != null) {
+            val formatted = formatCode(shown)
+            val description = stringResource(R.string.account_next_totp_code_description, formatted)
+            Text(
+                text = stringResource(R.string.account_next_totp_code, formatted),
+                style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                modifier = Modifier
+                    .testTag(AccountListTags.NEXT_CODE)
+                    .semantics { contentDescription = description },
+            )
+        }
     }
 }
 
