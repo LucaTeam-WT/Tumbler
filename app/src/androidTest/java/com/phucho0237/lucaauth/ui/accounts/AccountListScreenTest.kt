@@ -426,19 +426,48 @@ class AccountListScreenTest {
     fun rowKeepsItsHeightWhenTheNextCodeAppearsAtFontScale15() = assertRowHeightsMatchAt(1.5f)
 
     @Test
-    fun stackedLayoutShowsBothCodesAtTwoHundredPercentFontScale() {
+    fun rowKeepsItsHeightWhenTheNextCodeAppearsAtFontScale20() = assertRowHeightsMatchAt(2f)
+
+    @Test
+    fun stackedLayoutShowsBothCodesWithoutClippingAtTwoHundredPercentFontScale() {
         show(stateOf(totpWithNext), fontScale = 2f)
 
         val currentCode = composeRule.onNodeWithText("123 456", useUnmergedTree = true)
         currentCode.assertIsDisplayed()
         nextCodeNode().assertIsDisplayed()
         composeRule.onNodeWithContentDescription(string(R.string.account_seconds_remaining, 4)).assertIsDisplayed()
-        val code = currentCode.fetchSemanticsNode().boundsInRoot
+        // Same line if both fit, otherwise the next code wraps below; either way it stays inside the row.
+        val rowBounds = row(totpWithNext).fetchSemanticsNode().boundsInRoot
         val next = nextCodeNode().fetchSemanticsNode().boundsInRoot
-        // The next code sits directly below the current one, on the same start edge.
-        assertEquals(code.left, next.left, 1f)
+        assertEquals(true, next.left >= rowBounds.left)
+        assertEquals(true, next.right <= rowBounds.right)
+        assertEquals(true, next.bottom <= rowBounds.bottom)
+    }
+
+    @Test
+    fun nextCodeSemanticsExistBeforeTheFadeInHasRun() {
+        composeRule.mainClock.autoAdvance = false
+        show(stateOf(totpWithNext))
+
+        // No animation frame has been advanced: only what is drawn can still be transparent.
+        nextCodeNode().assertExists()
+        nextCodeNode().assert(
+            SemanticsMatcher.expectValue(
+                SemanticsProperties.ContentDescription,
+                listOf(string(R.string.account_next_totp_code_description, "654 321")),
+            ),
+        )
+    }
+
+    @Test
+    fun nextCodeIsEndAlignedUnderTheCurrentCodeAtNormalFontScale() {
+        show(stateOf(totpWithNext))
+
+        val code = composeRule.onNodeWithText("123 456", useUnmergedTree = true)
+            .fetchSemanticsNode().boundsInRoot
+        val next = nextCodeNode().fetchSemanticsNode().boundsInRoot
+        assertEquals(code.right, next.right, 1f)
         assertEquals(true, next.top >= code.bottom - 1f)
-        assertEquals(true, next.right <= row(totpWithNext).fetchSemanticsNode().boundsInRoot.right)
     }
 
     private val longIssuer ="An extremely long issuer name that keeps going ".repeat(6).trim()
