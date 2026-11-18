@@ -32,7 +32,9 @@ import com.phucho0237.lucaauth.R
 /**
  * Lets the user paste an `otpauth://` link. The text is deliberately kept with `remember`
  * and not `rememberSaveable`: the link contains the secret and must not be written to
- * saved instance state.
+ * saved instance state. For the same reason the field asks the keyboard not to learn or
+ * suggest the text (`KeyboardType.Password` and auto-correct off; the text stays visible),
+ * and the link is trimmed before it is passed to [onSave].
  *
  * @param error why the last save failed, shown inline; [onInputChange] is called when the
  *   user edits the text so the caller can clear it.
@@ -85,14 +87,14 @@ fun AddAccountScreen(
                 isError = error != null,
                 minLines = 3,
                 maxLines = 6,
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password, autoCorrectEnabled = false),
             )
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End),
             ) {
                 TextButton(onClick = onCancel) { Text(stringResource(R.string.add_cancel)) }
-                Button(onClick = { onSave(link) }, enabled = link.isNotBlank() && !saving) {
+                Button(onClick = { onSave(link.trim()) }, enabled = link.isNotBlank() && !saving) {
                     Text(stringResource(R.string.add_save))
                 }
             }

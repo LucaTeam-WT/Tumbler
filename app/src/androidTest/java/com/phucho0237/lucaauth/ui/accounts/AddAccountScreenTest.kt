@@ -73,6 +73,18 @@ class AddAccountScreenTest {
     }
 
     @Test
+    fun saveTrimsSurroundingWhitespaceAndNewlines() {
+        var saved: String? = null
+        show(onSave = { saved = it })
+
+        composeRule.onNodeWithText(string(R.string.add_link_label))
+            .performTextInput("  otpauth://totp/a?secret=AAAA \n\t")
+        composeRule.onNodeWithText(string(R.string.add_save)).performClick()
+
+        assertEquals("otpauth://totp/a?secret=AAAA", saved)
+    }
+
+    @Test
     fun saveIsDisabledWhileSaving() {
         show(saving = true)
 
