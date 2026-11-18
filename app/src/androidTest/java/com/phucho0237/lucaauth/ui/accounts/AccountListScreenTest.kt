@@ -495,6 +495,44 @@ class AccountListScreenTest {
     }
 
     @Test
+    fun nextCodeLosesItsSemanticsAsSoonAsItStartsToExit() {
+        val item = showChanging(totpWithNext)
+        nextCodeNode().assertExists()
+
+        composeRule.mainClock.autoAdvance = false
+        item.value = totp
+        // One frame: recomposed with no next code, the 300 ms exit has barely started.
+        composeRule.mainClock.advanceTimeByFrame()
+
+        nextCodeNode().assertDoesNotExist()
+        composeRule.onNodeWithContentDescription(
+            string(R.string.account_next_totp_code_description, "654 321"),
+            useUnmergedTree = true,
+        ).assertDoesNotExist()
+
+        composeRule.mainClock.advanceTimeBy(NEXT_CODE_EXIT_MILLIS + 100L)
+        nextCodeNode().assertDoesNotExist()
+    }
+
+    @Test
+    fun currentCodeIsCenteredAgainAndRowHeightUnchangedAfterTheExit() {
+        val item = showChanging(totp)
+        val original = rowHeight("t1")
+        item.value = totpWithNext
+        composeRule.mainClock.advanceTimeBy(1_000)
+        composeRule.waitForIdle()
+
+        item.value = totp
+        composeRule.mainClock.advanceTimeBy(NEXT_CODE_EXIT_MILLIS + 100L)
+        composeRule.waitForIdle()
+
+        val rowBounds = row(totp).fetchSemanticsNode().boundsInRoot
+        val code = composeRule.onNodeWithText("123 456", useUnmergedTree = true).fetchSemanticsNode().boundsInRoot
+        assertEquals(rowBounds.center.y, code.center.y, 2 * composeRule.density.density)
+        assertEquals(original, rowHeight("t1"))
+    }
+
+    @Test
     fun nextCodeIsEndAlignedUnderTheCurrentCodeAtNormalFontScale() {
         show(stateOf(totpWithNext))
 

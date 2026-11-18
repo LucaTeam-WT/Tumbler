@@ -11,6 +11,10 @@ import androidx.compose.animation.core.tween
 import androidx.compose.animation.expandIn
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkOut
+import androidx.compose.animation.shrinkVertically
+import androidx.compose.animation.slideOutVertically
 import androidx.compose.animation.slideInVertically
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
@@ -66,6 +70,7 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.CustomAccessibilityAction
+import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.customActions
 import androidx.compose.ui.semantics.semantics
@@ -87,6 +92,9 @@ private const val LARGE_FONT_SCALE = 1.3f
 
 /** Duration of every part of the entrance of the next TOTP code (fade, expand, slide). */
 private const val NEXT_CODE_MOTION_MILLIS = 400
+
+/** Duration of the exit of the next TOTP code (fade, shrink, slide). */
+internal const val NEXT_CODE_EXIT_MILLIS = 300
 
 private val FAB_CLEARANCE = 88.dp
 private val ROW_MIN_HEIGHT = 72.dp
@@ -539,13 +547,26 @@ private fun nextCodeEnter(flow: Boolean): EnterTransition {
     return fade + expand + slide
 }
 
+/** The next code merges into the current one: it fades, shrinks toward the top and slides up. */
+private fun nextCodeExit(flow: Boolean): ExitTransition {
+    val fade = fadeOut(tween(NEXT_CODE_EXIT_MILLIS, easing = FastOutSlowInEasing))
+    val shrink = if (flow) {
+        shrinkOut(tween(NEXT_CODE_EXIT_MILLIS, easing = FastOutSlowInEasing), shrinkTowards = Alignment.TopStart)
+    } else {
+        shrinkVertically(tween(NEXT_CODE_EXIT_MILLIS, easing = FastOutSlowInEasing), shrinkTowards = Alignment.Top)
+    }
+    val slide = slideOutVertically(tween(NEXT_CODE_EXIT_MILLIS, easing = FastOutSlowInEasing)) { -it / 2 }
+    return fade + shrink + slide
+}
+
 /**
  * The code that replaces the current one, shown in the last seconds of a step. It is
  * display-only: tapping the row copies the current code. The line exists in the composition
  * only while [AccountItem.TotpItem.nextCode] is set, so nothing is reserved outside the
  * window. Its semantics (description and test tag) are there from the first frame of the
- * entrance; the animation only affects what is drawn. There is no exit animation: the line
- * disappears at the step boundary, when the whole row changes at once.
+ * entrance; the animation only affects what is drawn. On exit the line keeps drawing the last
+ * code (now equal to the current code) while it merges into it, but loses its semantics at
+ * once, so nothing announces a "next code" that equals the current one.
  */
 @Composable
 private fun NextCode(item: AccountItem.TotpItem, flow: Boolean, modifier: Modifier = Modifier) {
@@ -558,7 +579,7 @@ private fun NextCode(item: AccountItem.TotpItem, flow: Boolean, modifier: Modifi
         visible = nextCode != null,
         modifier = modifier,
         enter = nextCodeEnter(flow),
-        exit = ExitTransition.None,
+        exit = nextCodeExit(flow),
     ) {
         val shown = nextCode ?: last[0]
         if (shown != null) {
@@ -569,9 +590,14 @@ private fun NextCode(item: AccountItem.TotpItem, flow: Boolean, modifier: Modifi
                 style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 maxLines = 1,
-                modifier = Modifier
-                    .testTag(AccountListTags.NEXT_CODE)
-                    .semantics { contentDescription = description },
+                modifier = if (nextCode == null) {
+                    // Exiting: drawn only, no description and no test tag.
+                    Modifier.clearAndSetSemantics { }
+                } else {
+                    Modifier
+                        .testTag(AccountListTags.NEXT_CODE)
+                        .semantics { contentDescription = description }
+                },
             )
         }
     }
