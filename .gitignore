@@ -14,3 +14,11 @@
 .cxx
 local.properties
 .idea/
+
+# Signing material: never commit
+*.jks
+*.keystore
+keystore.properties
+signing.properties
+*.p12
+*.pfx

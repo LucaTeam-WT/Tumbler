@@ -39,7 +39,7 @@ Current (in the build files today):
 - `collectAsStateWithLifecycle` comes from `lifecycle-runtime-compose`, which is already on the classpath through the Compose and activity libraries (not declared directly)
 - Room 2.8.5 (`room-runtime`, `room-ktx`, `room-compiler` via KSP 2.3.14). Schemas are exported to `app/schemas` and committed.
 - Kotlin coroutines `Flow` (transitive through AndroidX, not declared directly)
-- Tests: JUnit 4 and `kotlinx-coroutines-test` (unit); AndroidX Test, Espresso, Compose UI test (instrumented)
+- Tests: JUnit 4 and `kotlinx-coroutines-test` (unit); AndroidX Test, Espresso, Compose UI test, `room-testing` (instrumented). `MigrationTest` is a migration harness for the committed schemas; there is no migration yet (database version 1). It has not been run on a device yet.
 - minSdk 26, targetSdk / compileSdk 37, Java 11
 
 Planned (not added yet):
@@ -48,6 +48,19 @@ Planned (not added yet):
 - DataStore
 - CameraX + ML Kit barcode scanning
 - `androidx.biometric`
+
+## Security
+
+LucaAuth is **beta** and **not audited**: do not keep accounts in it whose loss would be
+critical. Secrets are encrypted with a non-exportable Android Keystore key; the app has no
+`INTERNET` permission and no telemetry. **Backups are disabled by design**
+(`allowBackup="false"` plus data extraction rules that exclude cloud backup and device
+transfer), so accounts do not move to a new phone and there is no export yet. See
+[SECURITY.md](SECURITY.md) for the threat model, limitations and how to report a
+vulnerability.
+
+The release build uses R8 minification and resource shrinking
+(`app/proguard-rules.pro`); no signing configuration is committed.
 
 ## Getting started
 
@@ -66,7 +79,7 @@ Or open the folder in Android Studio and press Run.
 ## Project docs
 
 - [CONTRIBUTING.md](CONTRIBUTING.md) – branching, commits, PR rules
-- [SECURITY.md](SECURITY.md) – threat model notes and how to report vulnerabilities
+- [SECURITY.md](SECURITY.md) – threat model, known limitations and how to report vulnerabilities
 - [CLAUDE.md](CLAUDE.md) – guidance for AI coding assistants working in this repo
 
 ## License
