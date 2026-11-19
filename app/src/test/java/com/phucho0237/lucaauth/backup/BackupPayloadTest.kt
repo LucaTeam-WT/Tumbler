@@ -99,23 +99,64 @@ class BackupPayloadTest {
         assertEquals(BackupPayload.MAX_ACCOUNTS, decodeValid(payload).size)
     }
 
+    /** A rejected account in [accounts], expected at [index] for [reason] in [field]. */
+    private class RejectionCase(
+        val accounts: List<BackupEntry>,
+        val index: Int,
+        val reason: AccountRejection,
+        val field: String?,
+    )
+
+    /** Two valid accounts, then [bad], then a valid one: the reported index must be 2. */
+    private fun third(bad: BackupEntry) = listOf(entry(), entry(secret = secretB()), bad, entry())
+
     @Test
-    fun encode_rejectsAccountsOutsideTheLimits() {
+    fun encode_reportsWhichAccountIsRejectedAndWhy() {
         val cases = mapOf(
-            "too many accounts" to List(BackupPayload.MAX_ACCOUNTS + 1) { entry() },
-            "issuer too long" to listOf(entry(issuer = label(extra = 1))),
-            "account name too long" to listOf(entry(), entry(accountName = label(extra = 1))),
-            "secret too long" to listOf(entry(secret = longSecret(1025))),
-            "issuer unpaired surrogate" to listOf(entry(issuer = "ACME\uD83D")),
-            "account name unpaired surrogate" to listOf(entry(accountName = "\uDD10alice")),
+            "too many accounts" to RejectionCase(
+                List(BackupPayload.MAX_ACCOUNTS + 1) { entry() },
+                BackupPayload.MAX_ACCOUNTS,
+                AccountRejection.TOO_MANY_ACCOUNTS,
+                null,
+            ),
+            "issuer too long" to RejectionCase(third(entry(issuer = label(extra = 1))), 2, AccountRejection.LABEL_TOO_LONG, "issuer"),
+            "account name too long" to
+                RejectionCase(third(entry(accountName = label(extra = 1))), 2, AccountRejection.LABEL_TOO_LONG, "account name"),
+            "secret too long" to RejectionCase(third(entry(secret = longSecret(1025))), 2, AccountRejection.SECRET_TOO_LONG, "secret"),
+            "issuer unpaired surrogate" to
+                RejectionCase(third(entry(issuer = "ACME\uD83D")), 2, AccountRejection.LABEL_UNPAIRED_SURROGATE, "issuer"),
+            "account name unpaired surrogate" to
+                RejectionCase(third(entry(accountName = "\uDD10alice")), 2, AccountRejection.LABEL_UNPAIRED_SURROGATE, "account name"),
+            "issuer not trimmed" to RejectionCase(third(entry(issuer = " ACME")), 2, AccountRejection.LABEL_NOT_TRIMMED, "issuer"),
+            "account name not trimmed" to
+                RejectionCase(third(entry(accountName = "alice@example.com ")), 2, AccountRejection.LABEL_NOT_TRIMMED, "account name"),
+            "first account" to RejectionCase(listOf(entry(issuer = "ACME\t"), entry()), 0, AccountRejection.LABEL_NOT_TRIMMED, "issuer"),
+            "issuer checked before the account name and the secret" to RejectionCase(
+                listOf(entry(issuer = " ACME", accountName = label(extra = 1), secret = longSecret(1025))),
+                0,
+                AccountRejection.LABEL_NOT_TRIMMED,
+                "issuer",
+            ),
+            "first bad account wins" to RejectionCase(
+                listOf(entry(), entry(secret = longSecret(1025)), entry(issuer = " ACME")),
+                1,
+                AccountRejection.SECRET_TOO_LONG,
+                "secret",
+            ),
         )
-        for ((description, accounts) in cases) {
-            val error = assertThrows(description, IllegalArgumentException::class.java) {
-                BackupPayload.encode(accounts)
+        for ((description, case) in cases) {
+            val error = assertThrows(description, AccountRejectedException::class.java) {
+                BackupPayload.encode(case.accounts)
             }
+            assertEquals(description, case.index, error.accountIndex)
+            assertEquals(description, case.reason, error.reason)
             val message = error.message.orEmpty()
+            val expectedMessage = "Account ${case.index}: ${case.reason}" + if (case.field == null) "" else " (${case.field})"
+            assertEquals(description, expectedMessage, message)
+            // The rejected accounts hold these labels and secrets; none may leak into the message.
             assertFalse(description, message.contains("ACME") || message.contains("alice") || message.contains("ệ"))
             assertFalse(description, message.contains(SECRET_A_BASE32))
+            assertFalse(description, message.contains(secretB().contentToString()))
         }
     }
 

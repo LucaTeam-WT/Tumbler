@@ -11,6 +11,42 @@ import java.nio.CharBuffer
 import java.nio.charset.CharacterCodingException
 import java.nio.charset.CodingErrorAction
 
+/** Why an account cannot be written to a backup. A closed set, so the UI can say why. */
+internal enum class AccountRejection {
+    /**
+     * More than [BackupPayload.MAX_ACCOUNTS] accounts. The reported index is
+     * [BackupPayload.MAX_ACCOUNTS], the first account that does not fit.
+     */
+    TOO_MANY_ACCOUNTS,
+
+    /** The issuer or account name has leading or trailing whitespace ([BackupPayload.isCanonicalLabel]). */
+    LABEL_NOT_TRIMMED,
+
+    /** The issuer or account name contains an unpaired UTF-16 surrogate, so it has no UTF-8 encoding. */
+    LABEL_UNPAIRED_SURROGATE,
+
+    /** The issuer or account name is longer than [BackupPayload.MAX_LABEL_BYTES] UTF-8 bytes. */
+    LABEL_TOO_LONG,
+
+    /** The secret is longer than [BackupPayload.MAX_SECRET_BYTES] bytes. */
+    SECRET_TOO_LONG,
+}
+
+/**
+ * Account [accountIndex] (zero-based, in the order given to the writer) cannot be written,
+ * for [reason]; the whole export fails and nothing is written. Only the first problem is
+ * reported: accounts are checked in order, and for each account the issuer, then the account
+ * name, then the secret.
+ *
+ * The message holds the index, the reason and the field name ("issuer", "account name" or
+ * "secret") only, never a label or a secret.
+ */
+internal class AccountRejectedException(
+    val accountIndex: Int,
+    val reason: AccountRejection,
+    field: String? = null,
+) : IllegalArgumentException("Account $accountIndex: $reason" + if (field == null) "" else " ($field)")
+
 /**
  * The plaintext inside a backup (payload version 1), a deterministic length-prefixed
  * big-endian encoding; see `docs/backup-format.md`.
@@ -75,14 +111,15 @@ internal object BackupPayload {
     /**
      * Encodes [accounts] into a new array that the caller must wipe.
      *
-     * @throws IllegalArgumentException if there are more than [MAX_ACCOUNTS] accounts, or
-     *   an account has a label longer than [MAX_LABEL_BYTES] UTF-8 bytes, a label that is
-     *   not valid Unicode (an unpaired surrogate), a label with leading or trailing
-     *   whitespace ([isCanonicalLabel]), or a secret longer than [MAX_SECRET_BYTES]. The
-     *   message names the account index and field only.
+     * @throws AccountRejectedException (an `IllegalArgumentException`) naming the first
+     *   account that cannot be written and why ([AccountRejection]): more than
+     *   [MAX_ACCOUNTS] accounts, a label with leading or trailing whitespace
+     *   ([isCanonicalLabel]), a label that is not valid Unicode (an unpaired surrogate), a
+     *   label longer than [MAX_LABEL_BYTES] UTF-8 bytes, or a secret longer than
+     *   [MAX_SECRET_BYTES]. The message names the account index, reason and field only.
      */
     fun encode(accounts: List<BackupEntry>): ByteArray {
-        require(accounts.size <= MAX_ACCOUNTS) { "Too many accounts (at most $MAX_ACCOUNTS)" }
+        if (accounts.size > MAX_ACCOUNTS) throw AccountRejectedException(MAX_ACCOUNTS, AccountRejection.TOO_MANY_ACCOUNTS)
         val issuers = ArrayList<ByteArray>(accounts.size)
         val names = ArrayList<ByteArray>(accounts.size)
         var size = HEADER_BYTES
@@ -90,8 +127,8 @@ internal object BackupPayload {
             val account = entry.account
             val issuer = encodeLabel(account.issuer, index, "issuer")
             val name = encodeLabel(account.accountName, index, "account name")
-            require(account.secret.size <= MAX_SECRET_BYTES) {
-                "Account $index: secret longer than $MAX_SECRET_BYTES bytes"
+            if (account.secret.size > MAX_SECRET_BYTES) {
+                throw AccountRejectedException(index, AccountRejection.SECRET_TOO_LONG, "secret")
             }
             issuers += issuer
             names += name
@@ -189,16 +226,15 @@ internal object BackupPayload {
     }
 
     private fun encodeLabel(label: String, index: Int, field: String): ByteArray {
-        require(isCanonicalLabel(label)) { "Account $index: $field has leading or trailing whitespace" }
+        if (!isCanonicalLabel(label)) throw AccountRejectedException(index, AccountRejection.LABEL_NOT_TRIMMED, field)
         val encoded = try {
             strictUtf8Encoder().encode(CharBuffer.wrap(label))
         } catch (e: CharacterCodingException) {
-            throw IllegalArgumentException("Account $index: $field is not valid Unicode")
+            // The only malformed input a String can hold is an unpaired surrogate.
+            throw AccountRejectedException(index, AccountRejection.LABEL_UNPAIRED_SURROGATE, field)
         }
         val bytes = ByteArray(encoded.remaining()).also { encoded.get(it) }
-        require(bytes.size <= MAX_LABEL_BYTES) {
-            "Account $index: $field longer than $MAX_LABEL_BYTES UTF-8 bytes"
-        }
+        if (bytes.size > MAX_LABEL_BYTES) throw AccountRejectedException(index, AccountRejection.LABEL_TOO_LONG, field)
         return bytes
     }
 
