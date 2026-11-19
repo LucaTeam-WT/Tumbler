@@ -1,5 +1,6 @@
 package com.phucho0237.lucaauth.backup
 
+import androidx.annotation.VisibleForTesting
 import java.io.IOException
 import java.io.InputStream
 import java.nio.ByteBuffer
@@ -61,6 +62,16 @@ internal object BackupFormat {
 }
 
 /**
+ * scrypt could not allocate its memory (about 64 MiB with the defaults) on this device
+ * during [exportBackup]. Nothing was written and nothing is wrong with the accounts or the
+ * password; the export may succeed once more memory is free. The `OutOfMemoryError` is the
+ * [cause]. Only the scrypt call is mapped, as in [readBackup]: an `OutOfMemoryError`
+ * anywhere else propagates unchanged.
+ */
+internal class BackupNotEnoughMemoryException(cause: OutOfMemoryError) :
+    RuntimeException("Not enough memory to derive the backup key", cause)
+
+/**
  * Encrypts [accounts] into a new backup file protected by [password], with the default
  * scrypt parameters ([ScryptParams.DEFAULT]) and a fresh random salt and nonce from
  * [random] on every call.
@@ -68,9 +79,18 @@ internal object BackupFormat {
  * Runs scrypt (about 64 MiB and a noticeable time): call it off the main thread. Does not
  * modify [password] or [accounts]; the caller wipes the password.
  *
- * @throws IllegalArgumentException if [password] fails [validatePassword], or an account
- *   is outside the [BackupPayload] limits. Messages never contain the password, a secret
- *   or a label.
+ * One account the backup cannot hold blocks the whole export; the exception says which one
+ * and why, so the UI can point the user at it.
+ *
+ * @throws AccountRejectedException (an `IllegalArgumentException`) naming the first account
+ *   that cannot be written (zero-based index) and the [AccountRejection]: too many
+ *   accounts, a label not trimmed, a label with an unpaired surrogate, a label or a secret
+ *   above its length limit.
+ * @throws BackupNotEnoughMemoryException if scrypt cannot allocate its memory.
+ * @throws IllegalArgumentException if [password] fails [validatePassword]; the UI must
+ *   check it with [validatePasswordConfirmation] first.
+ *
+ * No message contains the password, a secret or a label.
  */
 internal fun exportBackup(
     accounts: List<BackupEntry>,
@@ -84,19 +104,23 @@ internal fun exportBackup(
 
 /**
  * **For tests only.** Production code must only call [exportBackup], which is the one
- * production caller of this function.
+ * production caller of this function. `@VisibleForTesting(otherwise = PRIVATE)` makes lint
+ * report any other caller outside the test source sets.
  *
- * This is the seam behind [exportBackup]. It takes the salt, nonce and scrypt parameters
- * explicitly, for the golden file and for fast tests. A fixed salt and nonce used with the
- * same password reuse a GCM key and nonce, which breaks AES-GCM's confidentiality and
+ * This is the seam behind [exportBackup]. It takes the salt, nonce, scrypt parameters and
+ * [kdf] explicitly, for the golden file and for fast tests. A fixed salt and nonce used with
+ * the same password reuse a GCM key and nonce, which breaks AES-GCM's confidentiality and
  * integrity. It is `internal` (not private) only so unit tests in this module can reach it.
+ * It throws what [exportBackup] documents.
  */
+@VisibleForTesting(otherwise = VisibleForTesting.PRIVATE)
 internal fun sealBackup(
     accounts: List<BackupEntry>,
     password: CharArray,
     salt: ByteArray,
     nonce: ByteArray,
     params: ScryptParams,
+    kdf: Kdf = BouncyCastleScrypt,
 ): ByteArray {
     require(validatePassword(password) == PasswordCheck.Ok) { "Password does not meet the backup password policy" }
     require(salt.size in BackupFormat.MIN_SALT_LENGTH..BackupFormat.MAX_SALT_LENGTH) { "Invalid salt length" }
@@ -109,7 +133,14 @@ internal fun sealBackup(
     try {
         passwordBytes = checkNotNull(passwordKdfInput(password)) { "Password has no UTF-8 encoding" }
         val header = encodeHeader(params, salt, nonce)
-        key = BouncyCastleScrypt.derive(passwordBytes, salt, params, BackupFormat.KEY_LENGTH)
+        key = try {
+            kdf.derive(passwordBytes, salt, params, BackupFormat.KEY_LENGTH)
+        } catch (e: OutOfMemoryError) {
+            // scrypt's table (64 MiB with the defaults) did not fit. Bouncy Castle clears the
+            // chunks it had already allocated; the payload and password bytes are wiped below.
+            throw BackupNotEnoughMemoryException(e)
+        }
+        check(key.size == BackupFormat.KEY_LENGTH) { "Unexpected key length" }
         val cipher = Cipher.getInstance(BackupFormat.TRANSFORMATION)
         cipher.init(
             Cipher.ENCRYPT_MODE,
@@ -133,19 +164,19 @@ internal fun sealBackup(
 
 /**
  * Decrypts and validates a backup file that is already in memory; to read from a file or
- * content URI, use the `InputStream` overload, which never buffers more than
- * [BackupFormat.MAX_FILE_BYTES] + 1 bytes. Returns one closed [BackupReadResult] for every
- * [bytes] and [password]. The checks run in this order, so scrypt only runs on a file whose
- * size, magic, versions and parameters are acceptable:
+ * content URI, use the `InputStream` overload, which requests at most
+ * [BackupFormat.MAX_FILE_BYTES] + 1 bytes from the stream. Returns one closed
+ * [BackupReadResult] for every [bytes] and [password]. The checks run in this order, so
+ * scrypt only runs on a file whose size, magic, versions and parameters are acceptable:
  *
  * 1. larger than [BackupFormat.MAX_FILE_BYTES]: [BackupReadResult.TooLarge];
  * 2. shorter than the magic or a different magic: [BackupReadResult.NotABackup];
  * 3. unknown format version or KDF id: [BackupReadResult.UnsupportedVersion];
  * 4. scrypt parameters or salt length outside the bounds ([ScryptParams.isAllowedInBackup]):
  *    [BackupReadResult.ParametersOutOfBounds];
- * 5. cut short anywhere after the magic, or a [password] with an unpaired surrogate (no
- *    backup can have been written with it): [BackupReadResult.WrongPasswordOrDamaged],
- *    without running scrypt;
+ * 5. cut short anywhere after the magic, or a [password] with an unpaired surrogate or longer
+ *    than [MAX_PASSWORD_CHARACTERS] code points after NFC (no backup can have been written
+ *    with it): [BackupReadResult.WrongPasswordOrDamaged], without running scrypt;
  * 6. scrypt cannot allocate its memory (`OutOfMemoryError`): [BackupReadResult.NotEnoughMemory];
  * 7. GCM authentication fails (wrong password or any modified byte):
  *    [BackupReadResult.WrongPasswordOrDamaged];
@@ -154,7 +185,9 @@ internal fun sealBackup(
  *
  * Throws only for faults that no input can cause: `IllegalStateException` if AES-GCM is
  * missing from the platform, or an `OutOfMemoryError` outside scrypt (every other
- * allocation is bounded by the file size limit).
+ * allocation is bounded: file and payload buffers by the file size limit, password buffers
+ * by [MAX_PASSWORD_INPUT_UTF16_UNITS], because a longer password is refused before it is
+ * copied).
  *
  * Runs scrypt with the file's parameters (at most 64 MiB): call it off the main thread.
  * Does not modify [bytes] or [password].

@@ -58,7 +58,8 @@ internal object BackupFixtures {
         params: ScryptParams = FAST,
         salt: ByteArray = salt(),
         nonce: ByteArray = nonce(),
-    ): ByteArray = sealBackup(accounts, password.toCharArray(), salt, nonce, params)
+        kdf: Kdf = BouncyCastleScrypt,
+    ): ByteArray = sealBackup(accounts, password.toCharArray(), salt, nonce, params, kdf)
 
     fun read(bytes: ByteArray, password: String = PASSWORD, kdf: Kdf = BouncyCastleScrypt) =
         readBackup(bytes, password.toCharArray(), kdf)

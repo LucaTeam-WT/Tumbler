@@ -372,7 +372,6 @@ class BackupFormatTest {
         val outOfMemory = CountingKdf { _, _, _, _ -> throw OutOfMemoryError("simulated") }
         assertSame(NotEnoughMemory, read(file, kdf = outOfMemory))
         assertEquals(1, outOfMemory.calls)
-        assertEquals("NotEnoughMemory", NotEnoughMemory.toString())
     }
 
     /** Captures the password bytes handed to the KDF, then behaves like [then]. */
@@ -407,6 +406,33 @@ class BackupFormatTest {
         for (password in listOf("\uD83D", "abcdefghijkl\uD83D", "\uDD10abcdefghijkl")) {
             assertSame(password, WrongPasswordOrDamaged, readBackup(file, password.toCharArray(), noKdf))
         }
+    }
+
+    @Test
+    fun passwordAboveTheCap_isRejectedBeforeKdf() {
+        val tooLong = listOf(
+            "a".repeat(MAX_PASSWORD_CHARACTERS + 1).toCharArray(),
+            "ệ".repeat(MAX_PASSWORD_CHARACTERS + 1).toCharArray(),
+            CharArray(MAX_PASSWORD_INPUT_UTF16_UNITS + 1) { 'a' },
+            CharArray(1 shl 24) { 'a' },
+        )
+        for (password in tooLong) {
+            assertSame("${password.size} chars", WrongPasswordOrDamaged, readBackup(file, password, noKdf))
+        }
+        // Exactly at the cap: the password is tried (it reaches scrypt).
+        val kdf = CountingKdf(zeroKeyKdf)
+        assertSame(WrongPasswordOrDamaged, readBackup(file, "a".repeat(MAX_PASSWORD_CHARACTERS).toCharArray(), kdf))
+        assertEquals(1, kdf.calls)
+    }
+
+    @Test
+    fun passwordAtTheCap_roundTripsAndAboveItCannotExport() {
+        val longest = "ệ".repeat(MAX_PASSWORD_CHARACTERS)
+        assertEquals(oneAccount, accountsOf(read(seal(oneAccount, password = longest), password = longest)))
+        val error = assertThrows(IllegalArgumentException::class.java) {
+            seal(oneAccount, password = "a".repeat(MAX_PASSWORD_CHARACTERS + 1), kdf = noKdf)
+        }
+        assertFalse(error.message.orEmpty().contains("aaaa"))
     }
 
     @Test
@@ -449,24 +475,58 @@ class BackupFormatTest {
         assertSame(UnsupportedVersion, read(encryptPayload(PayloadBuilder(version = 2, count = 0).build())))
     }
 
-    // Never throws
+    // Never throws, never accepts a modified file
 
     @Test
-    fun fuzz_randomInputsNeverThrowOrSucceed() {
+    fun fuzz_randomInputsNeverThrow() {
+        // A zero-key KDF stands in for scrypt to keep this fast, so Success cannot happen
+        // here and is not asserted. What is checked: no input throws, and the inputs reach
+        // every check before decryption.
         val random = Random(2026)
         val validPrefix = file.copyOf(14)
+        val reached = HashSet<BackupReadResult>()
         repeat(2_000) { i ->
             val body = random.nextBytes(random.nextInt(0, 200))
             val bytes = if (i % 2 == 0) validPrefix + body else random.nextBytes(random.nextInt(0, 80))
-            val result = read(bytes, kdf = zeroKeyKdf)
-            assertTrue("case $i", result is BackupReadResult.Failure)
+            reached += read(bytes, kdf = zeroKeyKdf)
         }
+        repeat(500) {
+            val bytes = file.copyOf()
+            repeat(random.nextInt(1, 4)) { bytes[random.nextInt(bytes.size)] = random.nextInt(256).toByte() }
+            reached += read(bytes, kdf = zeroKeyKdf)
+        }
+        assertEquals(setOf(NotABackup, UnsupportedVersion, ParametersOutOfBounds, WrongPasswordOrDamaged), reached)
+    }
+
+    /** Real scrypt, memoized by password, salt and parameters, so each distinct derivation runs once. */
+    private class MemoizingScrypt : Kdf {
+        private val keys = HashMap<List<Any>, ByteArray>()
+
+        override fun derive(password: ByteArray, salt: ByteArray, params: ScryptParams, keyLength: Int): ByteArray {
+            val id = listOf(password.toList(), salt.toList(), params, keyLength)
+            // The reader wipes the key it receives, so hand out a copy.
+            return keys.getOrPut(id) { BouncyCastleScrypt.derive(password, salt, params, keyLength) }.copyOf()
+        }
+    }
+
+    @Test
+    fun fuzz_mutatedFilesNeverSucceed() {
+        // With the real key, a reader that skipped or broke authentication would accept a
+        // changed ciphertext byte that still decodes (a counter, a date, a letter of a label).
+        val kdf = MemoizingScrypt()
+        // Positive control: the same KDF opens the unmodified file.
+        assertEquals(oneAccount, accountsOf(read(file, kdf = kdf)))
+        val random = Random(2027)
+        var mutated = 0
         repeat(500) { i ->
             val bytes = file.copyOf()
             repeat(random.nextInt(1, 4)) { bytes[random.nextInt(bytes.size)] = random.nextInt(256).toByte() }
             if (bytes.contentEquals(file)) return@repeat
-            assertTrue("mutation $i", read(bytes, kdf = zeroKeyKdf) is BackupReadResult.Failure)
+            mutated++
+            val result = read(bytes, kdf = kdf)
+            assertTrue("mutation $i: $result", result is BackupReadResult.Failure)
         }
+        assertTrue("$mutated", mutated > 450)
     }
 
     // Export input checks
@@ -480,14 +540,52 @@ class BackupFormatTest {
     }
 
     @Test
-    fun export_rejectsAccountsOutsideTheLimits() {
-        val error = assertThrows(IllegalArgumentException::class.java) {
-            seal(listOf(entry(), entry(secret = longSecret(1025))))
+    fun exportBackup_reportsWhichAccountBlocksItAndWhy() {
+        val accounts = listOf(entry(), entry(secret = secretB()), entry(issuer = "Bank"), entry(issuer = "Bank ", accountName = "bob"))
+        val error = assertThrows(AccountRejectedException::class.java) { exportBackup(accounts, PASSWORD.toCharArray()) }
+        assertEquals(3, error.accountIndex)
+        assertEquals(AccountRejection.LABEL_NOT_TRIMMED, error.reason)
+        assertEquals("Account 3: LABEL_NOT_TRIMMED (issuer)", error.message)
+
+        val tooMany = assertThrows(AccountRejectedException::class.java) {
+            exportBackup(List(BackupPayload.MAX_ACCOUNTS + 1) { entry() }, PASSWORD.toCharArray())
         }
-        assertFalse(error.message.orEmpty().contains(SECRET_A_BASE32))
-        assertThrows(IllegalArgumentException::class.java) {
-            seal(List(BackupPayload.MAX_ACCOUNTS + 1) { entry() })
+        assertEquals(BackupPayload.MAX_ACCOUNTS, tooMany.accountIndex)
+        assertEquals(AccountRejection.TOO_MANY_ACCOUNTS, tooMany.reason)
+    }
+
+    @Test
+    fun export_rejectsAccountsBeforeRunningTheKdf() {
+        val cases = mapOf(
+            AccountRejection.SECRET_TOO_LONG to entry(secret = longSecret(1025)),
+            AccountRejection.LABEL_TOO_LONG to entry(accountName = label1024 + "x"),
+            AccountRejection.LABEL_UNPAIRED_SURROGATE to entry(issuer = "ACME\uD83D"),
+            AccountRejection.LABEL_NOT_TRIMMED to entry(accountName = "　alice@example.com"),
+        )
+        for ((reason, bad) in cases) {
+            val error = assertThrows("$reason", AccountRejectedException::class.java) {
+                seal(listOf(entry(), bad), kdf = noKdf)
+            }
+            assertEquals("$reason", 1, error.accountIndex)
+            assertEquals(reason, error.reason)
+            val message = error.message.orEmpty()
+            assertFalse(message, message.contains("ACME") || message.contains("alice") || message.contains(SECRET_A_BASE32))
         }
+    }
+
+    @Test
+    fun export_kdfOutOfMemory_isBackupNotEnoughMemoryException() {
+        val oom = OutOfMemoryError("simulated")
+        val kdf = CapturingKdf { _, _, _, _ -> throw oom }
+        val error = assertThrows(BackupNotEnoughMemoryException::class.java) { seal(oneAccount, kdf = kdf) }
+        assertSame(oom, error.cause)
+        assertFalse(error.message.orEmpty().contains(PASSWORD))
+        // The password bytes handed to scrypt were wiped on the way out.
+        val passwordBytes = kdf.seen.single()
+        assertEquals(PASSWORD.length, passwordBytes.size)
+        assertTrue(passwordBytes.all { it == 0.toByte() })
+        // Only the scrypt call is mapped: other errors pass through unchanged.
+        assertThrows(StackOverflowError::class.java) { seal(oneAccount, kdf = { _, _, _, _ -> throw StackOverflowError() }) }
     }
 
     @Test
@@ -500,11 +598,8 @@ class BackupFormatTest {
     }
 
     @Test
-    fun results_neverShowSecretsOrLabels() {
-        val text = read(file).toString()
-        assertEquals("Success(accounts=1)", text)
-        for (failure in listOf(NotABackup, UnsupportedVersion, ParametersOutOfBounds, WrongPasswordOrDamaged, InvalidPayload, TooLarge)) {
-            assertFalse(failure.toString().contains(PASSWORD))
-        }
+    fun successResult_neverShowsSecretsOrLabels() {
+        // The result holds the account's labels ("ACME", "alice@example.com") and secret.
+        assertEquals("Success(accounts=1)", read(file).toString())
     }
 }
