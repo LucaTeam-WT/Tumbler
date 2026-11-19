@@ -53,4 +53,16 @@ internal sealed interface BackupReadResult {
 
     /** The file is larger than [BackupFormat.MAX_FILE_BYTES]; nothing else was read. */
     data object TooLarge : Failure
+
+    /**
+     * scrypt could not allocate its memory (at most [ScryptParams.MAX_MEMORY_BYTES]) on this
+     * device. Nothing was decrypted; the file and password may both be fine.
+     */
+    data object NotEnoughMemory : Failure
+
+    /**
+     * The input stream failed before the whole file was read: it threw an `IOException`, or
+     * a read returned 0 bytes. The bytes read so far were zeroed without being parsed.
+     */
+    data object ReadFailed : Failure
 }

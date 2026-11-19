@@ -35,20 +35,26 @@ internal data class ScryptParams(val log2N: Int, val r: Int, val p: Int) {
         val DEFAULT = ScryptParams(log2N = 16, r = 8, p = 2)
 
         const val MIN_LOG2_N = 14
-        const val MAX_LOG2_N = 17
-        const val MAX_R = 16
+        const val MAX_LOG2_N = 16
+        const val MAX_R = 8
         const val MAX_P = 4
 
-        /** Upper bound on the memory scrypt needs, estimated as 128 * N * r bytes. */
-        const val MAX_MEMORY_BYTES = 128L * 1024 * 1024
+        /**
+         * Upper bound on the memory scrypt needs, estimated as 128 * N * r bytes: 64 MiB,
+         * exactly what [DEFAULT] needs.
+         */
+        const val MAX_MEMORY_BYTES = 64L * 1024 * 1024
 
         /**
          * Hard bounds for parameters read from a backup file, checked before scrypt runs so
          * that a crafted file cannot exhaust memory or CPU: N a power of two with
-         * 2^14 <= N <= 2^17, 1 <= r <= 16, 1 <= p <= 4 and 128 * N * r <= 128 MiB.
+         * 2^14 <= N <= 2^16, 1 <= r <= 8, 1 <= p <= 4 and 128 * N * r <= 64 MiB. The writer
+         * uses [DEFAULT], which sits at the N, r and memory bounds, so a reader never needs
+         * more than a writer did. Within the N and r bounds the memory check cannot fail; it
+         * is kept so that loosening one of them cannot silently raise the memory cap.
          *
          * Also N < 2^(16 * r), which RFC 7914 requires and [SCrypt.generate] enforces by
-         * throwing; within the other bounds it only excludes r = 1 with N >= 2^16.
+         * throwing; within the other bounds it only excludes r = 1 with N = 2^16.
          */
         fun isAllowedInBackup(n: Long, r: Int, p: Int): Boolean {
             if (n < 1L shl MIN_LOG2_N || n > 1L shl MAX_LOG2_N) return false

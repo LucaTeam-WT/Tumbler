@@ -1,5 +1,7 @@
 package com.phucho0237.lucaauth.backup
 
+import java.io.IOException
+import java.io.InputStream
 import java.nio.ByteBuffer
 import java.security.GeneralSecurityException
 import java.security.SecureRandom
@@ -130,26 +132,72 @@ internal fun sealBackup(
 }
 
 /**
- * Decrypts and validates a backup file. Never throws for any [bytes] or [password]: every
- * problem with the input is one of the [BackupReadResult.Failure] values. The checks run
- * in this order, so scrypt only runs on a file whose size, magic, versions and parameters
- * are acceptable:
+ * Decrypts and validates a backup file that is already in memory; to read from a file or
+ * content URI, use the `InputStream` overload, which never buffers more than
+ * [BackupFormat.MAX_FILE_BYTES] + 1 bytes. Returns one closed [BackupReadResult] for every
+ * [bytes] and [password]. The checks run in this order, so scrypt only runs on a file whose
+ * size, magic, versions and parameters are acceptable:
  *
  * 1. larger than [BackupFormat.MAX_FILE_BYTES]: [BackupReadResult.TooLarge];
  * 2. shorter than the magic or a different magic: [BackupReadResult.NotABackup];
  * 3. unknown format version or KDF id: [BackupReadResult.UnsupportedVersion];
  * 4. scrypt parameters or salt length outside the bounds ([ScryptParams.isAllowedInBackup]):
  *    [BackupReadResult.ParametersOutOfBounds];
- * 5. cut short anywhere after the magic, or GCM authentication fails (wrong password or
- *    any modified byte): [BackupReadResult.WrongPasswordOrDamaged];
- * 6. unknown payload version: [BackupReadResult.UnsupportedVersion]; malformed payload or
+ * 5. cut short anywhere after the magic, or a [password] with an unpaired surrogate (no
+ *    backup can have been written with it): [BackupReadResult.WrongPasswordOrDamaged],
+ *    without running scrypt;
+ * 6. scrypt cannot allocate its memory (`OutOfMemoryError`): [BackupReadResult.NotEnoughMemory];
+ * 7. GCM authentication fails (wrong password or any modified byte):
+ *    [BackupReadResult.WrongPasswordOrDamaged];
+ * 8. unknown payload version: [BackupReadResult.UnsupportedVersion]; malformed payload or
  *    an invalid account: [BackupReadResult.InvalidPayload].
  *
- * Runs scrypt with the file's parameters (at most 128 MiB): call it off the main thread.
- * Does not modify [bytes] or [password]. An `OutOfMemoryError` from scrypt is not caught.
+ * Throws only for faults that no input can cause: `IllegalStateException` if AES-GCM is
+ * missing from the platform, or an `OutOfMemoryError` outside scrypt (every other
+ * allocation is bounded by the file size limit).
+ *
+ * Runs scrypt with the file's parameters (at most 64 MiB): call it off the main thread.
+ * Does not modify [bytes] or [password].
  */
 internal fun readBackup(bytes: ByteArray, password: CharArray): BackupReadResult =
     readBackup(bytes, password, BouncyCastleScrypt)
+
+/**
+ * Reads a backup from [input] and decrypts it like the `ByteArray` overload. Requests at
+ * most [BackupFormat.MAX_FILE_BYTES] + 1 bytes from [input] in total: as soon as more than
+ * [BackupFormat.MAX_FILE_BYTES] bytes have arrived it returns [BackupReadResult.TooLarge]
+ * without reading the rest. Never closes [input]; the caller owns it.
+ *
+ * An `IOException` from [input], or a read that returns 0 bytes (which `InputStream` does
+ * not allow for a non-empty request, and would otherwise loop forever), gives
+ * [BackupReadResult.ReadFailed]. The bytes read so far are then zeroed and never parsed.
+ * Other exceptions from [input] propagate.
+ */
+internal fun readBackup(input: InputStream, password: CharArray): BackupReadResult =
+    readBackup(input, password, BouncyCastleScrypt)
+
+/** The `InputStream` overload of [readBackup] with the KDF as a seam. */
+internal fun readBackup(input: InputStream, password: CharArray, kdf: Kdf): BackupReadResult =
+    readBounded(input) { bytes -> readBackup(bytes, password, kdf) }
+
+/**
+ * The read step of the `InputStream` overload of [readBackup]: reads [input] within
+ * [BackupFormat.MAX_FILE_BYTES] (or returns [BackupReadResult.TooLarge] or
+ * [BackupReadResult.ReadFailed]), passes the complete file to [parse], and zeroes that
+ * array when [parse] returns or throws. A seam so tests can check the wipe.
+ */
+internal fun readBounded(input: InputStream, parse: (ByteArray) -> BackupReadResult): BackupReadResult {
+    val bytes = when (val read = readAtMost(input, BackupFormat.MAX_FILE_BYTES)) {
+        BoundedRead.TooLarge -> return BackupReadResult.TooLarge
+        BoundedRead.Failed -> return BackupReadResult.ReadFailed
+        is BoundedRead.Complete -> read.bytes
+    }
+    try {
+        return parse(bytes)
+    } finally {
+        bytes.fill(0)
+    }
+}
 
 /** [readBackup] with the KDF as a seam, so tests can count derivations. */
 internal fun readBackup(bytes: ByteArray, password: CharArray, kdf: Kdf): BackupReadResult {
@@ -189,6 +237,10 @@ internal fun readBackup(bytes: ByteArray, password: CharArray, kdf: Kdf): Backup
         } catch (e: IllegalArgumentException) {
             // Defense in depth: the bounds above already exclude everything scrypt rejects.
             return BackupReadResult.ParametersOutOfBounds
+        } catch (e: OutOfMemoryError) {
+            // scrypt's table (at most 64 MiB) did not fit. Bouncy Castle clears the chunks it
+            // had already allocated in its own finally block; passwordBytes is wiped below.
+            return BackupReadResult.NotEnoughMemory
         }
         check(key.size == BackupFormat.KEY_LENGTH) { "Unexpected key length" }
         val cipher = Cipher.getInstance(BackupFormat.TRANSFORMATION)
@@ -220,6 +272,45 @@ internal fun readBackup(bytes: ByteArray, password: CharArray, kdf: Kdf): Backup
 }
 
 private const val MAX_SHIFTABLE_LOG2_N = 62
+
+/** First buffer size for [readAtMost]; it doubles up to the limit as data arrives. */
+private const val INITIAL_READ_BUFFER_BYTES = 64 * 1024
+
+private sealed interface BoundedRead {
+    class Complete(val bytes: ByteArray) : BoundedRead
+    data object TooLarge : BoundedRead
+    data object Failed : BoundedRead
+}
+
+/**
+ * Reads [input] to its end if it holds at most [limit] bytes. Never requests more than
+ * [limit] + 1 bytes in total, so a longer stream is detected without reading the rest.
+ * Every buffer it fills is zeroed before it returns.
+ */
+private fun readAtMost(input: InputStream, limit: Int): BoundedRead {
+    val cap = limit + 1
+    var buffer = ByteArray(minOf(INITIAL_READ_BUFFER_BYTES, cap))
+    var size = 0
+    try {
+        while (true) {
+            if (size == buffer.size) {
+                // Only reached while buffer.size < cap: at cap, size > limit returned below.
+                val grown = buffer.copyOf(minOf(buffer.size * 2, cap))
+                buffer.fill(0)
+                buffer = grown
+            }
+            val read = input.read(buffer, size, buffer.size - size)
+            if (read < 0) return BoundedRead.Complete(buffer.copyOf(size))
+            if (read == 0) return BoundedRead.Failed
+            size += read
+            if (size > limit) return BoundedRead.TooLarge
+        }
+    } catch (e: IOException) {
+        return BoundedRead.Failed
+    } finally {
+        buffer.fill(0)
+    }
+}
 
 private fun ByteArray.u8(offset: Int): Int = this[offset].toInt() and 0xFF
 

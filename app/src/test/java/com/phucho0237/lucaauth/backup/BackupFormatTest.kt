@@ -15,6 +15,7 @@ import com.phucho0237.lucaauth.backup.BackupFixtures.secretB
 import com.phucho0237.lucaauth.backup.BackupFixtures.withByte
 import com.phucho0237.lucaauth.backup.BackupReadResult.InvalidPayload
 import com.phucho0237.lucaauth.backup.BackupReadResult.NotABackup
+import com.phucho0237.lucaauth.backup.BackupReadResult.NotEnoughMemory
 import com.phucho0237.lucaauth.backup.BackupReadResult.ParametersOutOfBounds
 import com.phucho0237.lucaauth.backup.BackupReadResult.TooLarge
 import com.phucho0237.lucaauth.backup.BackupReadResult.UnsupportedVersion
@@ -316,21 +317,23 @@ class BackupFormatTest {
     fun parametersOutOfBounds_areRejectedBeforeKdf() {
         val cases = mapOf(
             "N = 2^13" to withParams(13, 1, 1),
+            "N = 2^17" to withParams(17, 2, 1),
+            "N = 2^17, r = 8 (the old 128 MiB maximum)" to withParams(17, 8, 4),
             "N = 2^18" to withParams(18, 1, 1),
             "N = 2^0" to withParams(0, 1, 1),
             "log2 N = 62" to withParams(62, 1, 1),
             "log2 N = 63" to withParams(63, 1, 1),
+            "log2 N = 80 (16 + 64, wraps to 2^16 if shifted unguarded)" to withParams(80, 8, 1),
             "log2 N = 255" to withParams(255, 1, 1),
             "r = 0" to withParams(14, 0, 1),
-            "r = 17" to withParams(14, 17, 1),
+            "r = 9" to withParams(14, 9, 1),
+            "r = 16" to withParams(14, 16, 1),
+            "r = 16, N = 2^16 (128 MiB)" to withParams(16, 16, 1),
             "r = 255" to withParams(14, 255, 1),
             "p = 0" to withParams(14, 1, 0),
             "p = 5" to withParams(14, 1, 5),
             "p = 255" to withParams(14, 1, 255),
-            "memory 144 MiB" to withParams(17, 9, 1),
-            "memory 256 MiB" to withParams(17, 16, 1),
             "RFC 7914 r = 1, N = 2^16" to withParams(16, 1, 1),
-            "RFC 7914 r = 1, N = 2^17" to withParams(17, 1, 1),
             "salt length 0" to withParams(14, 1, 1, saltLength = 0),
             "salt length 15" to withParams(14, 1, 1, saltLength = 15),
             "salt length 65" to withParams(14, 1, 1, saltLength = 65),
@@ -346,10 +349,10 @@ class BackupFormatTest {
         val cases = listOf(
             withParams(14, 1, 1),
             withParams(15, 1, 4),
-            withParams(17, 8, 4),
-            withParams(16, 16, 4),
-            withParams(14, 16, 1),
-            withParams(17, 2, 1),
+            withParams(16, 8, 2), // the writer's defaults
+            withParams(16, 8, 4),
+            withParams(14, 8, 1),
+            withParams(16, 2, 1),
         )
         for (bytes in cases) {
             val kdf = CountingKdf(zeroKeyKdf)
@@ -362,6 +365,48 @@ class BackupFormatTest {
     fun kdfRejectingParameters_isParametersOutOfBounds() {
         val rejecting = Kdf { _, _, _, _ -> throw IllegalArgumentException("rejected") }
         assertSame(ParametersOutOfBounds, read(file, kdf = rejecting))
+    }
+
+    @Test
+    fun kdfOutOfMemory_isNotEnoughMemory() {
+        val outOfMemory = CountingKdf { _, _, _, _ -> throw OutOfMemoryError("simulated") }
+        assertSame(NotEnoughMemory, read(file, kdf = outOfMemory))
+        assertEquals(1, outOfMemory.calls)
+        assertEquals("NotEnoughMemory", NotEnoughMemory.toString())
+    }
+
+    /** Captures the password bytes handed to the KDF, then behaves like [then]. */
+    private class CapturingKdf(private val then: Kdf) : Kdf {
+        val seen = mutableListOf<ByteArray>()
+
+        override fun derive(password: ByteArray, salt: ByteArray, params: ScryptParams, keyLength: Int): ByteArray {
+            seen += password
+            return then.derive(password, salt, params, keyLength)
+        }
+    }
+
+    @Test
+    fun passwordBytes_areWipedOnEveryPathAfterTheKdf() {
+        val paths = mapOf<String, Kdf>(
+            "success" to BouncyCastleScrypt,
+            "wrong key" to zeroKeyKdf,
+            "out of memory" to Kdf { _, _, _, _ -> throw OutOfMemoryError("simulated") },
+            "kdf rejects" to Kdf { _, _, _, _ -> throw IllegalArgumentException("rejected") },
+        )
+        for ((path, then) in paths) {
+            val kdf = CapturingKdf(then)
+            read(file, kdf = kdf)
+            val passwordBytes = kdf.seen.single()
+            assertEquals(path, PASSWORD.length, passwordBytes.size)
+            assertTrue(path, passwordBytes.all { it == 0.toByte() })
+        }
+    }
+
+    @Test
+    fun passwordWithUnpairedSurrogate_isRejectedBeforeKdf() {
+        for (password in listOf("\uD83D", "abcdefghijkl\uD83D", "\uDD10abcdefghijkl")) {
+            assertSame(password, WrongPasswordOrDamaged, readBackup(file, password.toCharArray(), noKdf))
+        }
     }
 
     @Test

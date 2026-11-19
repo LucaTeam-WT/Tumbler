@@ -80,14 +80,17 @@ class ScryptTest {
     @Test
     fun bounds_acceptEdges() {
         assertTrue(ScryptParams.isAllowedInBackup(1L shl 14, 1, 1))
-        assertTrue(ScryptParams.isAllowedInBackup(1L shl 17, 8, 4))
-        assertTrue(ScryptParams.isAllowedInBackup(1L shl 16, 16, 4))
-        assertTrue(ScryptParams.isAllowedInBackup(1L shl 14, 16, 1))
+        assertTrue(ScryptParams.isAllowedInBackup(1L shl 16, 8, 4))
+        assertTrue(ScryptParams.isAllowedInBackup(1L shl 16, 2, 1))
+        assertTrue(ScryptParams.isAllowedInBackup(1L shl 14, 8, 4))
+        assertTrue(ScryptParams.isAllowedInBackup(1L shl 15, 1, 4))
     }
 
     @Test
     fun bounds_rejectN() {
         assertFalse(ScryptParams.isAllowedInBackup(1L shl 13, 8, 1))
+        assertFalse(ScryptParams.isAllowedInBackup(1L shl 17, 2, 1))
+        assertFalse(ScryptParams.isAllowedInBackup(1L shl 17, 8, 2))
         assertFalse(ScryptParams.isAllowedInBackup(1L shl 18, 1, 1))
         assertFalse(ScryptParams.isAllowedInBackup(0, 8, 1))
         assertFalse(ScryptParams.isAllowedInBackup(-(1L shl 16), 8, 1))
@@ -105,6 +108,8 @@ class ScryptTest {
     @Test
     fun bounds_rejectRAndP() {
         assertFalse(ScryptParams.isAllowedInBackup(1L shl 14, 0, 1))
+        assertFalse(ScryptParams.isAllowedInBackup(1L shl 14, 9, 1))
+        assertFalse(ScryptParams.isAllowedInBackup(1L shl 14, 16, 1))
         assertFalse(ScryptParams.isAllowedInBackup(1L shl 14, 17, 1))
         assertFalse(ScryptParams.isAllowedInBackup(1L shl 14, -1, 1))
         assertFalse(ScryptParams.isAllowedInBackup(1L shl 14, 1, 0))
@@ -113,20 +118,25 @@ class ScryptTest {
     }
 
     @Test
-    fun bounds_rejectMemoryAboveCap() {
-        // N and r are each within bounds, but 128 * N * r > 128 MiB.
-        assertFalse(ScryptParams.isAllowedInBackup(1L shl 17, 9, 1))
-        assertFalse(ScryptParams.isAllowedInBackup(1L shl 17, 16, 1))
-        assertTrue(ScryptParams.isAllowedInBackup(1L shl 17, 8, 1))
+    fun bounds_memoryNeverExceeds64MiB() {
+        // The writer's defaults sit exactly at the cap; the old 128 MiB maximum is rejected.
+        assertEquals(64L * 1024 * 1024, ScryptParams.MAX_MEMORY_BYTES)
+        assertTrue(ScryptParams.isAllowedInBackup(1L shl 16, 8, 1))
+        assertFalse(ScryptParams.isAllowedInBackup(1L shl 17, 8, 1))
+        assertFalse(ScryptParams.isAllowedInBackup(1L shl 16, 16, 1))
+        for (log2N in 1..30) for (r in 1..32) {
+            if (ScryptParams.isAllowedInBackup(1L shl log2N, r, 1)) {
+                assertTrue("2^$log2N, r = $r", 128L * (1L shl log2N) * r <= 64L * 1024 * 1024)
+            }
+        }
     }
 
     @Test
     fun bounds_rejectRfc7914LimitForROne() {
         // RFC 7914 requires N < 2^(128 * r / 8); Bouncy Castle throws for r = 1, N >= 2^16.
         assertFalse(ScryptParams.isAllowedInBackup(1L shl 16, 1, 1))
-        assertFalse(ScryptParams.isAllowedInBackup(1L shl 17, 1, 1))
         assertTrue(ScryptParams.isAllowedInBackup(1L shl 15, 1, 1))
-        assertTrue(ScryptParams.isAllowedInBackup(1L shl 17, 2, 1))
+        assertTrue(ScryptParams.isAllowedInBackup(1L shl 16, 2, 1))
         assertThrows(IllegalArgumentException::class.java) {
             BouncyCastleScrypt.derive(ascii("p"), ascii("s"), ScryptParams(log2N = 16, r = 1, p = 1), 32)
         }
@@ -143,9 +153,9 @@ class ScryptTest {
             val n = 1 shl log2N
             assertTrue(n > 1 && !(r == 1 && n >= 65_536) && p <= Int.MAX_VALUE / (128 * r * 8))
         }
-        // (r values) x 4 p values: N = 2^14: 16, 2^15: 16, 2^16: 15 (no r = 1), 2^17: 7
-        // (r = 2..8; r > 8 exceeds 128 MiB, r = 1 breaks the RFC rule).
-        assertEquals((16 + 16 + 15 + 7) * 4, allowed)
+        // (r values) x 4 p values: N = 2^14: r = 1..8, 2^15: r = 1..8, 2^16: r = 2..8
+        // (r = 1 breaks the RFC rule).
+        assertEquals((8 + 8 + 7) * 4, allowed)
     }
 
     @Test
