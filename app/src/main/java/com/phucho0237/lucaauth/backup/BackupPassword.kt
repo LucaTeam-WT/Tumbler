@@ -71,9 +71,9 @@ internal fun validatePasswordConfirmation(password: CharArray, confirmation: Cha
  * encoded as UTF-8 without a byte order mark or terminator. Returns null if [password]
  * holds an unpaired surrogate (no UTF-8 encoding exists).
  *
- * Returns a new array the caller must wipe. Does not modify [password]. If [password] is
- * not already in NFC, normalization goes through an immutable `String` that cannot be
- * wiped; an already normalized password (all ASCII passwords, for example) never does.
+ * Returns a new array the caller must wipe. Does not modify [password]. Which passwords
+ * pass through an immutable `String` that cannot be wiped is described at
+ * [normalizePassword].
  */
 internal fun passwordKdfInput(password: CharArray): ByteArray? {
     val normalized = normalizePassword(password)
@@ -95,8 +95,31 @@ internal fun passwordKdfInput(password: CharArray): ByteArray? {
     }
 }
 
-/** Returns a new NFC-normalized copy of [password] that the caller must wipe. */
-private fun normalizePassword(password: CharArray): CharArray {
+/**
+ * Returns a new NFC-normalized copy of [password] that the caller must wipe.
+ *
+ * Fast path: if every char is below U+0300 the password is already NFC (no such character
+ * has a decomposition, a non-zero combining class or a composition with another such
+ * character; `BackupPasswordTest` checks every one and every pair), so it is copied
+ * without calling `java.text.Normalizer` and never becomes a `String`. That covers ASCII,
+ * Latin-1, Latin Extended-A and -B, IPA and the spacing modifier letters.
+ *
+ * Any other password goes to [slowPath], by default `java.text.Normalizer`:
+ * - `Normalizer.isNormalized` turns the password into an immutable `String` on Android
+ *   8.0 to 11 (API 26 to 30: the platform calls `src.toString()`); from Android 12
+ *   (API 31) the platform hands the `CharBuffer` to ICU without converting it;
+ * - a password that is not already NFC is normalized by `Normalizer.normalize`, which
+ *   returns a `String` on every version.
+ */
+internal fun normalizePassword(
+    password: CharArray,
+    slowPath: (CharArray) -> CharArray = ::normalizeWithJavaText,
+): CharArray {
+    if (password.all { it < NFC_FAST_PATH_LIMIT }) return password.copyOf()
+    return slowPath(password)
+}
+
+private fun normalizeWithJavaText(password: CharArray): CharArray {
     val view = CharBuffer.wrap(password)
     if (Normalizer.isNormalized(view, Normalizer.Form.NFC)) return password.copyOf()
     return Normalizer.normalize(view, Normalizer.Form.NFC).toCharArray()
@@ -120,3 +143,6 @@ private fun isWellFormedUtf16(chars: CharArray): Boolean {
 
 private const val MAX_UTF8_BYTES_PER_UTF16_UNIT = 3
 private const val WIPE_CHAR = '\u0000'
+
+/** Every char below this (U+0300 COMBINING GRAVE ACCENT, the first combining mark) is NFC-stable. */
+internal const val NFC_FAST_PATH_LIMIT = '\u0300'

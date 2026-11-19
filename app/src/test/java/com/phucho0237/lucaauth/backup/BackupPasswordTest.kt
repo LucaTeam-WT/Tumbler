@@ -3,15 +3,17 @@ package com.phucho0237.lucaauth.backup
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotSame
 import org.junit.Assert.assertNull
+import org.junit.Assert.fail
 import org.junit.Test
 import java.text.Normalizer
 
 class BackupPasswordTest {
 
-    /** "ệ" precomposed (NFC, 1 code point) and decomposed (NFD, 3 code points). */
-    private val nfcE = "ệ"
-    private val nfdE = "ệ"
+    /** "ệ" precomposed (NFC, 1 code point) and decomposed (NFD, 3 code points), as escapes. */
+    private val nfcE = "\u1EC7"
+    private val nfdE = "e\u0323\u0302"
 
     /** One emoji outside the BMP: 1 code point, 2 UTF-16 units, 4 UTF-8 bytes. */
     private val emoji = "🔐"
@@ -146,6 +148,57 @@ class BackupPasswordTest {
         val password = nfdE.repeat(3).toCharArray()
         passwordKdfInput(password)
         assertArrayEquals(nfdE.repeat(3).toCharArray(), password)
+    }
+
+    // Fast path: passwords whose chars are all below U+0300 skip java.text.Normalizer
+
+    @Test
+    fun everyCharBelowU0300_isNfcAloneAndInEveryPair() {
+        // Alone: no decomposition. In pairs: no reordering and no composition. Every such
+        // char has combining class 0, so longer strings cannot compose either.
+        assertEquals(0x300, NFC_FAST_PATH_LIMIT.code)
+        for (a in 0 until NFC_FAST_PATH_LIMIT.code) {
+            val single = a.toChar().toString()
+            assertEquals("U+%04X".format(a), single, Normalizer.normalize(single, Normalizer.Form.NFC))
+            for (b in 0 until NFC_FAST_PATH_LIMIT.code) {
+                val pair = String(charArrayOf(a.toChar(), b.toChar()))
+                if (Normalizer.normalize(pair, Normalizer.Form.NFC) != pair) fail("U+%04X U+%04X is not NFC".format(a, b))
+            }
+        }
+    }
+
+    @Test
+    fun fastPath_skipsTheNormalizerOnlyWhenEveryCharIsBelowU0300() {
+        var calls = 0
+        val counting: (CharArray) -> CharArray = { calls++; it.copyOf() }
+        val fast = listOf("", "correct horse battery staple", "\u00DCn\u00EFc\u00F6d\u00E9 \u00C4\u00DF\u00F8", "\u0000\u007F\u00FF\u0100\u02FF")
+        for (password in fast) {
+            calls = 0
+            val input = password.toCharArray()
+            val normalized = normalizePassword(input, counting)
+            assertEquals(password, 0, calls)
+            assertArrayEquals(password.toCharArray(), normalized)
+            if (input.isNotEmpty()) assertNotSame(input, normalized)
+        }
+        // At or above U+0300 anywhere, including combining marks, Vietnamese, emoji, CJK
+        // and a lone surrogate: the normalizer runs.
+        val slow = listOf("a\u0300", "\u0300", "abcdefghijk\u0301", nfcE, nfdE, emoji, "\u4F8B\u3048", "abc\uD83D")
+        for (password in slow) {
+            calls = 0
+            normalizePassword(password.toCharArray(), counting)
+            assertEquals(password, 1, calls)
+        }
+    }
+
+    @Test
+    fun firstCombiningMark_isNormalized() {
+        // "a" + U+0300 composes to U+00E0 under NFC: U+0300 itself must not take the fast path.
+        assertEquals("\u00E0", Normalizer.normalize("a\u0300", Normalizer.Form.NFC))
+        assertArrayEquals(
+            "\u00E0bcdefghijkl".toByteArray(Charsets.UTF_8),
+            passwordKdfInput("a\u0300bcdefghijkl".toCharArray()),
+        )
+        assertEquals(PasswordCheck.TooShort(12), validatePassword("a\u0300bcdefghijk".toCharArray()))
     }
 
     @Test
