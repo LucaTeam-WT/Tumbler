@@ -57,7 +57,8 @@ A file is at most **4 MiB** (4,194,304 bytes). The largest payload the limits al
 1. Normalize the password to Unicode **NFC**. Nothing else is applied: no trimming, no
    case folding, no other mapping.
 2. Encode it as **UTF-8**, without a byte order mark or terminator. A password with an
-   unpaired UTF-16 surrogate has no UTF-8 encoding and is rejected.
+   unpaired UTF-16 surrogate has no UTF-8 encoding and is rejected: on export it is
+   `InvalidCharacters`, and on import `WrongPasswordOrDamaged` before scrypt runs.
 
 NFC makes a password typed with precomposed characters (for example `ệ` U+1EC7) and one
 typed with combining marks (`e` U+0323 U+0302), as different Vietnamese keyboards do,
@@ -79,17 +80,21 @@ Defaults written by the app: N = 2^16, r = 8, p = 2 (128 · N · r = 64 MiB of m
 Because the parameters come from the file, a reader **must** check these hard bounds
 before running scrypt, so that a crafted file cannot exhaust memory or CPU:
 
-- 14 ≤ log2(N) ≤ 17 (N a power of two, 2^14 ≤ N ≤ 2^17; the encoding makes N a power
-  of two);
-- 1 ≤ r ≤ 16;
+- 14 ≤ log2(N) ≤ 16 (N a power of two, 2^14 ≤ N ≤ 2^16; the encoding makes N a power
+  of two, and a log2(N) byte above 16 is rejected without computing 2^log2(N));
+- 1 ≤ r ≤ 8;
 - 1 ≤ p ≤ 4;
-- estimated memory 128 · N · r ≤ 128 MiB (134,217,728 bytes);
+- estimated memory 128 · N · r ≤ 64 MiB (67,108,864 bytes). Within the N and r bounds
+  this always holds; it is checked anyway, so loosening one of them cannot silently raise
+  the memory cap;
 - N < 2^(128 · r / 8), as RFC 7914 requires (within the bounds above this only excludes
-  r = 1 with N ≥ 2^16; Bouncy Castle throws for it);
+  r = 1 with N = 2^16; Bouncy Castle throws for it);
 - 16 ≤ S ≤ 64.
 
-The worst case a file can request is therefore 128 MiB of memory and 4 times the work of
-a 128 MiB scrypt pass.
+The writer's defaults sit at the N, r and memory bounds, so the reader never allocates
+more than the writer did. The worst case a file can request is 64 MiB of memory and
+4 times the work of one 64 MiB scrypt pass (twice the work of the defaults, because
+p ≤ 4).
 
 ## Encryption
 
@@ -123,8 +128,22 @@ Account record:
 | 2 + n | secret: `u16` length n, then n raw bytes (not Base32) | 1 ≤ n ≤ 1024 |
 
 Codes are explicit values, never enum ordinals. Labels are stored exactly as the app
-holds them (no normalization). UTF-8 is decoded strictly: overlong forms, encoded
+holds them (no Unicode normalization). UTF-8 is decoded strictly: overlong forms, encoded
 surrogates, values above U+10FFFF and truncated sequences are invalid.
+
+**Labels are trimmed.** Each label (issuer and account name) must be in the form the
+app's `otpauth://` parser stores: no leading or trailing whitespace. Whitespace is what
+Kotlin's `String.trim()` removes, the parser's own rule: a UTF-16 unit `c` for which
+Java's `Character.isWhitespace(c)` or `Character.isSpaceChar(c)` is true, that is,
+Unicode categories Zs, Zl and Zp (including U+00A0 and U+3000), U+0009 to U+000D and
+U+001C to U+001F. Whitespace inside a label is kept. An empty label is allowed, and so
+are two empty labels (the parser stores both empty for the label `:`).
+
+The decoder **rejects** a label with surrounding whitespace (the whole payload is
+`InvalidPayload`) instead of trimming it, and the writer refuses to write one (an
+`IllegalArgumentException` naming the account index and field). A backup never changes
+a label, so an imported ` GitHub` can neither silently become `GitHub` nor be stored next
+to an existing `GitHub` that it fails to match.
 
 The digits, period, counter and non-empty-secret rules are the ones the app's
 `OtpAccount` enforces for every account, including those parsed from `otpauth://` links.
@@ -134,34 +153,56 @@ account above a limit (with an `IllegalArgumentException` naming the account ind
 field) instead of writing a file it could not read back.
 
 **Fail closed:** a reader must reject the whole payload if any record is malformed or
-invalid, if the count is out of range, or if bytes are left over after the last record.
-There is no partial import.
+invalid (including a label that is not trimmed), if the count is out of range, or if
+bytes are left over after the last record. There is no partial import.
 
 ## Reading
 
-`readBackup` never throws for any input; it returns exactly one of these, checking in
-this order:
+There are two entry points. `readBackup(input: InputStream, password)` reads a file or
+content URI and is the one to use. `readBackup(bytes: ByteArray, password)` reads a file
+that is already in memory. Both run scrypt, so call them off the main thread.
+
+**Bounded stream read.** The `InputStream` overload requests at most 4 MiB + 1 bytes
+(4,194,305) from the stream in total. As soon as more than 4 MiB have arrived it returns
+`TooLarge` without reading the rest, so it never holds more than 4 MiB + 1 bytes however
+long the stream is. It never closes the stream; the caller owns it. If the stream throws
+an `IOException`, or a read returns 0 bytes (which `InputStream` does not allow and which
+would otherwise loop forever), the result is `ReadFailed`: the bytes read so far are
+zeroed and never parsed. Every read buffer is zeroed before the call returns. The
+`ByteArray` overload also returns `TooLarge` for more than 4 MiB without parsing, but by
+then the caller has already read the whole file into memory.
+
+Both overloads return exactly one of these closed results, checking in this order:
 
 | Step | Condition | Result |
 |---|---|---|
-| 1 | file larger than 4 MiB | `TooLarge` (nothing else is read) |
+| 0 | (stream only) the stream throws `IOException` or a read returns 0 bytes before the end, while at most 4 MiB have arrived | `ReadFailed` |
+| 1 | file larger than 4 MiB | `TooLarge` |
 | 2 | shorter than 8 bytes, or bytes 0–7 are not the magic | `NotABackup` |
 | 3 | format version is not 1 | `UnsupportedVersion` |
 | 4 | KDF id is not 1 | `UnsupportedVersion` |
 | 5 | scrypt parameters or salt length outside the bounds | `ParametersOutOfBounds` |
 | 6 | file ends before the header plus a 16-byte tag (at any earlier step too, once the magic matched) | `WrongPasswordOrDamaged` |
-| 7 | GCM authentication fails | `WrongPasswordOrDamaged` |
-| 8 | payload version is not 1 | `UnsupportedVersion` |
-| 9 | payload malformed or an account invalid | `InvalidPayload` |
+| 7 | the password contains an unpaired UTF-16 surrogate, so it has no UTF-8 encoding and no backup can have been written with it | `WrongPasswordOrDamaged` |
+| 8 | scrypt cannot allocate its memory (`OutOfMemoryError` from the KDF) | `NotEnoughMemory` |
+| 9 | GCM authentication fails | `WrongPasswordOrDamaged` |
+| 10 | payload version is not 1 | `UnsupportedVersion` |
+| 11 | payload malformed or an account invalid | `InvalidPayload` |
 | — | otherwise | `Success(accounts)` |
 
-Steps 1–6 run before scrypt. A wrong password and a modified or truncated file give the
+Steps 0–7 run before scrypt. A wrong password and a modified or truncated file give the
 same `WrongPasswordOrDamaged`, deliberately: GCM cannot tell them apart, and a short file
 is reported the same way. A version or KDF id byte is checked as soon as it is read, so a
 newer file is reported as `UnsupportedVersion` even if its later layout differs.
+`NotEnoughMemory` says nothing about the file or the password; nothing was decrypted, and
+the same file may open on a device with more free memory.
 
-If the device cannot allocate scrypt's memory (at most 128 MiB), the `OutOfMemoryError`
-propagates; callers should run the read off the main thread and handle it.
+**Never throws for any input.** Every file content, stream content and password gives
+one of the results above, including when scrypt runs out of memory. What remains can be
+caused only by the platform or by the caller's stream implementation, never by the bytes
+or the password: an `IllegalStateException` if AES-GCM is missing from the platform, an
+`OutOfMemoryError` outside scrypt (all other allocations are bounded by the 4 MiB limit),
+and any exception other than `IOException` that the caller's `InputStream` throws.
 
 ## Import planning
 
@@ -175,11 +216,26 @@ If several existing accounts match, the counterpart is the first (in the order g
 with the same secret, otherwise the first with the same label. Duplicates inside the
 backup are not conflicts with each other.
 
-For each conflict the user must choose **Skip**, **Keep both** or **Replace**;
+For each conflict the user must choose one of the decisions `allowedDecisions(conflict)`
+returns, in this display order:
+
+| Existing and imported account | Allowed decisions |
+|---|---|
+| both HOTP, identical secret bytes (any label) | **Skip**, **Replace** |
+| any other conflict | **Skip**, **Keep both**, **Replace** |
+
+Keep both is not offered for two HOTP accounts with the same secret. The server keeps one
+counter for that secret, while two rows would each keep their own. Whichever row falls
+behind would produce codes for counter values the server has already passed, and those
+codes would be rejected.
+
 `applyDecisions(plan, decisions)` requires exactly one decision per conflict, so nothing
-is ever overwritten by default. It returns inserts (non-conflicting accounts and "Keep
-both" accounts, in backup order) and replacements (existing id plus the account to
-write over it). Two Replace decisions for the same existing account are rejected.
+is ever overwritten by default. Each decision must be allowed for its conflict. A missing
+or extra decision, a decision that is not allowed, and two Replace decisions for the same
+existing account are each rejected with an `IllegalArgumentException`, and no writes are
+returned. Otherwise it returns inserts (non-conflicting accounts and "Keep both"
+accounts, in backup order) and replacements (existing id plus the account to write over
+it).
 
 **Replace** overwrites every field of the existing account with the imported one; the
 stored row keeps its id and creation time. **HOTP counter rule:**
@@ -201,17 +257,28 @@ so the mixed case only happens when the secrets are identical.
 
 Passwords are `CharArray`, secrets and keys are `ByteArray`, and the code wipes
 (fills with zeros) every intermediate array it owns in `finally` blocks: password copies
-and their UTF-8 bytes, the derived key, the encoded payload before encryption, the
-decrypted payload after decoding, and on a failed decode the secrets decoded so far.
+and their UTF-8 bytes, the derived key, the encoded payload before encryption, the file
+bytes and read buffers of the stream overload, the decrypted payload after decoding, and
+on a failed decode the secrets decoded so far.
 This is **best-effort**:
 
 - the JVM and ART may copy arrays (garbage collection, JIT) and never zero freed memory;
 - `SecretKeySpec` keeps its own copy of the key, and `Cipher` keeps the AES key schedule
   and GCM state; neither can be wiped;
-- Bouncy Castle's scrypt clears its large buffers, but its PBKDF2/HMAC state, derived from
-  the password, is left to the garbage collector;
-- a password that is not already in NFC goes through an immutable `String` during
-  normalization (ASCII passwords and NFC input never do);
+- Bouncy Castle's scrypt clears its large buffers (also when an allocation fails), but its
+  PBKDF2/HMAC state, derived from the password, is left to the garbage collector;
+- which passwords pass through an immutable `String` during NFC normalization:
+  - a password whose UTF-16 units are all below U+0300 (ASCII, Latin-1, Latin
+    Extended-A and -B, IPA, spacing modifier letters) is already NFC and is copied as it
+    is. It never reaches `java.text.Normalizer` and never becomes a `String`, on any
+    Android version;
+  - any other password (for example one with a combining mark, a Vietnamese letter with
+    two diacritics such as `ệ`, Greek, Cyrillic, CJK or an emoji) goes to
+    `Normalizer.isNormalized`. On Android 8.0 to 11 (API 26 to 30) that copies it into a
+    `String`. From Android 12 (API 31) the platform passes the `CharSequence` to ICU
+    without that copy;
+  - if such a password is not already NFC, `Normalizer.normalize` returns the normalized
+    password as a `String` on every version;
 - the decrypted labels are `String`s;
 - the secrets returned by `readBackup` are owned by the caller, which must wipe them;
 - a password typed into a Compose text field exists as `String`s anyway.
@@ -234,6 +301,9 @@ readable without the password.
   files are never edited or regenerated, and must keep decrypting while the reader
   supports their version.
 - This document changes in the same PR. See `CLAUDE.md`.
+- No app version that writes backups has been released yet, so version 1 is not frozen:
+  until then its rules may still be tightened in place, as long as `golden-v1.bin` keeps
+  decrypting unchanged.
 
 ## Test vectors
 
@@ -261,6 +331,15 @@ Header (58 bytes):
 a2 a3 a4 a5 a6 a7 a8 a9 aa ab
 ```
 
-The tests check that the file decrypts to the expected accounts, that re-encoding the
-same inputs reproduces it byte for byte, that the independent reader decodes it, and
-that decryption without the header as associated data fails.
+The tests check:
+
+- that the committed file still has this size and SHA-256;
+- that it decrypts to the expected accounts, also with the NFD form of the password;
+- that re-encoding the same inputs reproduces it byte for byte;
+- that the independent reader decodes it;
+- that decryption without the header as associated data fails, while the same bytes with
+  the same NFC password decrypt when the header is passed (a positive control, so the
+  failure can only come from the missing associated data).
+
+The test source is pure ASCII, with every non-ASCII character written as a `\u` escape,
+so no editor can change the normalization form of the password or a label unnoticed.
