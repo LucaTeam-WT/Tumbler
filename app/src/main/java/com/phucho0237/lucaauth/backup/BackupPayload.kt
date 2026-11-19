@@ -1,0 +1,226 @@
+package com.phucho0237.lucaauth.backup
+
+import com.phucho0237.lucaauth.domain.model.OtpAccount
+import com.phucho0237.lucaauth.domain.model.OtpType
+import com.phucho0237.lucaauth.domain.otp.OtpAlgorithm
+import java.io.ByteArrayInputStream
+import java.io.DataInputStream
+import java.io.EOFException
+import java.nio.ByteBuffer
+import java.nio.CharBuffer
+import java.nio.charset.CharacterCodingException
+import java.nio.charset.CodingErrorAction
+
+/**
+ * The plaintext inside a backup (payload version 1), a deterministic length-prefixed
+ * big-endian encoding; see `docs/backup-format.md`.
+ *
+ * ```
+ * u8 version = 1, i32 count, then per account:
+ * u8 type, u8 algorithm, u8 digits, i32 period, i64 counter, i64 createdAt,
+ * u16 + UTF-8 issuer, u16 + UTF-8 account name, u16 + raw secret
+ * ```
+ *
+ * Decoding fails closed: one invalid account rejects the whole payload. Accounts must
+ * pass [OtpAccount]'s checks (the same ones the `otpauth://` parser relies on) plus the
+ * limits below.
+ */
+internal object BackupPayload {
+
+    const val VERSION = 1
+    const val MAX_ACCOUNTS = 1000
+    const val MAX_LABEL_BYTES = 1024
+    const val MAX_SECRET_BYTES = 1024
+
+    private const val TYPE_TOTP = 1
+    private const val TYPE_HOTP = 2
+    private const val ALGORITHM_SHA1 = 1
+    private const val ALGORITHM_SHA256 = 2
+    private const val ALGORITHM_SHA512 = 3
+
+    /** Version byte and account count. */
+    private const val HEADER_BYTES = 1 + Int.SIZE_BYTES
+
+    /** Type, algorithm and digits; period; counter; createdAt; three u16 lengths. */
+    private const val FIXED_RECORD_BYTES = 3 + Int.SIZE_BYTES + 2 * Long.SIZE_BYTES + 3 * Short.SIZE_BYTES
+
+    /** Largest payload the limits allow. */
+    const val MAX_PAYLOAD_BYTES =
+        HEADER_BYTES + MAX_ACCOUNTS * (FIXED_RECORD_BYTES + 2 * MAX_LABEL_BYTES + MAX_SECRET_BYTES)
+
+    sealed interface Decoded {
+        /** [toString] prints only the count. */
+        class Valid(val accounts: List<BackupEntry>) : Decoded {
+            override fun toString(): String = "Valid(accounts=${accounts.size})"
+        }
+
+        data object Invalid : Decoded
+
+        data object UnsupportedVersion : Decoded
+    }
+
+    /**
+     * Encodes [accounts] into a new array that the caller must wipe.
+     *
+     * @throws IllegalArgumentException if there are more than [MAX_ACCOUNTS] accounts, or
+     *   an account has a label longer than [MAX_LABEL_BYTES] UTF-8 bytes, a label that is
+     *   not valid Unicode (an unpaired surrogate), or a secret longer than
+     *   [MAX_SECRET_BYTES]. The message names the account index and field only.
+     */
+    fun encode(accounts: List<BackupEntry>): ByteArray {
+        require(accounts.size <= MAX_ACCOUNTS) { "Too many accounts (at most $MAX_ACCOUNTS)" }
+        val issuers = ArrayList<ByteArray>(accounts.size)
+        val names = ArrayList<ByteArray>(accounts.size)
+        var size = HEADER_BYTES
+        accounts.forEachIndexed { index, entry ->
+            val account = entry.account
+            val issuer = encodeLabel(account.issuer, index, "issuer")
+            val name = encodeLabel(account.accountName, index, "account name")
+            require(account.secret.size <= MAX_SECRET_BYTES) {
+                "Account $index: secret longer than $MAX_SECRET_BYTES bytes"
+            }
+            issuers += issuer
+            names += name
+            size += FIXED_RECORD_BYTES + issuer.size + name.size + account.secret.size
+        }
+
+        // Exact size, so there is no hidden copy of the secrets from a growing buffer.
+        val out = ByteBuffer.allocate(size)
+        out.put(VERSION.toByte())
+        out.putInt(accounts.size)
+        accounts.forEachIndexed { index, entry ->
+            val account = entry.account
+            out.put(typeCode(account.type).toByte())
+            out.put(algorithmCode(account.algorithm).toByte())
+            out.put(account.digits.toByte())
+            out.putInt(account.period)
+            out.putLong(account.counter)
+            out.putLong(entry.createdAtMillis)
+            putField(out, issuers[index])
+            putField(out, names[index])
+            putField(out, account.secret)
+        }
+        check(!out.hasRemaining()) { "Payload size mismatch" }
+        return out.array()
+    }
+
+    /**
+     * Decodes [payload]. Does not modify or keep [payload]; the secrets in the result are
+     * new arrays. On failure, the secrets decoded so far are wiped.
+     */
+    fun decode(payload: ByteArray): Decoded {
+        val input = DataInputStream(ByteArrayInputStream(payload))
+        val accounts = ArrayList<BackupEntry>()
+        var valid = false
+        try {
+            if (payload.isEmpty()) return Decoded.Invalid
+            if (input.readUnsignedByte() != VERSION) return Decoded.UnsupportedVersion
+            val count = input.readInt()
+            if (count !in 0..MAX_ACCOUNTS) return Decoded.Invalid
+            repeat(count) {
+                accounts += readEntry(input) ?: return Decoded.Invalid
+            }
+            if (input.available() != 0) return Decoded.Invalid
+            valid = true
+            return Decoded.Valid(accounts)
+        } catch (e: EOFException) {
+            return Decoded.Invalid
+        } finally {
+            if (!valid) accounts.forEach { it.account.secret.fill(0) }
+        }
+    }
+
+    /** Reads one account, or returns null if it is malformed or invalid. */
+    private fun readEntry(input: DataInputStream): BackupEntry? {
+        val type = typeOf(input.readUnsignedByte()) ?: return null
+        val algorithm = algorithmOf(input.readUnsignedByte()) ?: return null
+        val digits = input.readUnsignedByte()
+        val period = input.readInt()
+        val counter = input.readLong()
+        val createdAt = input.readLong()
+        val issuer = readLabel(input) ?: return null
+        val accountName = readLabel(input) ?: return null
+        val secretLength = input.readUnsignedShort()
+        if (secretLength !in 1..MAX_SECRET_BYTES) return null
+        val secret = ByteArray(secretLength)
+        try {
+            input.readFully(secret)
+            // OtpAccount enforces digits, period, counter and a non-empty secret, exactly as
+            // for a parsed otpauth:// URI; BackupEntry enforces createdAt >= 0.
+            return BackupEntry(
+                OtpAccount(issuer, accountName, type, secret, algorithm, digits, period, counter),
+                createdAt,
+            )
+        } catch (e: IllegalArgumentException) {
+            secret.fill(0)
+            return null
+        } catch (e: EOFException) {
+            secret.fill(0)
+            throw e
+        }
+    }
+
+    private fun readLabel(input: DataInputStream): String? {
+        val length = input.readUnsignedShort()
+        if (length > MAX_LABEL_BYTES) return null
+        val bytes = ByteArray(length)
+        input.readFully(bytes)
+        return try {
+            strictUtf8Decoder().decode(ByteBuffer.wrap(bytes)).toString()
+        } catch (e: CharacterCodingException) {
+            null
+        }
+    }
+
+    private fun encodeLabel(label: String, index: Int, field: String): ByteArray {
+        val encoded = try {
+            strictUtf8Encoder().encode(CharBuffer.wrap(label))
+        } catch (e: CharacterCodingException) {
+            throw IllegalArgumentException("Account $index: $field is not valid Unicode")
+        }
+        val bytes = ByteArray(encoded.remaining()).also { encoded.get(it) }
+        require(bytes.size <= MAX_LABEL_BYTES) {
+            "Account $index: $field longer than $MAX_LABEL_BYTES UTF-8 bytes"
+        }
+        return bytes
+    }
+
+    private fun putField(out: ByteBuffer, bytes: ByteArray) {
+        out.putShort(bytes.size.toShort())
+        out.put(bytes)
+    }
+
+    private fun strictUtf8Encoder() = Charsets.UTF_8.newEncoder()
+        .onMalformedInput(CodingErrorAction.REPORT)
+        .onUnmappableCharacter(CodingErrorAction.REPORT)
+
+    private fun strictUtf8Decoder() = Charsets.UTF_8.newDecoder()
+        .onMalformedInput(CodingErrorAction.REPORT)
+        .onUnmappableCharacter(CodingErrorAction.REPORT)
+
+    // Explicit codes, never enum ordinals, so reordering an enum cannot change the format.
+
+    private fun typeCode(type: OtpType): Int = when (type) {
+        OtpType.TOTP -> TYPE_TOTP
+        OtpType.HOTP -> TYPE_HOTP
+    }
+
+    private fun typeOf(code: Int): OtpType? = when (code) {
+        TYPE_TOTP -> OtpType.TOTP
+        TYPE_HOTP -> OtpType.HOTP
+        else -> null
+    }
+
+    private fun algorithmCode(algorithm: OtpAlgorithm): Int = when (algorithm) {
+        OtpAlgorithm.SHA1 -> ALGORITHM_SHA1
+        OtpAlgorithm.SHA256 -> ALGORITHM_SHA256
+        OtpAlgorithm.SHA512 -> ALGORITHM_SHA512
+    }
+
+    private fun algorithmOf(code: Int): OtpAlgorithm? = when (code) {
+        ALGORITHM_SHA1 -> OtpAlgorithm.SHA1
+        ALGORITHM_SHA256 -> OtpAlgorithm.SHA256
+        ALGORITHM_SHA512 -> OtpAlgorithm.SHA512
+        else -> null
+    }
+}

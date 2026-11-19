@@ -1,0 +1,242 @@
+package com.phucho0237.lucaauth.backup
+
+import com.phucho0237.lucaauth.backup.BackupFixtures.SECRET_A_BASE32
+import com.phucho0237.lucaauth.backup.BackupFixtures.entry
+import com.phucho0237.lucaauth.backup.BackupFixtures.longSecret
+import com.phucho0237.lucaauth.backup.BackupFixtures.secretA
+import com.phucho0237.lucaauth.backup.BackupFixtures.secretB
+import com.phucho0237.lucaauth.backup.SpecCodec.PayloadBuilder
+import com.phucho0237.lucaauth.domain.model.OtpType
+import com.phucho0237.lucaauth.domain.otp.OtpAlgorithm
+import org.junit.Assert.assertArrayEquals
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertSame
+import org.junit.Assert.assertThrows
+import org.junit.Assert.assertTrue
+import org.junit.Test
+
+class BackupPayloadTest {
+
+    private fun hex(text: String): ByteArray {
+        val digits = text.filterNot { it.isWhitespace() }
+        return ByteArray(digits.length / 2) { digits.substring(it * 2, it * 2 + 2).toInt(16).toByte() }
+    }
+
+    private fun decodeValid(payload: ByteArray): List<BackupEntry> {
+        val decoded = BackupPayload.decode(payload)
+        assertTrue("expected Valid, got $decoded", decoded is BackupPayload.Decoded.Valid)
+        return (decoded as BackupPayload.Decoded.Valid).accounts
+    }
+
+    private fun assertInvalid(description: String, payload: ByteArray) {
+        assertSame(description, BackupPayload.Decoded.Invalid, BackupPayload.decode(payload))
+    }
+
+    /** 1024 UTF-8 bytes of 3-byte characters, then [extra] ASCII letters. */
+    private fun label(extra: Int = 0) = "ệ".repeat(341) + "x" + "y".repeat(extra)
+
+    @Test
+    fun encode_matchesSpecByteForByte() {
+        val payload = BackupPayload.encode(
+            listOf(entry(issuer = "A", accountName = "b", createdAtMillis = 1)),
+        )
+        val expected = hex(
+            "01 00000001" +
+                "01 01 06 0000001e 0000000000000000 0000000000000001" +
+                "0001 41 0001 62 000a 48656c6c6f21deadbeef",
+        )
+        assertArrayEquals(expected, payload)
+    }
+
+    @Test
+    fun encode_isDeterministic() {
+        val accounts = listOf(entry(), entry(type = OtpType.HOTP, counter = 7, secret = secretB()))
+        assertArrayEquals(BackupPayload.encode(accounts), BackupPayload.encode(accounts))
+    }
+
+    @Test
+    fun encode_emptyList() {
+        assertArrayEquals(hex("01 00000000"), BackupPayload.encode(emptyList()))
+        assertEquals(emptyList<BackupEntry>(), decodeValid(hex("01 00000000")))
+    }
+
+    @Test
+    fun roundTrip_preservesEveryField() {
+        val accounts = listOf(
+            entry(algorithm = OtpAlgorithm.SHA256, digits = 7, period = 60, counter = 5),
+            entry(
+                issuer = "Ngân hàng Ví dụ",
+                accountName = "",
+                type = OtpType.HOTP,
+                secret = secretB(),
+                algorithm = OtpAlgorithm.SHA512,
+                digits = 8,
+                period = Int.MAX_VALUE,
+                counter = Long.MAX_VALUE,
+                createdAtMillis = Long.MAX_VALUE,
+            ),
+            entry(issuer = "", accountName = "🔐 例 مثال", createdAtMillis = 0),
+        )
+        assertEquals(accounts, decodeValid(BackupPayload.encode(accounts)))
+    }
+
+    @Test
+    fun limits_acceptExactMaximums() {
+        val accounts = listOf(entry(issuer = label(), accountName = label(), secret = longSecret(1024)))
+        assertEquals(1024, accounts[0].account.issuer.toByteArray(Charsets.UTF_8).size)
+        assertEquals(accounts, decodeValid(BackupPayload.encode(accounts)))
+    }
+
+    @Test
+    fun limits_maximalPayloadFitsInAFile() {
+        val maxHeader = BackupFormat.headerLength(BackupFormat.MAX_SALT_LENGTH)
+        assertTrue(maxHeader + BackupPayload.MAX_PAYLOAD_BYTES + BackupFormat.TAG_LENGTH <= BackupFormat.MAX_FILE_BYTES)
+        val big = entry(issuer = label(), accountName = label(), secret = longSecret(1024))
+        val payload = BackupPayload.encode(List(BackupPayload.MAX_ACCOUNTS) { big })
+        assertEquals(BackupPayload.MAX_PAYLOAD_BYTES, payload.size)
+        assertEquals(BackupPayload.MAX_ACCOUNTS, decodeValid(payload).size)
+    }
+
+    @Test
+    fun encode_rejectsAccountsOutsideTheLimits() {
+        val cases = mapOf(
+            "too many accounts" to List(BackupPayload.MAX_ACCOUNTS + 1) { entry() },
+            "issuer too long" to listOf(entry(issuer = label(extra = 1))),
+            "account name too long" to listOf(entry(), entry(accountName = label(extra = 1))),
+            "secret too long" to listOf(entry(secret = longSecret(1025))),
+            "issuer unpaired surrogate" to listOf(entry(issuer = "ACME\uD83D")),
+            "account name unpaired surrogate" to listOf(entry(accountName = "\uDD10alice")),
+        )
+        for ((description, accounts) in cases) {
+            val error = assertThrows(description, IllegalArgumentException::class.java) {
+                BackupPayload.encode(accounts)
+            }
+            val message = error.message.orEmpty()
+            assertFalse(description, message.contains("ACME") || message.contains("alice") || message.contains("ệ"))
+            assertFalse(description, message.contains(SECRET_A_BASE32))
+        }
+    }
+
+    @Test
+    fun decode_unknownVersion() {
+        for (version in listOf(0, 2, 255)) {
+            assertSame(BackupPayload.Decoded.UnsupportedVersion, BackupPayload.decode(PayloadBuilder(version, 0).build()))
+        }
+    }
+
+    @Test
+    fun decode_rejectsBadCounts() {
+        assertInvalid("empty", ByteArray(0))
+        assertInvalid("version only", byteArrayOf(1))
+        assertInvalid("negative count", PayloadBuilder(count = -1).build())
+        assertInvalid("count above max", PayloadBuilder(count = BackupPayload.MAX_ACCOUNTS + 1).build())
+        assertInvalid("count larger than records", PayloadBuilder(count = 2).record().build())
+        assertInvalid("count smaller than records", PayloadBuilder(count = 1).record().record().build())
+    }
+
+    @Test
+    fun decode_rejectsEveryTruncation() {
+        val payload = BackupPayload.encode(listOf(entry(), entry(type = OtpType.HOTP, secret = secretB())))
+        for (length in 0 until payload.size) {
+            assertInvalid("length $length", payload.copyOf(length))
+        }
+    }
+
+    @Test
+    fun decode_rejectsTrailingBytes() {
+        val payload = BackupPayload.encode(listOf(entry()))
+        assertInvalid("one byte", payload + 0.toByte())
+        assertInvalid("part of a record", payload + PayloadBuilder(count = 0).record().build().copyOfRange(5, 5 + 40))
+        assertInvalid("a whole record", payload + PayloadBuilder(count = 0).record().build().copyOfRange(5, 5 + 48))
+    }
+
+    @Test
+    fun decode_rejectsUnknownCodes() {
+        for (type in listOf(0, 3, 255)) assertInvalid("type $type", PayloadBuilder(count = 1).record(type = type).build())
+        for (algorithm in listOf(0, 4, 255)) {
+            assertInvalid("algorithm $algorithm", PayloadBuilder(count = 1).record(algorithm = algorithm).build())
+        }
+    }
+
+    @Test
+    fun decode_rejectsValuesTheParserRejects() {
+        for (digits in listOf(0, 5, 9, 255)) assertInvalid("digits $digits", PayloadBuilder(count = 1).record(digits = digits).build())
+        for (period in listOf(0, -1, Int.MIN_VALUE)) assertInvalid("period $period", PayloadBuilder(count = 1).record(period = period).build())
+        for (counter in listOf(-1L, Long.MIN_VALUE)) {
+            assertInvalid("counter $counter", PayloadBuilder(count = 1).record(type = 2, counter = counter).build())
+        }
+        assertInvalid("createdAt -1", PayloadBuilder(count = 1).record(createdAt = -1).build())
+    }
+
+    @Test
+    fun decode_acceptsBoundaryValues() {
+        val payload = PayloadBuilder(count = 2)
+            .record(digits = 8, period = 1, counter = 0, createdAt = 0)
+            .record(type = 2, algorithm = 3, digits = 6, period = Int.MAX_VALUE, counter = Long.MAX_VALUE)
+            .build()
+        assertEquals(2, decodeValid(payload).size)
+    }
+
+    @Test
+    fun decode_rejectsLengthsOutsideTheLimits() {
+        val big = ByteArray(1025) { 'a'.code.toByte() }
+        assertInvalid("issuer 1025", PayloadBuilder(count = 1).record(issuer = big).build())
+        assertInvalid("account name 1025", PayloadBuilder(count = 1).record(accountName = big).build())
+        assertInvalid("secret 1025", PayloadBuilder(count = 1).record(secret = longSecret(1025)).build())
+        assertInvalid("secret empty", PayloadBuilder(count = 1).record(secret = ByteArray(0)).build())
+        assertInvalid("issuer length 65535", PayloadBuilder(count = 1).record(issuerLength = 0xFFFF).build())
+        assertInvalid("secret length past end", PayloadBuilder(count = 1).record(secretLength = 11).build())
+    }
+
+    @Test
+    fun decode_rejectsMalformedUtf8() {
+        listOf(
+            "c0 80", // overlong NUL
+            "ed a0 80", // UTF-8 encoded surrogate
+            "ff",
+            "e1 bb", // truncated sequence
+            "80", // lone continuation byte
+            "f4 90 80 80", // above U+10FFFF
+        ).forEach { bytes ->
+            assertInvalid("issuer $bytes", PayloadBuilder(count = 1).record(issuer = hex(bytes)).build())
+            assertInvalid("account name $bytes", PayloadBuilder(count = 1).record(accountName = hex(bytes)).build())
+        }
+    }
+
+    @Test
+    fun decode_oneInvalidAccountFailsTheWholePayload() {
+        val payload = PayloadBuilder(count = 3).record().record(secret = secretB()).record(digits = 9).build()
+        assertInvalid("third account invalid", payload)
+        val first = PayloadBuilder(count = 3).record(digits = 9).record().record().build()
+        assertInvalid("first account invalid", first)
+    }
+
+    @Test
+    fun decode_copiesSecretsAndLeavesInputUnchanged() {
+        val payload = BackupPayload.encode(listOf(entry()))
+        val copy = payload.copyOf()
+        val accounts = decodeValid(payload)
+        assertArrayEquals(copy, payload)
+        payload.fill(0)
+        assertArrayEquals(secretA(), accounts[0].account.secret)
+    }
+
+    @Test
+    fun toString_neverShowsSecretsOrLabels() {
+        val accounts = listOf(entry(issuer = "ACME", accountName = "alice@example.com"))
+        val texts = listOf(accounts[0].toString(), BackupPayload.decode(BackupPayload.encode(accounts)).toString())
+        for (text in texts) {
+            assertFalse(text, text.contains("ACME"))
+            assertFalse(text, text.contains("alice"))
+            assertFalse(text, text.contains(SECRET_A_BASE32))
+            assertFalse(text, text.contains(secretA().contentToString()))
+            assertFalse(text, text.contains(String(secretA(), Charsets.ISO_8859_1)))
+        }
+    }
+
+    @Test
+    fun entry_rejectsNegativeCreationTime() {
+        assertThrows(IllegalArgumentException::class.java) { entry(createdAtMillis = -1) }
+    }
+}
