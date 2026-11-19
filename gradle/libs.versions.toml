@@ -12,6 +12,7 @@ room = "2.8.5"
 ksp = "2.3.14"
 coroutines = "1.9.0"
 kotlinxSerialization = "1.8.1"
+bouncycastle = "1.86"
 
 [libraries]
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
@@ -37,6 +38,7 @@ kotlinx-serialization-bom = { group = "org.jetbrains.kotlinx", name = "kotlinx-s
 kotlinx-serialization-core = { group = "org.jetbrains.kotlinx", name = "kotlinx-serialization-core", version.ref = "kotlinxSerialization" }
 kotlinx-serialization-core-jvm = { group = "org.jetbrains.kotlinx", name = "kotlinx-serialization-core-jvm", version.ref = "kotlinxSerialization" }
 androidx-room-compiler = { group = "androidx.room", name = "room-compiler", version.ref = "room" }
+bouncycastle-bcprov = { group = "org.bouncycastle", name = "bcprov-jdk18on", version.ref = "bouncycastle" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }
