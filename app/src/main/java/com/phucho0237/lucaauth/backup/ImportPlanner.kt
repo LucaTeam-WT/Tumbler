@@ -42,8 +42,9 @@ internal enum class ConflictDecision {
 
     /**
      * Overwrite the existing account with the imported one. If both are HOTP with identical
-     * secret bytes, the larger counter is kept, so a replace never moves a counter backwards
-     * for the same secret. If the secrets differ, the imported counter is used.
+     * secret bytes, the larger of the stored counter (read when the write happens) and the
+     * imported one is written, so a replace never moves a counter backwards for the same
+     * secret. Otherwise the imported counter is used. See [CounterPolicy] and [resolveCounter].
      */
     REPLACE,
 }
@@ -69,9 +70,75 @@ internal class ImportPlan internal constructor(internal val items: List<Item>) {
     override fun toString(): String = "ImportPlan(nonConflicting=${nonConflicting.size}, conflicts=${conflicts.size})"
 }
 
-/** Overwrite the stored account [existingId] with [account] (keeping its id and creation time). */
-internal class Replacement(val existingId: String, val account: OtpAccount) {
-    override fun toString(): String = "Replacement(existingId=$existingId, <redacted>)"
+/**
+ * How the counter of a [Replacement] is chosen. It is a write-time rule: [resolveCounter]
+ * applies it to the counter stored in the row when the write happens, never to the one seen
+ * when the plan was made (codes may have been generated in between).
+ */
+internal enum class CounterPolicy {
+    /**
+     * Write the imported counter: the secrets differ (only the labels matched, so the account
+     * was re-enrolled), or the accounts are not both HOTP.
+     */
+    USE_IMPORTED,
+
+    /**
+     * Both HOTP with identical secret bytes: write the larger of the stored counter and the
+     * imported one, so a replace never moves the counter backwards for that secret.
+     */
+    KEEP_LARGER_OF_STORED_AND_IMPORTED,
+}
+
+/**
+ * Overwrite the stored account [existingId] with [imported], keeping the row's id and
+ * creation time.
+ *
+ * **The counter to write is not `imported.counter`.** It is
+ * `resolveCounter(storedNow, this)`, where `storedNow` is the counter of row [existingId]
+ * read inside the same transaction as the write. That transaction must also check that the
+ * row still exists with the type and secret it had when the plan was made, and abort (and
+ * plan again) otherwise, because [counterPolicy] was chosen from them.
+ *
+ * @property imported the imported account; every field except the counter is written as is.
+ * @property counterPolicy how the written counter is chosen; see [resolveCounter].
+ * @property counterAtPlanTime the row's counter when the plan was made. Only for
+ *   [plannedCounter]; never write it.
+ */
+internal class Replacement(
+    val existingId: String,
+    val imported: OtpAccount,
+    val counterPolicy: CounterPolicy,
+    val counterAtPlanTime: Long,
+) {
+    /**
+     * What [resolveCounter] gives against the counter seen when the plan was made. A display
+     * hint only (for example on a confirmation screen): the stored counter may have moved
+     * since, so this value must never be written.
+     */
+    val plannedCounter: Long get() = resolveCounter(counterAtPlanTime, this)
+
+    override fun toString(): String = "Replacement(existingId=$existingId, counterPolicy=$counterPolicy, <redacted>)"
+}
+
+/**
+ * The counter to write for [operation], given [storedNow]: the counter of row
+ * [Replacement.existingId] read inside the same transaction as the write, not the one seen
+ * when the plan was made. Pure; it reads nothing else.
+ *
+ * - [CounterPolicy.USE_IMPORTED]: the imported counter, whatever is stored.
+ * - [CounterPolicy.KEEP_LARGER_OF_STORED_AND_IMPORTED]: the larger of [storedNow] and the
+ *   imported counter.
+ *
+ * @throws IllegalArgumentException if [storedNow] is negative (no stored account can have
+ *   such a counter).
+ */
+internal fun resolveCounter(storedNow: Long, operation: Replacement): Long {
+    require(storedNow >= 0) { "Stored counter must not be negative" }
+    val imported = operation.imported.counter
+    return when (operation.counterPolicy) {
+        CounterPolicy.USE_IMPORTED -> imported
+        CounterPolicy.KEEP_LARGER_OF_STORED_AND_IMPORTED -> maxOf(storedNow, imported)
+    }
 }
 
 /** What to store after an import: new accounts to add and existing accounts to overwrite. */
@@ -85,8 +152,22 @@ internal class ImportWrites(val inserts: List<BackupEntry>, val replacements: Li
  * (exact string match), or identical secret bytes.
  *
  * When several existing accounts match, the counterpart is the first (in [existing]
- * order) with the same secret, otherwise the first with the same label. Duplicates
- * inside [incoming] are not conflicts with each other. Neither list is modified.
+ * order) of:
+ * 1. if the imported account is HOTP, a HOTP account with the same secret;
+ * 2. an account with the same secret;
+ * 3. an account with the same label.
+ *
+ * Step 1 makes the same-secret HOTP rules hold against every existing HOTP account with
+ * that secret, wherever it sits in [existing]: Keep both is then never offered
+ * ([allowedDecisions]), so an import cannot add a second HOTP row for a secret the device
+ * already counts with, and Replace overwrites one of those rows with
+ * [CounterPolicy.KEEP_LARGER_OF_STORED_AND_IMPORTED]. Without it, an earlier TOTP account
+ * with the same secret would be picked, and Keep both or Replace would leave two HOTP rows
+ * sharing a secret, one of them behind.
+ *
+ * Duplicates inside [incoming] are not conflicts with each other, including two HOTP
+ * accounts with the same secret: both are inserted, as they were on the device that wrote
+ * the backup. Neither list is modified.
  *
  * @throws IllegalArgumentException if two existing accounts share an id.
  */
@@ -94,7 +175,8 @@ internal fun planImport(existing: List<ExistingAccount>, incoming: List<BackupEn
     require(existing.mapTo(HashSet()) { it.id }.size == existing.size) { "Existing account ids must be unique" }
     val items = incoming.map { entry ->
         val account = entry.account
-        val match = existing.firstOrNull { sameSecret(it.account, account) }
+        val match = existing.firstOrNull { isSameHotpSecret(it.account, account) }
+            ?: existing.firstOrNull { sameSecret(it.account, account) }
             ?: existing.firstOrNull { sameLabel(it.account, account) }
         if (match == null) {
             ImportPlan.Item.Clean(entry)
@@ -116,6 +198,9 @@ internal fun planImport(existing: List<ExistingAccount>, incoming: List<BackupEn
  * [ConflictDecision.SKIP] and [ConflictDecision.REPLACE], because keeping both would leave
  * two rows with the same secret whose counters diverge (codes from the one that falls
  * behind are rejected by the server, and using both burns counter values twice).
+ *
+ * [planImport] picks a same-secret HOTP counterpart whenever one exists, so this holds
+ * against every existing HOTP account with the imported HOTP account's secret.
  */
 internal fun allowedDecisions(conflict: ImportConflict): Set<ConflictDecision> =
     if (isSameHotpSecret(conflict.incoming.account, conflict.existing.account)) {
@@ -134,9 +219,9 @@ private val SAME_HOTP_SECRET_DECISIONS: Set<ConflictDecision> =
  * Turns [plan] and one decision per conflict ([decisions] aligned with
  * [ImportPlan.conflicts]) into the writes to perform. Inserts keep backup order.
  *
- * For [ConflictDecision.REPLACE], the replacement carries every field of the imported
- * account, except that if both accounts are HOTP with identical secret bytes the counter
- * is the larger of the two (see [replacementFor]).
+ * For [ConflictDecision.REPLACE], the [Replacement] carries the imported account and a
+ * [CounterPolicy]; the counter to write is decided at write time by [resolveCounter] (see
+ * [replacementFor]).
  *
  * @throws IllegalArgumentException if the number of decisions differs from the number of
  *   conflicts (nothing is ever overwritten by default), if a decision is not in
@@ -163,7 +248,7 @@ internal fun applyDecisions(plan: ImportPlan, decisions: List<ConflictDecision>)
                         require(replacedIds.add(conflict.existing.id)) {
                             "Two imported accounts cannot replace the same existing account"
                         }
-                        replacements += Replacement(conflict.existing.id, replacementFor(conflict))
+                        replacements += replacementFor(conflict)
                     }
                 }
             }
@@ -173,24 +258,26 @@ internal fun applyDecisions(plan: ImportPlan, decisions: List<ConflictDecision>)
 }
 
 /**
- * The account that overwrites the existing one: the imported account, with one exception.
+ * The write that overwrites the existing account with the imported one. Every field comes
+ * from the import; the counter follows a [CounterPolicy]:
  *
- * - Both HOTP with identical secret bytes: the counter is the larger of the two, so a
- *   replace never moves a counter backwards for the same secret (which would regenerate
- *   codes the server has already accepted).
+ * - Both HOTP with identical secret bytes: [CounterPolicy.KEEP_LARGER_OF_STORED_AND_IMPORTED],
+ *   so a replace never moves a counter backwards for the same secret (which would regenerate
+ *   codes the server has already accepted), even if codes were generated after the plan.
  * - Different secrets (only the labels matched, so the account was re-enrolled with a new
- *   secret): the imported counter. The old counter says nothing about the new secret, and
- *   a larger old counter could run past the server's look-ahead window.
- * - TOTP, or HOTP on one side only: the imported account as it is.
+ *   secret): [CounterPolicy.USE_IMPORTED]. The old counter says nothing about the new
+ *   secret, and a larger old counter could run past the server's look-ahead window.
+ * - TOTP, or HOTP on one side only: [CounterPolicy.USE_IMPORTED] (the imported account as it is).
  */
-private fun replacementFor(conflict: ImportConflict): OtpAccount {
+private fun replacementFor(conflict: ImportConflict): Replacement {
     val incoming = conflict.incoming.account
     val existing = conflict.existing.account
-    return if (isSameHotpSecret(incoming, existing) && existing.counter > incoming.counter) {
-        incoming.copy(counter = existing.counter)
+    val policy = if (isSameHotpSecret(incoming, existing)) {
+        CounterPolicy.KEEP_LARGER_OF_STORED_AND_IMPORTED
     } else {
-        incoming
+        CounterPolicy.USE_IMPORTED
     }
+    return Replacement(conflict.existing.id, incoming, policy, counterAtPlanTime = existing.counter)
 }
 
 /** Both HOTP with identical secret bytes: the case where the two counters are one sequence. */
