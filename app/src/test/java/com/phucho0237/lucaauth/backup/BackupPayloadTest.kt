@@ -8,6 +8,7 @@ import com.phucho0237.lucaauth.backup.BackupFixtures.secretB
 import com.phucho0237.lucaauth.backup.SpecCodec.PayloadBuilder
 import com.phucho0237.lucaauth.domain.model.OtpType
 import com.phucho0237.lucaauth.domain.otp.OtpAlgorithm
+import com.phucho0237.lucaauth.domain.otp.OtpAuthUri
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -238,5 +239,103 @@ class BackupPayloadTest {
     @Test
     fun entry_rejectsNegativeCreationTime() {
         assertThrows(IllegalArgumentException::class.java) { entry(createdAtMillis = -1) }
+    }
+
+    // Labels: the form the otpauth:// parser stores (trimmed)
+
+    @Test
+    fun labels_withSurroundingWhitespaceAreRejectedOnReadAndWrite() {
+        val untrimmed = listOf(" GitHub", "GitHub ", "\tGitHub", "GitHub\n", "\u00A0GitHub", "GitHub\u3000", " ", "\t")
+        for (label in untrimmed) {
+            val bytes = label.toByteArray(Charsets.UTF_8)
+            assertInvalid("issuer [$label]", PayloadBuilder(count = 1).record(issuer = bytes).build())
+            assertInvalid("account name [$label]", PayloadBuilder(count = 1).record(accountName = bytes).build())
+            for (account in listOf(entry(issuer = label), entry(accountName = label))) {
+                val error = assertThrows(label, IllegalArgumentException::class.java) { BackupPayload.encode(listOf(account)) }
+                assertFalse(error.message.orEmpty().contains("GitHub"))
+            }
+        }
+    }
+
+    @Test
+    fun labels_whitespaceIsExactlyTheSetTheSpecNames() {
+        // docs/backup-format.md: categories Zs, Zl, Zp, plus U+0009..U+000D and U+001C..U+001F.
+        val separators = setOf(Character.SPACE_SEPARATOR, Character.LINE_SEPARATOR, Character.PARAGRAPH_SEPARATOR)
+        for (code in 0..0xFFFF) {
+            val c = code.toChar()
+            val inSpec = Character.getType(c).toByte() in separators || code in 0x09..0x0D || code in 0x1C..0x1F
+            assertEquals("U+%04X".format(code), inSpec, c.isWhitespace())
+            assertEquals("U+%04X".format(code), !inSpec, BackupPayload.isCanonicalLabel("${c}x"))
+        }
+    }
+
+    @Test
+    fun labels_innerWhitespaceAndEmptyLabelsAreKept() {
+        val accounts = listOf(
+            entry(issuer = "Git  Hub", accountName = "a\tb"),
+            entry(issuer = "", accountName = ""),
+            entry(issuer = "", accountName = "alice"),
+            entry(issuer = "GitHub", accountName = ""),
+        )
+        assertEquals(accounts, decodeValid(BackupPayload.encode(accounts)))
+    }
+
+    /** A label as written in an otpauth:// URI and the labels the parser stores (null: it rejects the URI). */
+    private class LabelCase(val label: String, val issuer: String?, val accountName: String?)
+
+    private fun percentEncode(text: String): String = buildString {
+        for (byte in text.toByteArray(Charsets.UTF_8)) {
+            val code = byte.toInt() and 0xFF
+            val char = code.toChar()
+            if (code < 0x80 && (char.isLetterOrDigit() || char == ':')) append(char) else append("%%%02X".format(code))
+        }
+    }
+
+    @Test
+    fun labels_matchTheOtpauthParser() {
+        val cases = listOf(
+            LabelCase("GitHub:alice", "GitHub", "alice"),
+            LabelCase(" GitHub : alice ", "GitHub", "alice"),
+            LabelCase("\tGitHub\t:\talice\t", "GitHub", "alice"),
+            LabelCase("GitHub:", "GitHub", ""),
+            LabelCase(":alice", "", "alice"),
+            LabelCase("alice", "", "alice"),
+            LabelCase("  alice  ", "", "alice"),
+            LabelCase(":", "", ""),
+            LabelCase("a:b:c", "a", "b:c"),
+            LabelCase(" Ngân hàng : người dùng ", "Ngân hàng", "người dùng"),
+            LabelCase("\u00A0例え\u3000:\u00A0🔐 ✓\u00A0", "例え", "🔐 ✓"),
+            LabelCase("   ", null, null),
+            LabelCase("\t", null, null),
+            LabelCase("\u3000\u00A0", null, null),
+        )
+        for (case in cases) {
+            val uri = "otpauth://totp/${percentEncode(case.label)}?secret=$SECRET_A_BASE32"
+            val parsed = runCatching { OtpAuthUri.parse(uri) }.getOrNull()
+            // The parser behaviour this rule mirrors; if it changes, this test says so.
+            assertEquals("[${case.label}] issuer", case.issuer, parsed?.issuer)
+            assertEquals("[${case.label}] account name", case.accountName, parsed?.accountName)
+
+            // Every pair of labels the parser stores is written and read back unchanged.
+            if (parsed != null) {
+                val entries = listOf(BackupEntry(parsed, 0))
+                assertEquals("[${case.label}]", entries, decodeValid(BackupPayload.encode(entries)))
+            }
+
+            // The same label split like the parser but not trimmed is accepted only if the
+            // parser would have stored it unchanged; otherwise the whole payload is rejected.
+            val rawIssuer = if (':' in case.label) case.label.substringBefore(':') else ""
+            val rawAccountName = case.label.substringAfter(':')
+            val payload = PayloadBuilder(count = 1)
+                .record(issuer = rawIssuer.toByteArray(Charsets.UTF_8), accountName = rawAccountName.toByteArray(Charsets.UTF_8))
+                .build()
+            val decoded = BackupPayload.decode(payload)
+            if (parsed != null && parsed.issuer == rawIssuer && parsed.accountName == rawAccountName) {
+                val account = (decoded as BackupPayload.Decoded.Valid).accounts.single().account
+                assertEquals("[${case.label}]", rawIssuer to rawAccountName, account.issuer to account.accountName)
+            } else {
+                assertSame("[${case.label}]", BackupPayload.Decoded.Invalid, decoded)
+            }
+        }
     }
 }

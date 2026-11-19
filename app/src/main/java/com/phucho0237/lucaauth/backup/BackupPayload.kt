@@ -22,7 +22,8 @@ import java.nio.charset.CodingErrorAction
  * ```
  *
  * Decoding fails closed: one invalid account rejects the whole payload. Accounts must
- * pass [OtpAccount]'s checks (the same ones the `otpauth://` parser relies on) plus the
+ * pass [OtpAccount]'s checks (the same ones the `otpauth://` parser relies on), have
+ * labels in the form the parser stores them ([isCanonicalLabel]) and stay within the
  * limits below.
  */
 internal object BackupPayload {
@@ -60,12 +61,25 @@ internal object BackupPayload {
     }
 
     /**
+     * Whether [label] (an issuer or account name) is in the form the `otpauth://` parser
+     * stores labels: no leading or trailing whitespace, as Kotlin's `String.trim()` defines
+     * it (the parser trims both labels with it). Empty is allowed: the parser produces an
+     * empty issuer, an empty account name, or both (for the label `:`).
+     *
+     * A backup never changes a label: the writer refuses a label that is not canonical and
+     * the reader rejects the whole payload if one appears, so an imported " GitHub" can
+     * neither become "GitHub" silently nor be stored next to it without matching.
+     */
+    fun isCanonicalLabel(label: String): Boolean = label == label.trim()
+
+    /**
      * Encodes [accounts] into a new array that the caller must wipe.
      *
      * @throws IllegalArgumentException if there are more than [MAX_ACCOUNTS] accounts, or
      *   an account has a label longer than [MAX_LABEL_BYTES] UTF-8 bytes, a label that is
-     *   not valid Unicode (an unpaired surrogate), or a secret longer than
-     *   [MAX_SECRET_BYTES]. The message names the account index and field only.
+     *   not valid Unicode (an unpaired surrogate), a label with leading or trailing
+     *   whitespace ([isCanonicalLabel]), or a secret longer than [MAX_SECRET_BYTES]. The
+     *   message names the account index and field only.
      */
     fun encode(accounts: List<BackupEntry>): ByteArray {
         require(accounts.size <= MAX_ACCOUNTS) { "Too many accounts (at most $MAX_ACCOUNTS)" }
@@ -160,19 +174,22 @@ internal object BackupPayload {
         }
     }
 
+    /** Reads a label, or returns null if it is too long, not strict UTF-8 or not canonical. */
     private fun readLabel(input: DataInputStream): String? {
         val length = input.readUnsignedShort()
         if (length > MAX_LABEL_BYTES) return null
         val bytes = ByteArray(length)
         input.readFully(bytes)
-        return try {
+        val label = try {
             strictUtf8Decoder().decode(ByteBuffer.wrap(bytes)).toString()
         } catch (e: CharacterCodingException) {
-            null
+            return null
         }
+        return label.takeIf(::isCanonicalLabel)
     }
 
     private fun encodeLabel(label: String, index: Int, field: String): ByteArray {
+        require(isCanonicalLabel(label)) { "Account $index: $field has leading or trailing whitespace" }
         val encoded = try {
             strictUtf8Encoder().encode(CharBuffer.wrap(label))
         } catch (e: CharacterCodingException) {
