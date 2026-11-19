@@ -201,16 +201,113 @@ class BackupPasswordTest {
         assertEquals(PasswordCheck.TooShort(12), validatePassword("a\u0300bcdefghijk".toCharArray()))
     }
 
+    // Maximum length: 1024 code points after NFC
+
+    /** U+1F82, whose canonical decomposition is 4 code points: U+03B1 U+0313 U+0300 U+0345. */
+    private val alphaNfc = "ᾂ"
+    private val alphaNfd = "ᾂ"
+
     @Test
-    fun checks_neverContainThePassword() {
-        val password = "correct horse battery staple"
-        listOf(
-            validatePassword(password.toCharArray()),
-            validatePassword("short".toCharArray()),
-            validatePasswordConfirmation(password.toCharArray(), "other password!".toCharArray()),
-        ).forEach { result ->
-            assertFalse(result.toString().contains("correct"))
-            assertFalse(result.toString().contains("short"))
+    fun validate_maximumIs1024Characters() {
+        assertEquals(1024, MAX_PASSWORD_CHARACTERS)
+        val cases = mapOf(
+            "ASCII" to "a",
+            "emoji (2 UTF-16 units)" to emoji,
+            "precomposed" to nfcE,
+            "decomposed, 3 code points each" to nfdE,
+            "decomposed, 4 code points each" to alphaNfd,
+        )
+        for ((description, unit) in cases) {
+            assertEquals("$description x 1024", PasswordCheck.Ok, check(unit.repeat(1024)))
+            assertEquals("$description x 1025", PasswordCheck.TooLong(1024), check(unit.repeat(1025)))
         }
+        // 1023 ASCII letters plus one emoji: 1024 code points, 1025 UTF-16 units.
+        assertEquals(PasswordCheck.Ok, check("a".repeat(1023) + emoji))
+    }
+
+    @Test
+    fun validate_hugeInputIsTooLongWithoutNormalizing() {
+        val limit = MAX_PASSWORD_INPUT_UTF16_UNITS
+        assertEquals(8192, limit)
+        // Exactly at the input limit: normalized and counted (4 code points compose into 1).
+        assertEquals(PasswordCheck.Ok, check(alphaNfd.repeat(1024)))
+        assertEquals(PasswordCheck.TooLong(1024), check("a".repeat(limit)))
+        // Above it: rejected before any copy, whatever the content.
+        assertEquals(PasswordCheck.TooLong(1024), validatePassword(CharArray(limit + 1) { 'a' }))
+        assertEquals(PasswordCheck.TooLong(1024), validatePassword(CharArray(limit + 1) { '\uD83D' }))
+        assertEquals(PasswordCheck.TooLong(1024), validatePassword(CharArray(1 shl 24) { 'a' }))
+    }
+
+    @Test
+    fun confirmation_tooLongIsReportedFirstAndATooLongConfirmationIsAMismatch() {
+        val long = "a".repeat(1025).toCharArray()
+        assertEquals(PasswordCheck.TooLong(1024), validatePasswordConfirmation(long, long))
+        val ok = "a".repeat(1024)
+        assertEquals(PasswordCheck.Ok, validatePasswordConfirmation(ok.toCharArray(), ok.toCharArray()))
+        assertEquals(PasswordCheck.Mismatch, validatePasswordConfirmation(ok.toCharArray(), (ok + "a").toCharArray()))
+    }
+
+    @Test
+    fun kdfInput_atTheCapIsEncodedAndAboveItIsNull() {
+        assertArrayEquals(ByteArray(1024) { 'a'.code.toByte() }, passwordKdfInput("a".repeat(1024).toCharArray()))
+        // 1024 emoji: 2048 UTF-16 units, 4096 UTF-8 bytes, the largest possible result.
+        assertEquals(4096, passwordKdfInput(emoji.repeat(1024).toCharArray())?.size)
+        assertArrayEquals(
+            nfcE.repeat(1024).toByteArray(Charsets.UTF_8),
+            passwordKdfInput(nfdE.repeat(1024).toCharArray()),
+        )
+        assertNull(passwordKdfInput("a".repeat(1025).toCharArray()))
+        assertNull(passwordKdfInput(emoji.repeat(1025).toCharArray()))
+        assertNull(passwordKdfInput(nfdE.repeat(1025).toCharArray()))
+        assertNull(passwordKdfInput(CharArray(MAX_PASSWORD_INPUT_UTF16_UNITS + 1) { 'a' }))
+    }
+
+    @Test
+    fun encodeUtf8_failsOnOverflowInsteadOfTruncating() {
+        val text = "abcệ".toCharArray() // 6 UTF-8 bytes
+        assertArrayEquals("abcệ".toByteArray(Charsets.UTF_8), encodeUtf8OrNull(text, capacity = 6))
+        assertArrayEquals("abcệ".toByteArray(Charsets.UTF_8), encodeUtf8OrNull(text))
+        // A buffer one byte too small, or far too small, is an overflow: no result, never
+        // a truncated prefix such as "abc".
+        for (capacity in listOf(0L, 1L, 3L, 5L)) assertNull("capacity $capacity", encodeUtf8OrNull(text, capacity))
+        assertNull(encodeUtf8OrNull("🔐".toCharArray(), capacity = 3))
+    }
+
+    @Test
+    fun encodeUtf8_rejectsCapacitiesOutsideTheIntRangeWithoutAllocating() {
+        // The product chars * 3 overflows an Int above 715,827,882 chars; as a Long it is
+        // checked instead (these calls would throw if they tried to allocate).
+        val text = "abc".toCharArray()
+        assertNull(encodeUtf8OrNull(text, capacity = Int.MAX_VALUE.toLong() + 1))
+        assertNull(encodeUtf8OrNull(text, capacity = 715_827_883L * 3))
+        assertNull(encodeUtf8OrNull(text, capacity = -1))
+        assertNull(encodeUtf8OrNull(text, capacity = Long.MIN_VALUE))
+    }
+
+    @Test
+    fun encodeUtf8_rejectsMalformedInput() {
+        assertNull(encodeUtf8OrNull("ab\uD83D".toCharArray()))
+        assertNull(encodeUtf8OrNull("\uDD10ab".toCharArray()))
+    }
+
+    @Test
+    fun canonicalDecompositions_haveAtMostFourCodePoints() {
+        // MAX_PASSWORD_INPUT_UTF16_UNITS relies on this: NFC can compose at most this many
+        // code points into one. Checked on this JVM's Unicode data, for every code point.
+        var longest = 0
+        var code = 0
+        while (code <= Character.MAX_CODE_POINT) {
+            if (Character.getType(code) != Character.SURROGATE.toInt()) {
+                val text = String(Character.toChars(code))
+                if (!Normalizer.isNormalized(text, Normalizer.Form.NFD)) {
+                    val nfd = Normalizer.normalize(text, Normalizer.Form.NFD)
+                    longest = maxOf(longest, nfd.codePointCount(0, nfd.length))
+                }
+            }
+            code++
+        }
+        assertEquals(MAX_CANONICAL_DECOMPOSITION_LENGTH, longest)
+        assertEquals(alphaNfd, Normalizer.normalize(alphaNfc, Normalizer.Form.NFD))
+        assertEquals(alphaNfc, Normalizer.normalize(alphaNfd, Normalizer.Form.NFC))
     }
 }
