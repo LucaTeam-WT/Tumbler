@@ -191,6 +191,86 @@ class ImportPlannerTest {
         assertEquals(listOf("g"), writes.replacements.map { it.existingId })
     }
 
+    // Allowed decisions: no Keep both for two HOTP accounts with the same secret
+
+    private fun conflictOf(existingEntry: BackupEntry, incoming: BackupEntry, expectedReason: ConflictReason): ImportConflict {
+        val conflict = planImport(listOf(existing("x", existingEntry)), listOf(incoming)).conflicts.single()
+        assertEquals(expectedReason, conflict.reason)
+        return conflict
+    }
+
+    private val sameSecretHotpConflicts
+        get() = listOf(
+            conflictOf(hotp(100), hotp(5), ConflictReason.SAME_LABEL_AND_SECRET),
+            conflictOf(hotp(5), hotp(5), ConflictReason.SAME_LABEL_AND_SECRET),
+            conflictOf(hotp(100), hotp(5, issuer = "VPN (renamed)"), ConflictReason.SAME_SECRET),
+        )
+
+    private val otherConflicts
+        get() = listOf(
+            // HOTP, different secrets
+            conflictOf(hotp(100, secretB()), hotp(5, secretC()), ConflictReason.SAME_LABEL),
+            // TOTP, same and different secrets
+            conflictOf(github, github.copy(createdAtMillis = 1), ConflictReason.SAME_LABEL_AND_SECRET),
+            conflictOf(github, entry(issuer = "Other", accountName = "x", secret = secretA()), ConflictReason.SAME_SECRET),
+            conflictOf(github, entry(issuer = "GitHub", accountName = "alice", secret = secretC()), ConflictReason.SAME_LABEL),
+            // HOTP on one side only, same secret
+            conflictOf(entry(issuer = "VPN", accountName = "alice", secret = secretB()), hotp(3), ConflictReason.SAME_SECRET),
+            conflictOf(hotp(3), entry(issuer = "VPN", accountName = "alice", secret = secretB()), ConflictReason.SAME_SECRET),
+        )
+
+    @Test
+    fun allowedDecisions_sameSecretHotp_areSkipAndReplace() {
+        for (conflict in sameSecretHotpConflicts) {
+            assertEquals(listOf(SKIP, REPLACE), allowedDecisions(conflict).toList())
+        }
+    }
+
+    @Test
+    fun allowedDecisions_otherwise_areAllThreeInDisplayOrder() {
+        for (conflict in otherConflicts) {
+            assertEquals(listOf(SKIP, KEEP_BOTH, REPLACE), allowedDecisions(conflict).toList())
+        }
+    }
+
+    @Test
+    fun applyDecisions_rejectsKeepBothForSameSecretHotp() {
+        for (conflict in sameSecretHotpConflicts) {
+            val plan = planImport(listOf(ExistingAccount("x", conflict.existing.account)), listOf(conflict.incoming))
+            val error = assertThrows(IllegalArgumentException::class.java) { applyDecisions(plan, listOf(KEEP_BOTH)) }
+            assertFalse(error.message.orEmpty().contains("VPN") || error.message.orEmpty().contains("alice"))
+            assertEquals(emptyList<BackupEntry>(), applyDecisions(plan, listOf(SKIP)).inserts)
+            assertEquals(listOf("x"), applyDecisions(plan, listOf(REPLACE)).replacements.map { it.existingId })
+        }
+    }
+
+    @Test
+    fun applyDecisions_checksEachConflictSeparately() {
+        // First conflict: TOTP (Keep both allowed). Second: same-secret HOTP (not allowed).
+        val vpn = hotp(10, issuer = "VPN")
+        val plan = planImport(
+            listOf(existing("g", github), existing("v", vpn)),
+            listOf(github.copy(createdAtMillis = 1), hotp(20, issuer = "VPN")),
+        )
+        assertEquals(listOf("g", "v"), plan.conflicts.map { it.existing.id })
+        assertThrows(IllegalArgumentException::class.java) { applyDecisions(plan, listOf(KEEP_BOTH, KEEP_BOTH)) }
+        assertThrows(IllegalArgumentException::class.java) { applyDecisions(plan, listOf(SKIP, KEEP_BOTH)) }
+        val writes = applyDecisions(plan, listOf(KEEP_BOTH, REPLACE))
+        assertEquals(1, writes.inserts.size)
+        assertEquals(20L, writes.replacements.single().account.counter)
+    }
+
+    @Test
+    fun applyDecisions_acceptsExactlyTheAllowedDecisions() {
+        for (conflict in sameSecretHotpConflicts + otherConflicts) {
+            val plan = planImport(listOf(ExistingAccount("x", conflict.existing.account)), listOf(conflict.incoming))
+            for (decision in ConflictDecision.entries) {
+                val accepted = runCatching { applyDecisions(plan, listOf(decision)) }.isSuccess
+                assertEquals("$decision for ${conflict.reason}", decision in allowedDecisions(conflict), accepted)
+            }
+        }
+    }
+
     // Counter rule on Replace: larger counter only for HOTP with the same secret
 
     private fun hotp(counter: Long, secret: ByteArray = secretB(), issuer: String = "VPN") =

@@ -34,7 +34,10 @@ internal enum class ConflictDecision {
     /** Do not import this account. */
     SKIP,
 
-    /** Import it as a new account and leave the existing one unchanged. */
+    /**
+     * Import it as a new account and leave the existing one unchanged. Not allowed when both
+     * accounts are HOTP with identical secret bytes; see [allowedDecisions].
+     */
     KEEP_BOTH,
 
     /**
@@ -108,6 +111,26 @@ internal fun planImport(existing: List<ExistingAccount>, incoming: List<BackupEn
 }
 
 /**
+ * The decisions the user may choose for [conflict], in display order. All three, except
+ * when both accounts are HOTP with identical secret bytes: then only
+ * [ConflictDecision.SKIP] and [ConflictDecision.REPLACE], because keeping both would leave
+ * two rows with the same secret whose counters diverge (codes from the one that falls
+ * behind are rejected by the server, and using both burns counter values twice).
+ */
+internal fun allowedDecisions(conflict: ImportConflict): Set<ConflictDecision> =
+    if (isSameHotpSecret(conflict.incoming.account, conflict.existing.account)) {
+        SAME_HOTP_SECRET_DECISIONS
+    } else {
+        ALL_DECISIONS
+    }
+
+// setOf keeps the order given, which is the display order.
+private val ALL_DECISIONS: Set<ConflictDecision> =
+    setOf(ConflictDecision.SKIP, ConflictDecision.KEEP_BOTH, ConflictDecision.REPLACE)
+private val SAME_HOTP_SECRET_DECISIONS: Set<ConflictDecision> =
+    setOf(ConflictDecision.SKIP, ConflictDecision.REPLACE)
+
+/**
  * Turns [plan] and one decision per conflict ([decisions] aligned with
  * [ImportPlan.conflicts]) into the writes to perform. Inserts keep backup order.
  *
@@ -116,8 +139,9 @@ internal fun planImport(existing: List<ExistingAccount>, incoming: List<BackupEn
  * is the larger of the two (see [replacementFor]).
  *
  * @throws IllegalArgumentException if the number of decisions differs from the number of
- *   conflicts (nothing is ever overwritten by default), or if two decisions replace the
- *   same existing account.
+ *   conflicts (nothing is ever overwritten by default), if a decision is not in
+ *   [allowedDecisions] for its conflict, or if two decisions replace the same existing
+ *   account. Nothing is returned in that case, so no partial set of writes exists.
  */
 internal fun applyDecisions(plan: ImportPlan, decisions: List<ConflictDecision>): ImportWrites {
     require(decisions.size == plan.conflicts.size) { "Exactly one decision per conflict is required" }
@@ -128,15 +152,19 @@ internal fun applyDecisions(plan: ImportPlan, decisions: List<ConflictDecision>)
     for (item in plan.items) {
         when (item) {
             is ImportPlan.Item.Clean -> inserts += item.entry
-            is ImportPlan.Item.Conflicting -> when (decisions[next++]) {
-                ConflictDecision.SKIP -> Unit
-                ConflictDecision.KEEP_BOTH -> inserts += item.conflict.incoming
-                ConflictDecision.REPLACE -> {
-                    val conflict = item.conflict
-                    require(replacedIds.add(conflict.existing.id)) {
-                        "Two imported accounts cannot replace the same existing account"
+            is ImportPlan.Item.Conflicting -> {
+                val conflict = item.conflict
+                val decision = decisions[next++]
+                require(decision in allowedDecisions(conflict)) { "Decision not allowed for this conflict" }
+                when (decision) {
+                    ConflictDecision.SKIP -> Unit
+                    ConflictDecision.KEEP_BOTH -> inserts += conflict.incoming
+                    ConflictDecision.REPLACE -> {
+                        require(replacedIds.add(conflict.existing.id)) {
+                            "Two imported accounts cannot replace the same existing account"
+                        }
+                        replacements += Replacement(conflict.existing.id, replacementFor(conflict))
                     }
-                    replacements += Replacement(conflict.existing.id, replacementFor(conflict))
                 }
             }
         }
@@ -158,15 +186,16 @@ internal fun applyDecisions(plan: ImportPlan, decisions: List<ConflictDecision>)
 private fun replacementFor(conflict: ImportConflict): OtpAccount {
     val incoming = conflict.incoming.account
     val existing = conflict.existing.account
-    val sameHotpSecret = incoming.type == OtpType.HOTP &&
-        existing.type == OtpType.HOTP &&
-        sameSecret(incoming, existing)
-    return if (sameHotpSecret && existing.counter > incoming.counter) {
+    return if (isSameHotpSecret(incoming, existing) && existing.counter > incoming.counter) {
         incoming.copy(counter = existing.counter)
     } else {
         incoming
     }
 }
+
+/** Both HOTP with identical secret bytes: the case where the two counters are one sequence. */
+private fun isSameHotpSecret(a: OtpAccount, b: OtpAccount): Boolean =
+    a.type == OtpType.HOTP && b.type == OtpType.HOTP && sameSecret(a, b)
 
 private fun sameLabel(a: OtpAccount, b: OtpAccount): Boolean =
     a.type == b.type && a.issuer == b.issuer && a.accountName == b.accountName
