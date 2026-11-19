@@ -10,6 +10,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.security.MessageDigest
 import java.text.Normalizer
 import javax.crypto.AEADBadTagException
 
@@ -18,14 +19,21 @@ import javax.crypto.AEADBadTagException
  * inputs below. If any test here fails, the format changed: bump the format (or payload)
  * version, add a new golden file, keep this one readable, and update
  * `docs/backup-format.md` (see CLAUDE.md).
+ *
+ * This file is pure ASCII: every non-ASCII character is a `\u` escape, so no editor or
+ * tool can change a literal's Unicode normalization form without changing the escape.
  */
 class BackupGoldenFileTest {
 
     companion object {
         const val RESOURCE = "backup/golden-v1.bin"
 
-        /** "Mật khẩu thử nghiệm" ("test password"), written in NFC with escapes. */
-        const val PASSWORD = "Mật khẩu thử nghiệm"
+        /** SHA-256 of the committed golden file: it must never be edited or regenerated. */
+        const val GOLDEN_SHA256 = "f180df0f108e69c6d2327bc87c05a8df6ce40860486b55b0394a52c33d3a5a98"
+        const val GOLDEN_SIZE = 334
+
+        /** Vietnamese "Mat khau thu nghiem" ("test password"), in NFC (4 precomposed letters). */
+        const val PASSWORD = "M\u1EADt kh\u1EA9u th\u1EED nghi\u1EC7m"
 
         /** 0x00, 0x01, ..., 0x1f. */
         val SALT = ByteArray(32) { it.toByte() }
@@ -42,7 +50,7 @@ class BackupGoldenFileTest {
             ),
             BackupEntry(
                 OtpAccount(
-                    "Ngân hàng Ví dụ",
+                    "Ng\u00E2n h\u00E0ng V\u00ED d\u1EE5",
                     "bob@example.com",
                     OtpType.TOTP,
                     secretB(),
@@ -54,7 +62,7 @@ class BackupGoldenFileTest {
                 1_700_000_060_000,
             ),
             BackupEntry(
-                OtpAccount("", "Example 🔐 ✓", OtpType.HOTP, secretB(), OtpAlgorithm.SHA512, 7, 30, 4_294_967_296),
+                OtpAccount("", "Example \uD83D\uDD10 \u2713", OtpType.HOTP, secretB(), OtpAlgorithm.SHA512, 7, 30, 4_294_967_296),
                 1_700_000_120_000,
             ),
             BackupEntry(
@@ -67,6 +75,24 @@ class BackupGoldenFileTest {
     private val golden: ByteArray = checkNotNull(javaClass.classLoader?.getResourceAsStream(RESOURCE)) {
         "Missing test resource $RESOURCE"
     }.use { it.readBytes() }
+
+    @Test
+    fun golden_fileIsTheCommittedOne() {
+        assertEquals(GOLDEN_SIZE, golden.size)
+        val digest = MessageDigest.getInstance("SHA-256").digest(golden)
+        assertEquals(GOLDEN_SHA256, digest.joinToString("") { "%02x".format(it) })
+    }
+
+    @Test
+    fun golden_literalsAreNfc() {
+        assertTrue(Normalizer.isNormalized(PASSWORD, Normalizer.Form.NFC))
+        assertEquals(19, PASSWORD.length)
+        for (entry in accounts()) {
+            for (label in listOf(entry.account.issuer, entry.account.accountName)) {
+                assertTrue(label, Normalizer.isNormalized(label, Normalizer.Form.NFC))
+            }
+        }
+    }
 
     @Test
     fun golden_decryptsToTheExpectedAccounts() {
@@ -120,7 +146,11 @@ class BackupGoldenFileTest {
 
     @Test
     fun golden_headerIsAuthenticated() {
-        val passwordUtf8 = PASSWORD.toByteArray(Charsets.UTF_8)
+        val passwordUtf8 = Normalizer.normalize(PASSWORD, Normalizer.Form.NFC).toByteArray(Charsets.UTF_8)
+        // Positive control: the same unmodified bytes and the same password decrypt when the
+        // header is passed as AAD, so the failure below can only come from the missing AAD.
+        val records = SpecCodec.decodePayload(SpecCodec.decrypt(golden, passwordUtf8))
+        assertEquals(accounts().size, records.size)
         assertThrows(AEADBadTagException::class.java) {
             SpecCodec.decrypt(golden, passwordUtf8, authenticateHeader = false)
         }
