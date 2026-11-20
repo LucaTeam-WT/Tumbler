@@ -60,6 +60,9 @@ dependencies {
     implementation(libs.androidx.room.runtime)
     implementation(libs.androidx.room.ktx)
     ksp(libs.androidx.room.compiler)
+    // Only for scrypt (org.bouncycastle.crypto.generators.SCrypt) in the backup format; the
+    // Bouncy Castle JCA provider is never registered. R8 strips everything else.
+    implementation(libs.bouncycastle.bcprov)
     testImplementation(libs.junit)
     testImplementation(libs.kotlinx.coroutines.test)
     androidTestImplementation(platform(libs.androidx.compose.bom))

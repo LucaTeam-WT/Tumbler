@@ -84,6 +84,8 @@ it in the system preview. It is not cleared automatically.
 
 - **No app lock yet.** Anyone who can unlock the phone can open the app and see codes.
 - **No encrypted export/import yet.** There is no way to move or back up accounts.
+  (The planned file format is specified in [docs/backup-format.md](docs/backup-format.md);
+  not yet wired into the app.)
 - **No screen-capture protection yet.** `FLAG_SECURE` is not set; screenshots and
   recents thumbnails can show codes.
 - **No clipboard auto-clear yet.**
