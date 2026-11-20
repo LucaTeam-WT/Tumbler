@@ -1,6 +1,6 @@
 # Security Policy
 
-> **LucaAuth is beta software and has not been audited.** Do not store accounts whose
+> **Tumbler is beta software and has not been audited.** Do not store accounts whose
 > loss or compromise would be critical until the planned items under
 > [Known limitations](#known-limitations-and-planned-work) land. Keep recovery codes
 > for every account elsewhere: there is no backup, export or transfer.

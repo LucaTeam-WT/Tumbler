@@ -1,4 +1,4 @@
-# LucaAuth backup file format
+# Tumbler backup file format
 
 **Status:** format version 1. Implemented as library code in
 `app/src/main/java/io/github/lucateam_wt/tumbler/backup/` and covered by JVM unit tests.

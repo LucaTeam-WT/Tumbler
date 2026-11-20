@@ -1,5 +1,5 @@
 <resources>
-    <string name="app_name">LucaAuth</string>
+    <string name="app_name">Tumbler</string>
 
     <string name="accounts_title">Tài khoản</string>
     <string name="accounts_empty_title">Chưa có tài khoản nào</string>

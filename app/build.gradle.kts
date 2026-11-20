@@ -11,7 +11,7 @@ android {
     }
 
     defaultConfig {
-        applicationId = "com.phucho0237.lucaauth"
+        applicationId = "io.github.lucateam_wt.tumbler"
         minSdk = 26
         targetSdk = 37
         versionCode = 1

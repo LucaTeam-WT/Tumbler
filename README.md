@@ -1,6 +1,6 @@
-# LucaAuth
+# Tumbler: 2FA authenticator
 
-A privacy-first, offline two-factor authentication (TOTP/HOTP) app for Android.
+Tumbler is a privacy-first, offline two-factor authentication (TOTP/HOTP) app for Android.
 
 ![CI](https://github.com/phucho0237/LucaAuth/actions/workflows/ci.yml/badge.svg)
 
@@ -52,7 +52,7 @@ Planned (not added yet):
 
 ## Security
 
-LucaAuth is **beta** and **not audited**: do not keep accounts in it whose loss would be
+Tumbler is **beta** and **not audited**: do not keep accounts in it whose loss would be
 critical. Secrets are encrypted with a non-exportable Android Keystore key; the app has no
 `INTERNET` permission and no telemetry. **Backups are disabled by design**
 (`allowBackup="false"` plus data extraction rules that exclude cloud backup and device
@@ -77,6 +77,8 @@ cd LucaAuth
 ```
 
 Or open the folder in Android Studio and press Run.
+
+> **Note:** the application id changed from `com.phucho0237.lucaauth` to `io.github.lucateam_wt.tumbler` before the first release. An older LucaAuth install is a different app and must be uninstalled by hand; it shares no data with Tumbler.
 
 ## Project docs
 

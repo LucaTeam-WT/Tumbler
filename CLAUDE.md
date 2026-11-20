@@ -4,8 +4,8 @@ Guidance for AI coding assistants working in this repository.
 
 ## Project
 
-LucaAuth – offline TOTP/HOTP authenticator for Android.
-Package: `io.github.lucateam_wt.tumbler`. Kotlin + Jetpack Compose + Material 3, MVVM, Hilt, Room, DataStore, CameraX + ML Kit, `androidx.biometric`. minSdk 26.
+Tumbler – offline TOTP/HOTP authenticator for Android.
+Package, namespace and applicationId: `io.github.lucateam_wt.tumbler`. Kotlin + Jetpack Compose + Material 3, MVVM, Hilt, Room, DataStore, CameraX + ML Kit, `androidx.biometric`. minSdk 26.
 
 ## Commands
 

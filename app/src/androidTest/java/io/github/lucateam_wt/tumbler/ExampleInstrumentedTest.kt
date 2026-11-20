@@ -19,6 +19,6 @@ class ExampleInstrumentedTest {
     fun useAppContext() {
         // Context of the app under test.
         val appContext = InstrumentationRegistry.getInstrumentation().targetContext
-        assertEquals("com.phucho0237.lucaauth", appContext.packageName)
+        assertEquals("io.github.lucateam_wt.tumbler", appContext.packageName)
     }
 }

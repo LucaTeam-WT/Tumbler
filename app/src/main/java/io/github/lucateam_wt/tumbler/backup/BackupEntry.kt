@@ -33,7 +33,7 @@ internal sealed interface BackupReadResult {
 
     sealed interface Failure : BackupReadResult
 
-    /** The file does not start with the LucaAuth backup magic. */
+    /** The file does not start with the Tumbler backup magic. */
     data object NotABackup : Failure
 
     /** The format version, KDF id or payload version is unknown (likely a newer app). */
