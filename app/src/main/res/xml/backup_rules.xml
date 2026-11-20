@@ -5,7 +5,7 @@
    On API 31 and higher, data_extraction_rules.xml is used instead.
    See https://developer.android.com/about/versions/12/backup-restore
 
-   LucaAuth excludes all app data from backup. Secrets are encrypted with an Android
+   Tumbler excludes all app data from backup. Secrets are encrypted with an Android
    Keystore key that is never backed up, so restored data could not be decrypted.
    Auto Backup is also disabled with android:allowBackup="false" in the manifest.
 -->

@@ -1,6 +1,6 @@
-# LucaAuth
+# Tumbler: 2FA authenticator
 
-A privacy-first, offline two-factor authentication (TOTP/HOTP) app for Android.
+Tumbler is a privacy-first, offline two-factor authentication (TOTP/HOTP) app for Android.
 
 ![CI](https://github.com/phucho0237/LucaAuth/actions/workflows/ci.yml/badge.svg)
 
@@ -33,8 +33,8 @@ Current (in the build files today):
 
 - Kotlin, Jetpack Compose (BOM), Material 3
 - AndroidX `core-ktx`, `activity-compose`, `lifecycle-runtime-ktx`, `lifecycle-viewmodel-compose`
-- Manual dependency injection: `AppContainer`, created lazily by `LucaAuthApplication`, so the database and Keystore are not opened at app start (no Hilt yet).
-- MVVM: `AccountListViewModel` (`ViewModel` + `StateFlow`, obtained with `lifecycle-viewmodel-compose`) holds the decrypted accounts in memory and produces live TOTP/HOTP codes. Screens are switched with simple saved state in `LucaAuthApp`; there is no navigation library.
+- Manual dependency injection: `AppContainer`, created lazily by `TumblerApplication`, so the database and Keystore are not opened at app start (no Hilt yet).
+- MVVM: `AccountListViewModel` (`ViewModel` + `StateFlow`, obtained with `lifecycle-viewmodel-compose`) holds the decrypted accounts in memory and produces live TOTP/HOTP codes. Screens are switched with simple saved state in `TumblerApp`; there is no navigation library.
 - Icons are seven small vector drawables in `res/drawable` (`ic_*.xml`, from Material Icons, Apache-2.0); there is no `material-icons` dependency
 - `collectAsStateWithLifecycle` comes from `lifecycle-runtime-compose`, which is already on the classpath through the Compose and activity libraries (not declared directly)
 - Room 2.8.5 (`room-runtime`, `room-ktx`, `room-compiler` via KSP 2.3.14). Schemas are exported to `app/schemas` and committed.
@@ -52,7 +52,7 @@ Planned (not added yet):
 
 ## Security
 
-LucaAuth is **beta** and **not audited**: do not keep accounts in it whose loss would be
+Tumbler is **beta** and **not audited**: do not keep accounts in it whose loss would be
 critical. Secrets are encrypted with a non-exportable Android Keystore key; the app has no
 `INTERNET` permission and no telemetry. **Backups are disabled by design**
 (`allowBackup="false"` plus data extraction rules that exclude cloud backup and device
@@ -77,6 +77,8 @@ cd LucaAuth
 ```
 
 Or open the folder in Android Studio and press Run.
+
+> **Note:** the application id changed from `com.phucho0237.lucaauth` to `io.github.lucateam_wt.tumbler` before the first release. An older LucaAuth install is a different app and must be uninstalled by hand; it shares no data with Tumbler.
 
 ## Project docs
 

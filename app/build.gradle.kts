@@ -5,13 +5,13 @@ plugins {
 }
 
 android {
-    namespace = "com.phucho0237.lucaauth"
+    namespace = "io.github.lucateam_wt.tumbler"
     compileSdk {
         version = release(37)
     }
 
     defaultConfig {
-        applicationId = "com.phucho0237.lucaauth"
+        applicationId = "io.github.lucateam_wt.tumbler"
         minSdk = 26
         targetSdk = 37
         versionCode = 1

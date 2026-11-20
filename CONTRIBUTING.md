@@ -1,4 +1,4 @@
-# Contributing to LucaAuth
+# Contributing to Tumbler
 
 ## Workflow
 

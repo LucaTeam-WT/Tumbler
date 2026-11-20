@@ -3,7 +3,7 @@
    See https://developer.android.com/about/versions/12/backup-restore#xml-changes
    for details.
 
-   LucaAuth excludes all app data from both cloud backup and device-to-device
+   Tumbler excludes all app data from both cloud backup and device-to-device
    transfer. Secrets are encrypted with an Android Keystore key that never leaves the
    device, so restored or transferred data could not be decrypted. On API 31+,
    android:allowBackup="false" does not stop device-to-device transfer; these rules do.

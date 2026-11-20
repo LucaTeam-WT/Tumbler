@@ -22,5 +22,5 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "LucaAuth"
+rootProject.name = "Tumbler"
 include(":app")

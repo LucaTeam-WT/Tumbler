@@ -1,6 +1,6 @@
 # Security Policy
 
-> **LucaAuth is beta software and has not been audited.** Do not store accounts whose
+> **Tumbler is beta software and has not been audited.** Do not store accounts whose
 > loss or compromise would be critical until the planned items under
 > [Known limitations](#known-limitations-and-planned-work) land. Keep recovery codes
 > for every account elsewhere: there is no backup, export or transfer.
@@ -17,7 +17,7 @@ separately and is not a promise of a date.
 ## How it protects them today
 
 **Storage.** Accounts live in a Room (SQLite) database named `lucaauth.db` in the
-app-private storage (`LucaAuthDatabase`). The app's own code writes no files other than
+app-private storage (`TumblerDatabase`). The app's own code writes no files other than
 the Room database and its journal files (`-wal`/`-shm`), and uses no `SharedPreferences`
 or external storage. (Android and the libraries the app uses may keep their own files
 in app-private storage, such as caches or the Compose/ART profile data; the app's code
