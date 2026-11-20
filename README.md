@@ -61,6 +61,8 @@ encrypted backup format exists as library code but is not reachable from the app
 [SECURITY.md](SECURITY.md) for the threat model, limitations and how to report a
 vulnerability.
 
+CodeQL analysis runs on pushes to `main`, on pull requests and weekly.
+
 The release build uses R8 minification and resource shrinking
 (`app/proguard-rules.pro`); no signing configuration is committed.
 
