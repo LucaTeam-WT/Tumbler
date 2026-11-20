@@ -221,6 +221,15 @@ class AccountListScreenTest {
     }
 
     @Test
+    fun hotpRowAtTheCounterLimitExplainsWhyThereIsNoCode() {
+        show(stateOf(hotp.copy(code = null, error = HotpError.LIMIT_REACHED)))
+
+        composeRule.onNodeWithText(string(R.string.account_hotp_limit_reached)).assertIsDisplayed()
+        composeRule.onNodeWithContentDescription(string(R.string.account_hotp_no_code_description))
+            .assertIsDisplayed()
+    }
+
+    @Test
     fun unavailableRowExplainsWhyThereIsNoCode() {
         show(stateOf(unavailable))
 

@@ -33,12 +33,16 @@ sealed interface AccountItem {
         val nextCode: String? = null,
     ) : AccountItem
 
-    /** A counter-based account; [code] is `null` until the user asks for the next code. */
+    /**
+     * A counter-based account; [code] is `null` until the user asks for the next code, and
+     * while [error] is set.
+     */
     data class HotpItem(
         override val id: String,
         override val issuer: String,
         override val accountName: String,
         val code: String?,
+        val error: HotpError? = null,
     ) : AccountItem
 
     /** An account whose secret cannot be decrypted (for example after the key was lost). */
@@ -47,6 +51,15 @@ sealed interface AccountItem {
         override val issuer: String,
         override val accountName: String,
     ) : AccountItem
+}
+
+/** Why the last "next code" request of an HOTP row produced no code. The UI maps each value to a fixed message. */
+enum class HotpError {
+    /** The counter is `Long.MAX_VALUE`, so it cannot be advanced and no more codes can be made. */
+    LIMIT_REACHED,
+
+    /** The repository refused to advance the counter (an unexpected state; nothing was changed). */
+    FAILED,
 }
 
 /** Why saving a pasted link failed. The UI maps each value to a fixed message. */
