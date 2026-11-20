@@ -20,6 +20,7 @@ Run all three before declaring a task done.
 ## Rules
 
 - Follow [CONTRIBUTING.md](CONTRIBUTING.md): branch naming, Conventional Commits, small PRs.
+- Commit messages keep only the `Co-Authored-By` trailer: no `Claude-Session` trailer and no session URL, in commits or in PR bodies. PR bodies end with the line `🤖 Generated with [Claude Code](https://claude.com/claude-code)` and nothing after it.
 - Security rules in CONTRIBUTING.md are hard constraints: never log secrets/OTP codes, no plaintext secret storage, no `INTERNET` permission, no telemetry.
 - OTP logic must have unit tests using RFC 4226 / RFC 6238 test vectors.
 - UI: Material 3 components and theme tokens only; no hard-coded colors; support dark mode and dynamic color.
