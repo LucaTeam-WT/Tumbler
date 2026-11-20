@@ -2,7 +2,7 @@
 
 Tumbler is a privacy-first, offline two-factor authentication (TOTP/HOTP) app for Android.
 
-![CI](https://github.com/phucho0237/LucaAuth/actions/workflows/ci.yml/badge.svg)
+![CI](https://github.com/LucaTeam-WT/Tumbler/actions/workflows/ci.yml/badge.svg)
 
 
 ## Features
@@ -69,8 +69,8 @@ The release build uses R8 minification and resource shrinking
 Requirements: Android Studio (stable), JDK 21 (bundled JBR is fine), Android SDK with the latest platform.
 
 ```bash
-git clone https://github.com/phucho0237/LucaAuth.git
-cd LucaAuth
+git clone https://github.com/LucaTeam-WT/Tumbler.git
+cd Tumbler
 ./gradlew assembleDebug      # build
 ./gradlew testDebugUnitTest  # unit tests
 ./gradlew lintDebug          # Android lint
