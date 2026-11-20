@@ -1,13 +1,13 @@
 # LucaAuth backup file format
 
 **Status:** format version 1. Implemented as library code in
-`app/src/main/java/com/phucho0237/lucaauth/backup/` and covered by JVM unit tests.
+`app/src/main/java/io/github/lucateam_wt/tumbler/backup/` and covered by JVM unit tests.
 **Not yet wired into the app:** there is no export or import screen, and nothing in the
 app calls this code yet.
 
 This document is normative: it should be precise enough to write an independent reader.
 The unit tests include one (`SpecCodec` in
-`app/src/test/java/com/phucho0237/lucaauth/backup/BackupFixtures.kt`) that shares no code
+`app/src/test/java/io/github/lucateam_wt/tumbler/backup/BackupFixtures.kt`) that shares no code
 with the production codec and reads the committed golden file.
 
 ## Overview

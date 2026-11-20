@@ -5,7 +5,7 @@ plugins {
 }
 
 android {
-    namespace = "com.phucho0237.lucaauth"
+    namespace = "io.github.lucateam_wt.tumbler"
     compileSdk {
         version = release(37)
     }

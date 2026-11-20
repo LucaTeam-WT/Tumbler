@@ -5,7 +5,7 @@ Guidance for AI coding assistants working in this repository.
 ## Project
 
 LucaAuth – offline TOTP/HOTP authenticator for Android.
-Package: `com.phucho0237.lucaauth`. Kotlin + Jetpack Compose + Material 3, MVVM, Hilt, Room, DataStore, CameraX + ML Kit, `androidx.biometric`. minSdk 26.
+Package: `io.github.lucateam_wt.tumbler`. Kotlin + Jetpack Compose + Material 3, MVVM, Hilt, Room, DataStore, CameraX + ML Kit, `androidx.biometric`. minSdk 26.
 
 ## Commands
 
@@ -35,7 +35,7 @@ Run all three before declaring a task done.
 ## Architecture (target layout)
 
 ```
-com.phucho0237.lucaauth
+io.github.lucateam_wt.tumbler
 ├── backup/    # encrypted backup file (docs/backup-format.md): scrypt (Bouncy Castle) + AES-256-GCM container, payload codec with limits, export password policy, import duplicate planning; pure JVM, not wired into the app yet
 ├── data/      # Room, Keystore crypto, repositories
 │   ├── crypto/    # AES-GCM SecretCipher impl, Android Keystore key provider
