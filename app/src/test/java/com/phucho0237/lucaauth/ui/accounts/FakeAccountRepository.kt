@@ -33,6 +33,10 @@ class FakeAccountRepository : AccountRepository {
     /** If set, [add] suspends until it is completed, after checking [addFailure]. */
     var addGate: CompletableDeferred<Unit>? = null
 
+    /** How many times [updateCounter] was called, including calls that failed. */
+    var updateCounterCalls = 0
+        private set
+
     val storedAccounts: List<OtpAccount> get() = accounts.values.toList()
 
     fun counterOf(id: String): Long = accounts.getValue(id).counter
@@ -57,7 +61,10 @@ class FakeAccountRepository : AccountRepository {
     }
 
     override suspend fun updateCounter(id: String, counter: Long) {
+        updateCounterCalls++
         updateCounterFailure?.let { throw it }
+        // Same contract as the real repository (see AccountRepository.updateCounter).
+        require(counter >= 0) { "Counter must not be negative" }
         val account = accounts[id] ?: throw NoSuchElementException("No HOTP account to update")
         accounts[id] = account.copy(counter = counter)
         publish()

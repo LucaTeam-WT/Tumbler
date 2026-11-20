@@ -131,6 +131,7 @@ internal object AccountListTags {
     const val MENU_NEXT_CODE = "account-menu-next-code"
     const val MENU_DELETE = "account-menu-delete"
     const val NEXT_CODE = "account-next-code"
+    const val HOTP_ERROR = "account-hotp-error"
     const val ADD_BUTTON = "account-add-button"
 }
 
@@ -516,6 +517,20 @@ private fun Names(item: AccountItem, modifier: Modifier = Modifier) {
             Text(
                 text = stringResource(R.string.account_unavailable_body),
                 style = MaterialTheme.typography.bodySmall,
+            )
+        }
+        if (item is AccountItem.HotpItem && item.error != null) {
+            Spacer(Modifier.height(4.dp))
+            // A plain message in the neutral color: the account is fine, it just cannot make more codes.
+            Text(
+                text = stringResource(
+                    when (item.error) {
+                        HotpError.LIMIT_REACHED -> R.string.account_hotp_limit_reached
+                        HotpError.FAILED -> R.string.account_hotp_failed
+                    },
+                ),
+                style = MaterialTheme.typography.bodySmall,
+                modifier = Modifier.testTag(AccountListTags.HOTP_ERROR),
             )
         }
     }

@@ -13,6 +13,8 @@
     <string name="account_next_code">Mã tiếp theo</string>
     <string name="account_hotp_no_code_placeholder">••• •••</string>
     <string name="account_hotp_no_code_description">Chưa có mã</string>
+    <string name="account_hotp_limit_reached">Không thể tạo thêm mã: tài khoản này đã đạt giới hạn bộ đếm.</string>
+    <string name="account_hotp_failed">Không thể tạo mã tiếp theo. Vui lòng thử lại.</string>
     <string name="action_copy_code">Sao chép mã</string>
     <string name="action_show_options">Hiện tùy chọn</string>
     <string name="action_copy_code_for">Sao chép mã của %1$s</string>

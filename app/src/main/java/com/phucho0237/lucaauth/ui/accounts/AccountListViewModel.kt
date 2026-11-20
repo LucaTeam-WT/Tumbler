@@ -70,9 +70,12 @@ class AccountListViewModel(
         class Unavailable(override val summary: AccountSummary) : Entry
     }
 
+    /** The outcome of the last "next code" request of one HOTP account: a code or an error, never both. */
+    private data class HotpResult(val code: String? = null, val error: HotpError? = null)
+
     /** `null` until the first load has finished. */
     private val entries = MutableStateFlow<List<Entry>?>(null)
-    private val hotpCodes = MutableStateFlow<Map<String, String>>(emptyMap())
+    private val hotpResults = MutableStateFlow<Map<String, HotpResult>>(emptyMap())
     private val loadFailed = MutableStateFlow(false)
     private val actionFailed = MutableStateFlow(false)
     private val hotpMutex = Mutex()
@@ -85,10 +88,10 @@ class AccountListViewModel(
     }
 
     val uiState: StateFlow<AccountListUiState> =
-        combine(entries, hotpCodes, ticker, loadFailed, actionFailed) { loaded, codes, now, loadError, actionError ->
+        combine(entries, hotpResults, ticker, loadFailed, actionFailed) { loaded, results, now, loadError, actionError ->
             AccountListUiState(
                 isLoading = loaded == null && !loadError,
-                accounts = loaded.orEmpty().map { it.toItem(codes, now) },
+                accounts = loaded.orEmpty().map { it.toItem(results, now) },
                 loadFailed = loadError,
                 actionFailed = actionError,
             )
@@ -103,7 +106,7 @@ class AccountListViewModel(
                 repository.observeAccounts().collectLatest { summaries ->
                     val loaded = summaries.mapNotNull { load(it) }
                     val ids = loaded.mapTo(HashSet()) { it.summary.id }
-                    hotpCodes.update { codes -> codes.filterKeys { it in ids } }
+                    hotpResults.update { results -> results.filterKeys { it in ids } }
                     entries.value = loaded
                 }
             } catch (_: SQLException) {
@@ -162,8 +165,11 @@ class AccountListViewModel(
     /**
      * Shows the code for the HOTP account's current counter and stores the next counter.
      * The counter is saved first, so a code is never shown that could be generated again.
-     * Does nothing if the account is gone or is not a usable HOTP account; if storage
-     * fails no code is shown and [AccountListUiState.actionFailed] is set.
+     * Does nothing if the account is gone or is not a usable HOTP account. At the counter
+     * limit (`Long.MAX_VALUE`) the counter is not touched and the row shows
+     * [HotpError.LIMIT_REACHED]; if the repository rejects the counter the row shows
+     * [HotpError.FAILED]. If storage fails no code is shown and
+     * [AccountListUiState.actionFailed] is set.
      */
     fun nextHotpCode(id: String) {
         viewModelScope.launch {
@@ -172,16 +178,25 @@ class AccountListViewModel(
                 val account = entry.account
                 if (account.type != OtpType.HOTP) return@withLock
                 val counter = account.counter
+                if (counter == Long.MAX_VALUE) {
+                    // counter + 1 would overflow: do not touch the repository or the stored counter.
+                    hotpResults.update { it + (id to HotpResult(error = HotpError.LIMIT_REACHED)) }
+                    return@withLock
+                }
                 try {
                     repository.updateCounter(id, counter + 1)
                 } catch (_: NoSuchElementException) {
+                    hotpResults.update { it + (id to HotpResult(error = HotpError.FAILED)) }
+                    return@withLock
+                } catch (_: IllegalArgumentException) {
+                    hotpResults.update { it + (id to HotpResult(error = HotpError.FAILED)) }
                     return@withLock
                 } catch (_: SQLException) {
                     actionFailed.value = true
                     return@withLock
                 }
                 val code = Hotp(account.secret, account.algorithm, account.digits).generate(counter)
-                hotpCodes.update { it + (id to code) }
+                hotpResults.update { it + (id to HotpResult(code = code)) }
                 entries.update { list ->
                     list?.map { if (it === entry) Entry.Ready(it.summary, account.copy(counter = counter + 1)) else it }
                 }
@@ -198,7 +213,7 @@ class AccountListViewModel(
             Entry.Unavailable(summary)
         }
 
-    private fun Entry.toItem(codes: Map<String, String>, now: Long): AccountItem {
+    private fun Entry.toItem(results: Map<String, HotpResult>, now: Long): AccountItem {
         val id = summary.id
         return when (this) {
             is Entry.Unavailable -> AccountItem.UnavailableItem(id, summary.issuer, summary.accountName)
@@ -219,7 +234,7 @@ class AccountListViewModel(
                     },
                 )
             } else {
-                AccountItem.HotpItem(id, summary.issuer, summary.accountName, codes[id])
+                AccountItem.HotpItem(id, summary.issuer, summary.accountName, results[id]?.code, results[id]?.error)
             }
         }
     }

@@ -5,6 +5,7 @@ import com.phucho0237.lucaauth.domain.crypto.KeyUnavailableException
 import com.phucho0237.lucaauth.domain.crypto.SecretCipherException
 import com.phucho0237.lucaauth.domain.model.OtpAccount
 import com.phucho0237.lucaauth.domain.model.OtpType
+import com.phucho0237.lucaauth.domain.otp.Hotp
 import com.phucho0237.lucaauth.domain.otp.OtpAlgorithm
 import com.phucho0237.lucaauth.domain.otp.Totp
 import com.phucho0237.lucaauth.ui.accounts.AccountItem.HotpItem
@@ -329,6 +330,73 @@ class AccountListViewModelTest {
         repository.updateCounterFailure = null
         viewModel.nextHotpCode(id)
         assertEquals("755224", (viewModel.items().single() as HotpItem).code)
+    }
+
+    @Test
+    fun `hotp at the counter limit shows an error, no code and does not call the repository`() = runTest {
+        val id = repository.add(hotpAccount(counter = Long.MAX_VALUE))
+        val other = repository.add(totpAccount())
+        val viewModel = createViewModel()
+
+        viewModel.nextHotpCode(id)
+
+        val item = viewModel.items().first { it.id == id } as HotpItem
+        assertNull(item.code)
+        assertEquals(HotpError.LIMIT_REACHED, item.error)
+        assertEquals(0, repository.updateCounterCalls)
+        assertEquals(Long.MAX_VALUE, repository.counterOf(id))
+        assertFalse(viewModel.uiState.value.actionFailed)
+        // Other accounts keep working.
+        assertTrue(viewModel.items().first { it.id == other } is TotpItem)
+    }
+
+    @Test
+    fun `hotp one below the limit works once and then moves to the limit error`() = runTest {
+        val id = repository.add(hotpAccount(counter = Long.MAX_VALUE - 1))
+        val viewModel = createViewModel()
+
+        viewModel.nextHotpCode(id)
+
+        val expected = Hotp(rfcSecret, OtpAlgorithm.SHA1, 6).generate(Long.MAX_VALUE - 1)
+        assertEquals(HotpItem(id, "Example", "bob", expected), viewModel.items().single())
+        assertEquals(Long.MAX_VALUE, repository.counterOf(id))
+        assertEquals(1, repository.updateCounterCalls)
+
+        viewModel.nextHotpCode(id)
+
+        val item = viewModel.items().single() as HotpItem
+        assertNull(item.code)
+        assertEquals(HotpError.LIMIT_REACHED, item.error)
+        assertEquals(1, repository.updateCounterCalls)
+        assertEquals(Long.MAX_VALUE, repository.counterOf(id))
+    }
+
+    @Test
+    fun `hotp next code ends in an error state when the repository throws`() = runTest {
+        val failures = listOf(
+            IllegalArgumentException("Counter must not be negative"),
+            NoSuchElementException("No HOTP account to update"),
+        )
+        for (failure in failures) {
+            val id = repository.add(hotpAccount())
+            val viewModel = createViewModel()
+            repository.updateCounterFailure = failure
+
+            viewModel.nextHotpCode(id)
+
+            val item = viewModel.items().last() as HotpItem
+            assertNull(item.code)
+            assertEquals(HotpError.FAILED, item.error)
+            assertFalse(viewModel.uiState.value.actionFailed)
+            assertEquals(0L, repository.counterOf(id))
+
+            // The error is not sticky: the next request that succeeds replaces it with a code.
+            repository.updateCounterFailure = null
+            viewModel.nextHotpCode(id)
+            val recovered = viewModel.items().last() as HotpItem
+            assertEquals("755224", recovered.code)
+            assertNull(recovered.error)
+        }
     }
 
     /** Start of the 30 s step that ends just before RFC 6238 vector time 1111111110. */
