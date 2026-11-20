@@ -7,13 +7,13 @@ import org.junit.Test
 import org.junit.runner.RunWith
 
 @RunWith(AndroidJUnit4::class)
-class LucaAuthDatabaseSchemaTest {
+class TumblerDatabaseSchemaTest {
 
     @Test
     fun exportedSchemaVersion1_isPackaged() {
         // app/schemas is added to the androidTest assets in app/build.gradle.kts.
         val json = InstrumentationRegistry.getInstrumentation().context.assets
-            .open("io.github.lucateam_wt.tumbler.data.db.LucaAuthDatabase/1.json")
+            .open("io.github.lucateam_wt.tumbler.data.db.TumblerDatabase/1.json")
             .bufferedReader()
             .use { it.readText() }
 

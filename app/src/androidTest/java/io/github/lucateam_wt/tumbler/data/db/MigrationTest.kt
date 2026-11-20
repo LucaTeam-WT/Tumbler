@@ -16,8 +16,8 @@ import org.junit.runner.RunWith
  * the exported v1 schema can be created and opened by Room.
  *
  * HOW TO ADD A TEST FOR EACH FUTURE MIGRATION (e.g. 1 -> 2):
- * 1. Bump `version` in `LucaAuthDatabase`, write `Migration(1, 2)` and register it with
- *    `.addMigrations(...)` in `LucaAuthDatabase.open`. Never add a destructive fallback.
+ * 1. Bump `version` in `TumblerDatabase`, write `Migration(1, 2)` and register it with
+ *    `.addMigrations(...)` in `TumblerDatabase.open`. Never add a destructive fallback.
  * 2. Build once so `app/schemas/.../2.json` is exported, and commit it.
  * 3. Add a test here: `helper.createDatabase(DB_NAME, 1)`, insert rows with plain SQL
  *    (use made-up data, never real secrets), then
@@ -31,7 +31,7 @@ class MigrationTest {
     @get:Rule
     val helper = MigrationTestHelper(
         InstrumentationRegistry.getInstrumentation(),
-        LucaAuthDatabase::class.java,
+        TumblerDatabase::class.java,
     )
 
     @Test
@@ -39,7 +39,7 @@ class MigrationTest {
         helper.createDatabase(DB_NAME, CURRENT_VERSION).close()
 
         val context = InstrumentationRegistry.getInstrumentation().targetContext
-        val db = LucaAuthDatabase.open(context, DB_NAME)
+        val db = TumblerDatabase.open(context, DB_NAME)
         try {
             assertEquals(CURRENT_VERSION, db.openHelper.readableDatabase.version)
         } finally {

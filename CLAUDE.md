@@ -49,7 +49,7 @@ io.github.lucateam_wt.tumbler
 ├── ui/        # Compose screens, components, theme
 │   ├── accounts/  # compact-row accounts list (long-press menu; the next TOTP code shows in the last 10 s and is never stored; list item motion, empty/list crossfade, smooth countdown ring with pure helpers in RingMotion.kt), add screen, AccountListViewModel, UI state, clipboard copy
 │   ├── theme/     # Material 3 theme (dynamic color, dark mode)
-│   └── LucaAuthApp.kt  # root composable: switches list <-> add screen with AnimatedContent (slide + fade, no navigation library)
+│   └── TumblerApp.kt  # root composable: switches list <-> add screen with AnimatedContent (slide + fade, no navigation library)
 ├── di/        # AppContainer (manual DI, lazy; Hilt is not used yet)
-└── LucaAuthApplication.kt  # owns the AppContainer
+└── TumblerApplication.kt  # owns the AppContainer
 ```

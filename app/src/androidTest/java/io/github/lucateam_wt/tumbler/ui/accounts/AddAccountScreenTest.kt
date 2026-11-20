@@ -10,7 +10,7 @@ import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performTextInput
 import io.github.lucateam_wt.tumbler.R
-import io.github.lucateam_wt.tumbler.ui.theme.LucaAuthTheme
+import io.github.lucateam_wt.tumbler.ui.theme.TumblerTheme
 import org.junit.Assert.assertEquals
 import org.junit.Rule
 import org.junit.Test
@@ -29,7 +29,7 @@ class AddAccountScreenTest {
         onCancel: () -> Unit = {},
     ) {
         composeRule.setContent {
-            LucaAuthTheme {
+            TumblerTheme {
                 AddAccountScreen(
                     error = error,
                     saving = saving,

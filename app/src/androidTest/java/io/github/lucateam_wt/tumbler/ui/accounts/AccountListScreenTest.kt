@@ -27,7 +27,7 @@ import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.test.longClick
 import androidx.compose.ui.unit.Density
 import io.github.lucateam_wt.tumbler.R
-import io.github.lucateam_wt.tumbler.ui.theme.LucaAuthTheme
+import io.github.lucateam_wt.tumbler.ui.theme.TumblerTheme
 import org.junit.Assert.assertEquals
 import org.junit.Rule
 import org.junit.Test
@@ -76,7 +76,7 @@ class AccountListScreenTest {
         state: () -> AccountListUiState,
     ) {
         composeRule.setContent {
-            LucaAuthTheme {
+            TumblerTheme {
                 val density = LocalDensity.current
                 CompositionLocalProvider(
                     LocalDensity provides if (fontScale == null) density else Density(density.density, fontScale),
@@ -123,7 +123,7 @@ class AccountListScreenTest {
     fun addButtonHasAnAccessibleNameAndRequestsTheAddScreen() {
         var addClicks = 0
         composeRule.setContent {
-            LucaAuthTheme {
+            TumblerTheme {
                 AccountListScreen(
                     state = AccountListUiState(isLoading = false),
                     onAddClick = { addClicks++ },

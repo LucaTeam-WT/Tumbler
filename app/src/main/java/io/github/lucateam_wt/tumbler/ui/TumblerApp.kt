@@ -53,7 +53,7 @@ internal fun screenTransition(forward: Boolean, layoutDirection: LayoutDirection
 
 /** Root of the UI: switches between the accounts list and the add screen. */
 @Composable
-fun LucaAuthApp(viewModel: AccountListViewModel) {
+fun TumblerApp(viewModel: AccountListViewModel) {
     var showAdd by rememberSaveable { mutableStateOf(false) }
     val state by viewModel.uiState.collectAsStateWithLifecycle()
     val addState by viewModel.addState.collectAsStateWithLifecycle()

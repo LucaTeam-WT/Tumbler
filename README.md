@@ -33,8 +33,8 @@ Current (in the build files today):
 
 - Kotlin, Jetpack Compose (BOM), Material 3
 - AndroidX `core-ktx`, `activity-compose`, `lifecycle-runtime-ktx`, `lifecycle-viewmodel-compose`
-- Manual dependency injection: `AppContainer`, created lazily by `LucaAuthApplication`, so the database and Keystore are not opened at app start (no Hilt yet).
-- MVVM: `AccountListViewModel` (`ViewModel` + `StateFlow`, obtained with `lifecycle-viewmodel-compose`) holds the decrypted accounts in memory and produces live TOTP/HOTP codes. Screens are switched with simple saved state in `LucaAuthApp`; there is no navigation library.
+- Manual dependency injection: `AppContainer`, created lazily by `TumblerApplication`, so the database and Keystore are not opened at app start (no Hilt yet).
+- MVVM: `AccountListViewModel` (`ViewModel` + `StateFlow`, obtained with `lifecycle-viewmodel-compose`) holds the decrypted accounts in memory and produces live TOTP/HOTP codes. Screens are switched with simple saved state in `TumblerApp`; there is no navigation library.
 - Icons are seven small vector drawables in `res/drawable` (`ic_*.xml`, from Material Icons, Apache-2.0); there is no `material-icons` dependency
 - `collectAsStateWithLifecycle` comes from `lifecycle-runtime-compose`, which is already on the classpath through the Compose and activity libraries (not declared directly)
 - Room 2.8.5 (`room-runtime`, `room-ktx`, `room-compiler` via KSP 2.3.14). Schemas are exported to `app/schemas` and committed.

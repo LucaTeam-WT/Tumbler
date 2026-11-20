@@ -13,7 +13,7 @@ import androidx.room.RoomDatabase
  * schema version is exported to `app/schemas` and committed.
  */
 @Database(entities = [AccountEntity::class], version = 1, exportSchema = true)
-abstract class LucaAuthDatabase : RoomDatabase() {
+abstract class TumblerDatabase : RoomDatabase() {
 
     abstract fun accountDao(): AccountDao
 
@@ -21,17 +21,17 @@ abstract class LucaAuthDatabase : RoomDatabase() {
         private const val DATABASE_NAME = "lucaauth.db"
 
         @Volatile
-        private var instance: LucaAuthDatabase? = null
+        private var instance: TumblerDatabase? = null
 
         /** Returns the process-wide database, opening it on first use. */
-        fun getInstance(context: Context): LucaAuthDatabase =
+        fun getInstance(context: Context): TumblerDatabase =
             instance ?: synchronized(this) {
                 instance ?: open(context, DATABASE_NAME).also { instance = it }
             }
 
         /** Opens the database file [name]; tests use their own name. */
-        internal fun open(context: Context, name: String): LucaAuthDatabase =
-            Room.databaseBuilder(context.applicationContext, LucaAuthDatabase::class.java, name)
+        internal fun open(context: Context, name: String): TumblerDatabase =
+            Room.databaseBuilder(context.applicationContext, TumblerDatabase::class.java, name)
                 .build()
     }
 }

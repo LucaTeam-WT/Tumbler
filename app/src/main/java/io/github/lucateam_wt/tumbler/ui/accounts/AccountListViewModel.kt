@@ -6,7 +6,7 @@ import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
-import io.github.lucateam_wt.tumbler.LucaAuthApplication
+import io.github.lucateam_wt.tumbler.TumblerApplication
 import io.github.lucateam_wt.tumbler.domain.crypto.SecretCipherException
 import io.github.lucateam_wt.tumbler.domain.model.AccountSummary
 import io.github.lucateam_wt.tumbler.domain.model.OtpAccount
@@ -247,7 +247,7 @@ class AccountListViewModel(
         val Factory: ViewModelProvider.Factory = viewModelFactory {
             initializer {
                 val app = checkNotNull(this[ViewModelProvider.AndroidViewModelFactory.APPLICATION_KEY])
-                AccountListViewModel((app as LucaAuthApplication).container.accountRepository)
+                AccountListViewModel((app as TumblerApplication).container.accountRepository)
             }
         }
     }
