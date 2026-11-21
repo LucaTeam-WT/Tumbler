@@ -429,19 +429,24 @@ retry. Those results are `StorageFailed` (a database or Keystore error), `NotEno
 and `ExistingAccountUnreadable`. `PlanClosed` means the plan was already applied (or may
 have been, see below), replaced or closed, or is being applied.
 
-Once `applyImport` has started, a cancellation does not stop the transaction. Room's
-`withTransaction` runs the block on its own transaction thread and would resume a
-cancelled caller at once while that thread may still commit, so the service waits for the
-transaction under `withContext(NonCancellable)`. Room's wait for its transaction thread
-and the write lock then cannot be cancelled either, so the import is written and the plan
-closed (or the plan is found changed and nothing is written). Once the transaction block
-has returned its writes, the import may have been committed, so every other exit from
-that point on (cancellation, running out of memory, a database error while committing)
-closes the plan and wipes its secrets; it is never left open. A retry then returns
-`PlanClosed`, so the accounts can never be imported twice. Cancellation still propagates
-as `CancellationException`; after one, `isOpen` says whether a retry is possible. A
-cancellation never leaves un-wiped secrets that nothing references: a `Ready` or
-`PlanChanged` made for a caller that was cancelled before it received it is closed.
+Once the apply has begun on the service's dispatcher, a cancellation does not stop the
+transaction. Room's `withTransaction` runs the block on its own transaction thread and
+would resume a cancelled caller at once while that thread may still commit, so the service
+waits for the transaction under `withContext(NonCancellable)`. Room's wait for its
+transaction thread and the write lock then cannot be cancelled either, so the import is
+written and the plan closed (or the plan is found changed and nothing is written). A
+cancellation that lands before that point, while entering or dispatching `withContext`,
+throws `CancellationException` with nothing written and the plan still open. Once the
+transaction block has returned its writes, the import may have been committed, so every
+other exit from that point on (cancellation, running out of memory, a database error while
+committing) closes the plan and wipes its secrets; it is never left open. A retry then
+returns `PlanClosed`, so the accounts can never be imported twice. Cancellation still
+propagates as `CancellationException`; after one, `isOpen` says whether a retry is
+possible. A plan the service has made is closed and wiped if a cancellation stops it from
+reaching the caller: a `Ready` or `PlanChanged` made for a caller that was cancelled before
+it received it is closed. This covers the service's own results only: a secret the store
+is decrypting at the moment the caller is cancelled can still be dropped without being
+wiped (best-effort; a known follow-up, see item 14).
 
 For the UI (B2): do not `join()` the import's job on the main thread, since it waits for
 the transaction, and `withTimeout` cannot stop an import that has started. A
@@ -586,6 +591,20 @@ the screens. Each requirement says which part does what:
 13. **Delete a partial export.** *B2:* on `ExportResult.WriteFailed`, delete the document
     the user picked. Also treat an `IOException` from closing the stream as a failed
     write: a buffered stream may write its last bytes on close.
+14. **Close the remaining best-effort wiping gaps.** *Known follow-ups, not done in B1
+    (neither writes anything wrong; each can leave a decrypted secret to the garbage
+    collector):*
+    - *Cancellation during a decrypt.* `RoomAccountBackupStore.decrypt` runs the cipher in
+      `withContext(dispatcher)`. If the caller is cancelled while that call runs, the
+      decrypted array is thrown away without being wiped. `readAll` (and so `readBackup`
+      and `exportAccounts`) goes through the same path. Fix: assign the result to a variable
+      inside the block, `fill(0)` it on `Throwable`, and rethrow.
+    - *Out of memory when a result is allocated.* In `BackupService`, the `handedOver` flag
+      in `read` and the `freshHandedOver` flag in `apply` are set before `Ready(...)` or
+      `PlanChanged(next)` is allocated. An `OutOfMemoryError` on that allocation leaves the
+      plan un-wiped: `read` returns `NotEnoughMemory` and nothing closes the plan, and
+      `apply` returns `NotEnoughMemory` with `isOpen == false` although nothing was written.
+      Fix: allocate the result first, `close()` the plan if that throws, then set the flag.
 
 ## What the format does not hide
 

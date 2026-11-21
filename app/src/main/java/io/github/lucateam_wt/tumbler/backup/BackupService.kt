@@ -30,10 +30,13 @@ import java.io.OutputStream
  * zeros before it returns, whatever the outcome. **Secrets:** the decrypted secrets the
  * service reads (the accounts on the device, the accounts in a backup) are wiped once they
  * are no longer needed; see [PreparedImport] for the ones an import holds while the user
- * decides. A cancellation never leaves un-wiped secrets that nothing references: a result
- * that `withContext` drops because the caller was cancelled after the service made it (an
- * [ImportReadResult.Ready] or an [ImportResult.PlanChanged]) is closed before the
- * cancellation propagates. Nothing is logged, and no result's `toString` contains a
+ * decides. A plan the service has made is closed and wiped if a cancellation stops it from
+ * reaching the caller: a result that `withContext` drops because the caller was cancelled
+ * after the service made it (an [ImportReadResult.Ready] or an [ImportResult.PlanChanged])
+ * is closed before the cancellation propagates. This covers the service's own results only:
+ * a secret the store is decrypting at the moment the caller is cancelled can still be
+ * dropped without being wiped (best-effort; a known follow-up, see
+ * `docs/backup-format.md`). Nothing is logged, and no result's `toString` contains a
  * password, a secret, a label or an account id.
  *
  * The service never opens or closes a stream: the caller owns both.
@@ -110,11 +113,13 @@ internal class BackupService(
      * [ImportResult.PlanClosed]), so the caller can retry or close it. After
      * [ImportResult.Success] its secrets are wiped and it is closed.
      *
-     * **Cancellation:** once [applyImport] has started, a cancellation does not stop the
-     * transaction. The service waits for it under `NonCancellable`, and Room's wait for its
-     * transaction thread and the write lock cannot be cancelled, so the import is written and
-     * [prepared] closed (or the plan is found changed and nothing is written). The
-     * cancellation then propagates as `CancellationException`; after one,
+     * **Cancellation:** once the apply has begun on the service's dispatcher, a cancellation
+     * does not stop the transaction. The service waits for it under `NonCancellable`, and
+     * Room's wait for its transaction thread and the write lock cannot be cancelled, so the
+     * import is written and [prepared] closed (or the plan is found changed and nothing is
+     * written). A cancellation that lands before that point, while entering or dispatching
+     * `withContext`, throws `CancellationException` with nothing written and [prepared] still
+     * open. Either way the cancellation propagates as `CancellationException`, and
      * [PreparedImport.isOpen] says whether a retry is possible. A new plan made for a caller
      * cancelled meanwhile is closed, never dropped with its secrets.
      *
