@@ -59,18 +59,26 @@ class BackupServiceInstrumentedTest {
     }
 
     /**
-     * Cancels [cancel] as the service's transaction block returns its writes: Room then
-     * commits them and resumes a cancelled caller.
+     * Cancels [cancel] at the start of the transaction's insert number [cancelAtInsert], inside
+     * the service's transaction block and before it has returned its writes.
      */
-    private class CancelAtCommit(private val delegate: AccountBackupStore) : AccountBackupStore {
+    private class CancelInInsert(private val delegate: AccountBackupStore, private val cancelAtInsert: Int) : AccountBackupStore {
         @Volatile
         var cancel: Job? = null
+        private var inserts = 0
 
         override suspend fun readAll(): List<StoredAccount> = delegate.readAll()
 
         override suspend fun <R> writeTransaction(block: suspend AccountBackupWriter.() -> R): R =
             delegate.writeTransaction {
-                block().also { cancel?.cancel() }
+                val writer = this
+                val cancelling = object : AccountBackupWriter by writer {
+                    override suspend fun insert(account: OtpAccount, createdAtMillis: Long): String {
+                        if (++inserts == cancelAtInsert) cancel?.cancel()
+                        return writer.insert(account, createdAtMillis)
+                    }
+                }
+                cancelling.block()
             }
     }
 
@@ -218,10 +226,13 @@ class BackupServiceInstrumentedTest {
     }
 
     @Test
-    fun cancelledRightAfterTheCommit_closesThePlanAndARetryWritesNoDuplicate() = runBlocking {
+    fun cancelledInTheLastInsert_stillCommitsOnceClosesThePlanAndARetryWritesNoDuplicate() = runBlocking {
         source.repository.add(totp)
+        source.repository.add(hotp(counter = 7))
         target.repository.add(totp)
-        val store = CancelAtCommit(target.store)
+        // Keep both for the TOTP account and a clean HOTP account: two inserts, cancelled at the
+        // start of the second. The service waits for Room's transaction, so it still commits.
+        val store = CancelInInsert(target.store, cancelAtInsert = 2)
         val service = BackupService(store)
         val prepared = service.readBackup(ByteArrayInputStream(export(source)), password.toCharArray())
             .cast<ImportReadResult.Ready>().prepared
@@ -241,9 +252,10 @@ class BackupServiceInstrumentedTest {
 
         assertTrue("$thrown", thrown is CancellationException)
         assertFalse(prepared.isOpen)
-        assertEquals(listOf(totp, totp), target.store.readAll().map { it.account })
+        val written = listOf(hotp(counter = 7), totp, totp)
+        assertEquals(written, target.store.readAll().map { it.account }.sortedBy { it.issuer })
         assertSame(ImportResult.PlanClosed, service.applyImport(prepared, listOf(ConflictDecision.KEEP_BOTH)))
-        assertEquals(listOf(totp, totp), target.store.readAll().map { it.account })
+        assertEquals(written, target.store.readAll().map { it.account }.sortedBy { it.issuer })
     }
 
     @Test

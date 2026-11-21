@@ -14,7 +14,10 @@ import io.github.lucateam_wt.tumbler.backup.ConflictDecision.SKIP
 import io.github.lucateam_wt.tumbler.domain.crypto.SecretCipherException
 import io.github.lucateam_wt.tumbler.domain.model.OtpAccount
 import io.github.lucateam_wt.tumbler.domain.model.OtpType
+import io.github.lucateam_wt.tumbler.domain.model.StoredAccount
 import io.github.lucateam_wt.tumbler.domain.otp.OtpAlgorithm
+import io.github.lucateam_wt.tumbler.domain.repository.AccountBackupStore
+import io.github.lucateam_wt.tumbler.domain.repository.AccountBackupWriter
 import io.github.lucateam_wt.tumbler.domain.repository.UnreadableAccountException
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineDispatcher
@@ -26,6 +29,7 @@ import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.suspendCancellableCoroutine
 import org.junit.After
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
@@ -37,12 +41,15 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
+import java.io.Closeable
 import java.io.IOException
 import java.io.InputStream
 import java.io.OutputStream
 import java.security.SecureRandom
 import java.util.concurrent.Executors
+import kotlin.coroutines.ContinuationInterceptor
 import kotlin.coroutines.CoroutineContext
+import kotlin.coroutines.resume
 
 class BackupServiceTest {
 
@@ -659,8 +666,13 @@ class BackupServiceTest {
 
     // ---- apply: cancellation and failures around the commit ----
 
-    /** Runs applyImport in a job of its own, which [hook] gets first (to cancel it from the store); returns what it threw. */
-    private fun applyInJob(prepared: PreparedImport, vararg decisions: ConflictDecision, hook: (Job) -> Unit): Throwable? =
+    /** Runs applyImport on [service] in a job of its own, which [hook] gets first (to cancel it from the store); returns what it threw. */
+    private fun applyInJob(
+        prepared: PreparedImport,
+        vararg decisions: ConflictDecision,
+        service: BackupService = this.service,
+        hook: (Job) -> Unit,
+    ): Throwable? =
         runBlocking {
             var thrown: Throwable? = null
             val job = launch(start = CoroutineStart.LAZY) {
@@ -754,6 +766,101 @@ class BackupServiceTest {
             }
 
             assertWrittenOnceAndClosed(store, service, prepared)
+        }
+    }
+
+    @Test
+    fun apply_commitFailsAndRollsBack_closesThePlanAnyway() {
+        val (store, service, prepared) = keepBothCase()
+        store.commitFailure = SQLException("disk I/O error")
+
+        assertSame(ImportResult.StorageFailed, runBlocking { service.applyImport(prepared, listOf(KEEP_BOTH)) })
+
+        // Nothing was written here, but a failed commit may have written: the plan is closed either way.
+        assertEquals(listOf(githubAccount), store.accounts())
+        assertEquals(0, store.commits)
+        assertFalse(prepared.isOpen)
+        assertTrue(prepared.incoming.all { it.account.secret.isWiped() })
+        assertTrue(store.handedOut.all { it.isWiped() })
+        assertSame(ImportResult.PlanClosed, runBlocking { service.applyImport(prepared, listOf(KEEP_BOTH)) })
+        assertEquals(1, store.transactions)
+    }
+
+    /**
+     * Shaped like Room 2.8.5's `withTransaction`, unlike [FakeAccountBackupStore], which runs
+     * the block on the caller's coroutine: the caller waits in `suspendCancellableCoroutine`
+     * while the block runs in `runBlocking` (the caller's context without its dispatcher) on
+     * a transaction thread of its own. A cancelled caller is therefore resumed at once, while
+     * the block keeps running and then commits. Rows, commits and rollbacks are [rows]'s;
+     * [onInsert] runs on the transaction thread at the start of every insert.
+     */
+    private class TransactionThreadStore(private val rows: FakeAccountBackupStore) : AccountBackupStore, Closeable {
+        private val transactionThread = Executors.newSingleThreadExecutor { Thread(it, "transaction") }
+
+        @Volatile
+        var onInsert: (() -> Unit)? = null
+
+        override suspend fun readAll(): List<StoredAccount> = rows.readAll()
+
+        override suspend fun <R> writeTransaction(block: suspend AccountBackupWriter.() -> R): R =
+            suspendCancellableCoroutine { continuation ->
+                transactionThread.execute {
+                    try {
+                        runBlocking(continuation.context.minusKey(ContinuationInterceptor)) {
+                            continuation.resume(rows.writeTransaction { HookedWriter(this).block() })
+                        }
+                    } catch (t: Throwable) {
+                        continuation.cancel(t)
+                    }
+                }
+            }
+
+        override fun close() {
+            transactionThread.shutdownNow()
+        }
+
+        private inner class HookedWriter(private val writer: AccountBackupWriter) : AccountBackupWriter by writer {
+            override suspend fun insert(account: OtpAccount, createdAtMillis: Long): String {
+                onInsert?.invoke()
+                return writer.insert(account, createdAtMillis)
+            }
+        }
+    }
+
+    @Test
+    fun apply_cancelledInsideTheLastInsertOnARoomShapedStore_stillWritesOnceAndClosesThePlan() {
+        val rows = FakeAccountBackupStore()
+        rows.add(githubAccount, createdAtMillis = 1)
+        TransactionThreadStore(rows).use { store ->
+            val service = BackupService(store, executor.asCoroutineDispatcher(), codec)
+            val prepared = runBlocking { service.readBackup(ByteArrayInputStream(seal(listOf(github, bank()))), password()) }
+                .cast<ImportReadResult.Ready>().prepared
+            var inserts = 0
+
+            // Keep both for github and a clean bank: two inserts, cancelled at the start of the second.
+            val thrown = applyInJob(prepared, KEEP_BOTH, service = service) { job ->
+                store.onInsert = {
+                    if (++inserts == 2) {
+                        job.cancel()
+                        // A caller this resumed runs on the service's single worker: let it run to its end first.
+                        executor.submit(Runnable {}).get()
+                    }
+                }
+            }
+
+            assertTrue("$thrown", thrown is CancellationException)
+            val written = listOf(githubAccount, github.account, bank().account)
+            assertEquals(written, rows.accounts())
+            assertEquals(1, rows.commits)
+            assertFalse(prepared.isOpen)
+            assertTrue(codec.imported.all { it.isWiped() })
+            assertTrue(rows.handedOut.all { it.isWiped() })
+
+            assertSame(ImportResult.PlanClosed, runBlocking { service.applyImport(prepared, listOf(KEEP_BOTH)) })
+
+            assertEquals(1, rows.transactions)
+            assertEquals(2, rows.writes)
+            assertEquals(written, rows.accounts())
         }
     }
 
