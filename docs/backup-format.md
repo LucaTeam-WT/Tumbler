@@ -448,10 +448,16 @@ it, which wipes them too. A close during an apply takes effect when that apply e
 never wipes secrets that are being written. Results and `PreparedImport` print only
 counts and reasons, never an id, a label or a secret.
 
-**Known limit (for B2):** the accounts screen generates the next HOTP code by writing an
-absolute counter (`AccountRepository.updateCounter`) computed from the state it last
-observed. If that happens while an import replaces the same account, the screen can
-write a counter lower than the one the import kept. See item 12 below.
+**Known limit (must be fixed before B2 makes import reachable):** the accounts screen
+generates the next HOTP code from its cached, decrypted copy of the account: it writes the
+absolute counter "cached counter + 1" (`AccountRepository.updateCounter`, which sets only
+the counter column) and shows the code of the cached secret. That cache is replaced only
+after an import has committed and the list has decrypted every account again, so in
+between it still holds the account as it was before the import. After a Replace that
+changed the secret, the row holds the new secret with its own counter, say 50, while the
+cache still holds the old secret with counter 3: "next code" then writes 3 + 1 over 50
+and shows a code of the old secret. After a Replace with the same HOTP secret the cached
+counter can also be lower than the one the import kept. See item 12 below.
 
 ## Sensitive data in memory
 
@@ -560,10 +566,17 @@ the screens. Each requirement says which part does what:
     - an export then import round trip on a release (R8-minified) build, once a screen calls
       the service. Until then R8 removes the backup code from release builds, so there is
       nothing to test; no keep rules were added.
-12. **Keep HOTP counters from moving back during an import.** *B2:* the accounts screen
-    writes an absolute counter computed from the state it last observed (see the known
-    limit above). Either disable "next code" while an import runs, or make the counter
-    update a compare-and-set against the counter the screen showed.
+12. **Make "next code" atomic before import is reachable (mandatory).** *B2, before any
+    screen can start an import:* the HOTP "next code" path must be one repository call
+    that, in a single transaction, reads the row, generates the code from the secret and
+    counter it read, and writes counter + 1; or a compare-and-set that writes counter + 1
+    only while both the counter and the secret are still the ones the code came from (and
+    otherwise writes nothing and shows no code). Disabling "next code" while an import
+    runs is not enough: the screen's cached account stays stale after the commit, until
+    the list has decrypted every account again (see the known limit above). A tap in that
+    window, after a Replace that changed only the secret, makes `updateCounter` write a
+    value computed from the old secret's counter (for example 3 + 1) over the new
+    secret's counter 50.
 13. **Delete a partial export.** *B2:* on `ExportResult.WriteFailed`, delete the document
     the user picked. Also treat an `IOException` from closing the stream as a failed
     write: a buffered stream may write its last bytes on close.
