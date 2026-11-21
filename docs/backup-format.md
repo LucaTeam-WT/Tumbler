@@ -1,9 +1,10 @@
 # Tumbler backup file format
 
-**Status:** format version 1. Implemented as library code in
-`app/src/main/java/io/github/lucateam_wt/tumbler/backup/` and covered by JVM unit tests.
-**Not yet wired into the app:** there is no export or import screen, and nothing in the
-app calls this code yet.
+**Status:** format version 1. Implemented in
+`app/src/main/java/io/github/lucateam_wt/tumbler/backup/` and covered by JVM unit tests and
+instrumented tests. `BackupService` connects it to the stored accounts (see
+[Export and import service](#export-and-import-service)). **Not yet reachable from the app:**
+there is no export or import screen, and no screen calls the service.
 
 This document is normative: it should be precise enough to write an independent reader.
 The unit tests include one (`SpecCodec` in
@@ -364,6 +365,79 @@ is written and the user must decide again. Two changes do not count: a different
 (generating a HOTP code moves it, and `accountToWrite` resolves it against the row read at
 write time), and an added or deleted account that is no import's counterpart.
 
+## Export and import service
+
+`BackupService` (`backup/BackupService.kt`) runs the format against the stored accounts.
+`AppContainer.backupService` creates it; no screen calls it yet. It reads and writes the
+accounts through `AccountBackupStore` (`RoomAccountBackupStore`: the same table, encryption
+and associated data as `RoomAccountRepository`, and no schema change). Every function:
+
+- runs on an injectable dispatcher (by default `Dispatchers.Default`, since scrypt is
+  CPU-bound), so it may be called from the main thread;
+- takes ownership of the password array and fills it with zeros before it returns,
+  whatever the outcome;
+- never opens or closes the caller's stream;
+- returns a closed result for every outcome the UI must handle, including an
+  `OutOfMemoryError` anywhere in the operation and an `IOException` from the stream. What
+  can still propagate is a programming or platform fault (such as AES-GCM missing from the
+  platform), a non-`IOException` thrown by the caller's stream, and cancellation.
+
+**`exportAccounts(password, output)`** checks the password with `validatePassword`
+(`PasswordRejected`, nothing read). It then reads and decrypts every account in one query,
+calls `exportBackup`, writes the bytes and flushes the stream. Other results:
+
+- `AccountUnreadable(accountId)`: an account does not decrypt or holds invalid values;
+- `AccountRejected(accountId, reason)`: the first account the backup cannot hold, mapped
+  from `AccountRejectedException.accountIndex`;
+- `NotEnoughMemory`, in scrypt or anywhere else;
+- `WriteFailed`: the stream threw while writing or flushing, so part of the file may
+  exist;
+- `StorageFailed`: a database error.
+
+The decrypted secrets are wiped in every case.
+
+**`readBackup(input, password)`** uses the stream overload, then plans the backup against
+the accounts as they are now and returns `Ready(PreparedImport)`. Other results:
+
+- `FileRejected(reason)`: any `BackupReadResult.Failure` except `NotEnoughMemory`;
+- `NotEnoughMemory`;
+- `ExistingAccountUnreadable(accountId)`: an account on the device that cannot be read
+  could share a secret with an imported one, so no plan is made;
+- `StorageFailed`.
+
+On every result except `Ready` the imported secrets are already wiped.
+
+**`applyImport(prepared, decisions)`** writes in one transaction:
+
+1. It checks the decisions against the confirmed plan with `applyDecisions`: one per
+   conflict, each one of `allowedDecisions`, and at most one Replace per existing
+   account. Otherwise it returns `DecisionsRejected` and starts no transaction.
+2. In one write transaction (Room `withTransaction`) it reads every account again, plans
+   the same imported accounts again and compares the new plan with the confirmed one
+   (`ImportPlan.matches`). If they no longer match, it writes nothing and returns
+   `PlanChanged(newPlan)`. The old plan is then closed, and the new one, planned against
+   the rows just read, needs new decisions.
+3. Otherwise it writes from the plan made inside the transaction. Each Replace writes
+   `replacement.accountToWrite(row)` for the row read there, keeping the row's id and
+   creation time. Clean imports and Keep both are inserted with their imported creation
+   time. The result is `Success(inserted, replaced, skipped)`.
+
+A failure while writing rolls the whole transaction back and leaves the plan open for a
+retry. Those results are `StorageFailed` (a database or Keystore error), `NotEnoughMemory`
+and `ExistingAccountUnreadable`. `PlanClosed` means the plan was already applied, replaced
+or closed, or is being applied.
+
+`PreparedImport` holds decrypted secrets: the imported accounts, and the device's accounts
+as read for the plan. A successful apply wipes them. Otherwise the caller must `close()`
+it, which wipes them too. A close during an apply takes effect when that apply ends, so it
+never wipes secrets that are being written. Results and `PreparedImport` print only
+counts and reasons, never an id, a label or a secret.
+
+**Known limit (for B2):** the accounts screen generates the next HOTP code by writing an
+absolute counter (`AccountRepository.updateCounter`) computed from the state it last
+observed. If that happens while an import replaces the same account, the screen can
+write a counter lower than the one the import kept. See item 12 below.
+
 ## Sensitive data in memory
 
 Passwords are `CharArray`, secrets and keys are `ByteArray`, and the code wipes
@@ -392,7 +466,8 @@ This is **best-effort**:
   - if such a password is not already NFC, `Normalizer.normalize` returns the normalized
     password as a `String` on every version;
 - the decrypted labels are `String`s;
-- the secrets returned by `readBackup` are owned by the caller, which must wipe them;
+- the secrets returned by `readBackup` are owned by the caller, which must wipe them
+  (`BackupService` does, see above);
 - a password typed into a Compose text field exists as `String`s anyway.
 
 Nothing here logs, and no `toString()` or exception message contains a password, key,
@@ -400,47 +475,56 @@ secret, label or decrypted payload.
 
 ## Requirements for the integration (PR B)
 
-Nothing in the app calls this code yet. The change that wires it into the UI and the
-repository must:
+PR B is split in two. **B1** (done) adds the storage and service layer
+([Export and import service](#export-and-import-service)); no screen calls it. **B2** adds
+the screens. Each requirement says which part does what:
 
-1. **Read with the stream overload:** `readBackup(InputStream, password)` on the content
-   URI's stream (it stops at 4 MiB + 1 bytes), not the `ByteArray` overload on a file read
-   whole. The caller opens and closes the stream.
-2. **Run export and import off the main thread, and handle running out of memory.** Show
-   `NotEnoughMemory` (import) and `BackupNotEnoughMemoryException` (export) as their own
-   "not enough memory" message and `ReadFailed` as a read error, never as "wrong password".
-   Also handle an `OutOfMemoryError` from anywhere else in the operation, which is not
-   mapped.
-3. **Offer only the allowed decisions:** exactly `allowedDecisions(conflict)` per conflict
-   (no Keep both for two HOTP accounts with the same secret), and prevent two Replace
-   decisions for the same existing account. `applyDecisions` throws for either.
-4. **Write Replace counters at write time.** Inside the repository transaction, read the
-   row and write `replacement.accountToWrite(row)`; never write a counter computed when the
-   plan was made. Also plan again inside the transaction and abort, writing nothing, if
-   the plan no longer matches what the user confirmed. Replace keeps the row's id and
-   creation time; inserts use the imported creation time.
+1. **Read with the stream overload.** *Done in B1:* `BackupService.readBackup` calls
+   `readBackup(InputStream, password)`, which stops at 4 MiB + 1 bytes. *B2:* pass the
+   content URI's stream, never a file read whole, and close it.
+2. **Run export and import off the main thread, and handle running out of memory.**
+   *Done in B1:* the service runs on its dispatcher and maps every `OutOfMemoryError`,
+   in scrypt or not, to a `NotEnoughMemory` result. *B2:* show `NotEnoughMemory` as its
+   own "not enough memory" message, and `FileRejected(ReadFailed)` as a read error, never
+   as "wrong password".
+3. **Offer only the allowed decisions.** *Done in B1:* `applyImport` returns
+   `DecisionsRejected` for a decision outside `allowedDecisions` (such as Keep both for two
+   HOTP accounts with the same secret) and for a second Replace of the same existing
+   account. *B2:* offer exactly `allowedDecisions(conflict)` per conflict, and say so when
+   `sharesCounterpart` is true.
+4. **Write Replace counters at write time, and plan again before writing.** *Done in B1:*
+   see `applyImport` above. *B2:* on `PlanChanged`, show the new plan and ask again.
 5. **Match the export limits on the add path, or handle the export failure.** The add path
    bounds no lengths today. Either apply the backup's limits (1024 UTF-8 bytes per label,
    1024 bytes per secret) and the parser's trimming to every way of creating or renaming an
    account, or handle `AccountRejectedException` (item 6).
-6. **Show which account blocks an export:** use `AccountRejectedException.accountIndex` to
-   name the account from the app's own list (not from the message) and `reason` to say
-   what is wrong with it.
+6. **Show which account blocks an export.** *Done in B1:* `ExportResult.AccountRejected`
+   carries the account's id (mapped from `AccountRejectedException.accountIndex`) and the
+   `reason`. *B2:* name the account from the app's own list by that id, and say what is
+   wrong with it.
 7. **Expect label whitespace to differ between platforms.** It is the platform's
    `String.trim()` (see [Payload](#payload-payload-version-1)), which can differ between
    Android versions. A backup whose label edges the importing platform treats as
    whitespace is rejected as a whole (`InvalidPayload`), fail-closed; the UI must not trim
    or repair it.
-8. **Keep the password in a `CharArray` where possible**, wipe it after use, and never put
-   it in saved instance state or a `SavedStateHandle`.
-9. **Say that a wrong password and a damaged file are indistinguishable.** The message for
-   `WrongPasswordOrDamaged` must say it could be either; the format cannot tell them apart.
-10. **Wipe the imported secrets** returned in `Success` once they are stored.
-11. **Run instrumented tests on a real device** (so far everything runs on the desktop JVM
-    only):
-    - Conscrypt AES-GCM: a modified file maps to `WrongPasswordOrDamaged` (Conscrypt's
-      `AEADBadTagException` is a `BadPaddingException`), and decryption buffers the whole
-      plaintext before returning it, so nothing unauthenticated is decoded;
+8. **Keep the password in a `CharArray` where possible.** *Done in B1:* the service takes
+   a `CharArray` and wipes it. *B2:* pass a new array per call, and never put the password
+   in saved instance state or a `SavedStateHandle`.
+9. **Say that a wrong password and a damaged file are indistinguishable.** *B2:* the
+   message for `FileRejected(WrongPasswordOrDamaged)` must say it could be either; the
+   format cannot tell them apart.
+10. **Wipe the imported secrets once they are stored.** *Done in B1:* the service wipes
+    them after `Success` and on every failure. *B2:* `close()` the `PreparedImport` when
+    the user cancels or leaves the screen (for example in `ViewModel.onCleared`).
+11. **Run instrumented tests on a real device.** *Done in B1:*
+    `BackupServiceInstrumentedTest` (a round trip with the default parameters into an empty
+    database and into one with conflicts, the abort path, and the Conscrypt damage matrix
+    below) and `RoomAccountBackupStoreInstrumentedTest` (real transactions and rollback).
+    These need a device run (`connectedDebugAndroidTest`). *B2:*
+    the rest of this list:
+    - Conscrypt AES-GCM (*B1 test*): a modified file maps to `WrongPasswordOrDamaged`
+      (Conscrypt's `AEADBadTagException` is a `BadPaddingException`), and decryption buffers
+      the whole plaintext before returning it, so nothing unauthenticated is decoded;
     - Android's `java.text.Normalizer` (the golden password, NFD input, the U+0300 fast
       path, the longest canonical decomposition of 4) and its UTF-8 decoder strictness:
       run `BackupPayloadTest.decode_rejectsMalformedUtf8` as an instrumented test;
@@ -453,8 +537,16 @@ repository must:
       AEAD cipher may copy the whole ciphertext before it can check the tag) and the
       decrypted plaintext, so about 12 MiB for a 4 MiB file. The device test should measure
       that peak;
-    - an export then import round trip on a release (R8-minified) build, since R8 has only
-      been checked statically (no keep rules were added).
+    - an export then import round trip on a release (R8-minified) build, once a screen calls
+      the service. Until then R8 removes the backup code from release builds, so there is
+      nothing to test; no keep rules were added.
+12. **Keep HOTP counters from moving back during an import.** *B2:* the accounts screen
+    writes an absolute counter computed from the state it last observed (see the known
+    limit above). Either disable "next code" while an import runs, or make the counter
+    update a compare-and-set against the counter the screen showed.
+13. **Delete a partial export.** *B2:* on `ExportResult.WriteFailed`, delete the document
+    the user picked. Also treat an `IOException` from closing the stream as a failed
+    write: a buffered stream may write its last bytes on close.
 
 ## What the format does not hide
 
