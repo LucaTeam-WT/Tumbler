@@ -1,5 +1,7 @@
 package io.github.lucateam_wt.tumbler.domain.otp
 
+import io.github.lucateam_wt.tumbler.backup.BackupPayload
+import io.github.lucateam_wt.tumbler.domain.model.AccountLimits
 import io.github.lucateam_wt.tumbler.domain.model.OtpType
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
@@ -144,6 +146,73 @@ class OtpAuthUriTest {
             "otpauth://totp/a?secret=$secret&algorithm=MD5",
         ).forEach(::assertRejected)
     }
+
+    @Test
+    fun parse_acceptsLabelsUpToTheLimitInEveryUtf8Width() {
+        // 1024 UTF-8 bytes each: 1-, 2-, 3- and 4-byte characters (the last one a surrogate pair).
+        val labels = listOf(
+            "a".repeat(1024),
+            "é".repeat(512),
+            "€".repeat(341) + "a",
+            "😀".repeat(256),
+        )
+        for (label in labels) {
+            assertEquals(label, totp("ACME:${encode(label)}").accountName)
+            assertEquals(label, totp("${encode(label)}:alice").issuer)
+            assertEquals(label, totp("alice", "&issuer=${encode(label)}").issuer)
+        }
+    }
+
+    @Test
+    fun parse_rejectsLabelsOverTheLimitOrWithAnUnpairedSurrogate() {
+        val tooLong = listOf(
+            "a".repeat(1025),
+            "é".repeat(512) + "a",
+            "€".repeat(342),
+            "😀".repeat(256) + "a",
+        )
+        val notText = listOf("al\ud800ice", "al\udc00ice", "alice\ud83d")
+        for (label in tooLong.map(::encode) + notText) {
+            assertRejected("otpauth://totp/ACME:$label?secret=$secret")
+            assertRejected("otpauth://totp/$label:alice?secret=$secret")
+            assertRejected("otpauth://totp/alice?secret=$secret&issuer=$label")
+        }
+    }
+
+    @Test
+    fun parse_limitAppliesToTheTrimmedLabel() {
+        val label = "a".repeat(1024)
+        assertEquals(label, totp("ACME:%20%20$label%20").accountName)
+        assertEquals(label, totp("alice", "&issuer=+$label+").issuer)
+    }
+
+    @Test
+    fun parse_acceptsSecretsUpTo1024BytesAndRejectsLonger() {
+        // Repeats of the public RFC seed's Base32: "GEZDGNBV" is "12345", "GEZDGNA" is "1234".
+        val max = "GEZDGNBV".repeat(204) + "GEZDGNA"
+        val account = OtpAuthUri.parse("otpauth://totp/ACME:alice?secret=$max")
+        assertEquals(1024, account.secret.size)
+        assertRejected("otpauth://totp/ACME:alice?secret=" + "GEZDGNBV".repeat(205))
+    }
+
+    @Test
+    fun accountLimits_matchTheBackupFormat() {
+        assertEquals(BackupPayload.MAX_LABEL_BYTES, AccountLimits.MAX_LABEL_UTF8_BYTES)
+        assertEquals(BackupPayload.MAX_SECRET_BYTES, AccountLimits.MAX_SECRET_BYTES)
+    }
+
+    @Test
+    fun accountLimits_countUtf8BytesLikeTheEncoder() {
+        val samples = listOf("", "ACME", "Việt Nam", "€", "😀", "aé€😀")
+        for (sample in samples) {
+            val repeated = sample.repeat(if (sample.isEmpty()) 1 else 1024 / sample.toByteArray(Charsets.UTF_8).size)
+            val size = repeated.toByteArray(Charsets.UTF_8).size
+            assertEquals(sample, size <= AccountLimits.MAX_LABEL_UTF8_BYTES, AccountLimits.isLabelWithinLimits(repeated))
+            assertFalse(sample, AccountLimits.isLabelWithinLimits(repeated + "a".repeat(1025 - size.coerceAtMost(1024))))
+        }
+    }
+
+    private fun encode(text: String): String = java.net.URLEncoder.encode(text, "UTF-8").replace("+", "%20")
 
     @Test
     fun parse_roundTripMatchesRfc6238Vector() {

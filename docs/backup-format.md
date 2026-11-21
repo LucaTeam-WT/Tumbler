@@ -171,10 +171,12 @@ come from this writer, which refuses every label its own platform would trim.
 
 The digits, period, counter and non-empty-secret rules are the ones the app's
 `OtpAccount` enforces for every account, including those parsed from `otpauth://` links.
-The length limits (1024 bytes per label and secret, 1000 accounts) are specific to the
-backup: the add-account path does not bound lengths today, so `exportBackup` refuses an
-account above a limit (`AccountRejectedException` naming the account and the reason; see
-[Writing](#writing)) instead of writing a file it could not read back.
+The add-account path applies the same label and secret limits (`AccountLimits`, enforced
+by the `otpauth://` parser), so every account added since then can be exported. An
+account stored before that, or above the 1000-account limit, can still exceed them, so
+`exportBackup` refuses an account above a limit (`AccountRejectedException` naming the
+account and the reason; see [Writing](#writing)) instead of writing a file it could not
+read back.
 
 **Fail closed:** a reader must reject the whole payload if any record is malformed or
 invalid (including a label that is not trimmed), if the count is out of range, or if
@@ -494,10 +496,15 @@ the screens. Each requirement says which part does what:
    `sharesCounterpart` is true.
 4. **Write Replace counters at write time, and plan again before writing.** *Done in B1:*
    see `applyImport` above. *B2:* on `PlanChanged`, show the new plan and ask again.
-5. **Match the export limits on the add path, or handle the export failure.** The add path
-   bounds no lengths today. Either apply the backup's limits (1024 UTF-8 bytes per label,
-   1024 bytes per secret) and the parser's trimming to every way of creating or renaming an
-   account, or handle `AccountRejectedException` (item 6).
+5. **Match the export limits on the add path.** *Done in B1:* `OtpAuthUri.parse`, today
+   the only way to create an account, rejects an issuer or account name above 1024 UTF-8
+   bytes (counted after trimming) or with an unpaired surrogate, and a secret above 1024
+   bytes (`AccountLimits`, equal to the backup's limits; a unit test checks that). The add
+   screen shows such a link as its existing "invalid link" error, so no UI changed.
+   *B2:* a specific message for a link that is too long, if wanted (it needs new strings
+   in English and Vietnamese); apply `AccountLimits` and the parser's trimming to any
+   future way of creating or renaming an account. Accounts stored before this change are
+   not checked; an export reports them (item 6).
 6. **Show which account blocks an export.** *Done in B1:* `ExportResult.AccountRejected`
    carries the account's id (mapped from `AccountRejectedException.accountIndex`) and the
    `reason`. *B2:* name the account from the app's own list by that id, and say what is
