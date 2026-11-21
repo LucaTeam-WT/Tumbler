@@ -7,6 +7,9 @@ import io.github.lucateam_wt.tumbler.domain.repository.AccountBackupStore
 import io.github.lucateam_wt.tumbler.domain.repository.UnreadableAccountException
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
 import java.io.Closeable
 import java.io.IOException
@@ -94,6 +97,17 @@ internal class BackupService(
      * result that wrote nothing (except [ImportResult.PlanChanged], which replaces it, and
      * [ImportResult.PlanClosed]), so the caller can retry or close it. After
      * [ImportResult.Success] its secrets are wiped and it is closed.
+     *
+     * **Maybe applied:** the transaction runs to its end even if the caller is cancelled
+     * meanwhile, so the service learns whether it wrote. Once the transaction block has
+     * returned its writes, the store may have committed them, so every other exit from that
+     * point on (cancellation, running out of memory, a database error while committing)
+     * closes [prepared] and wipes its secrets instead of reopening it: a retry returns
+     * [ImportResult.PlanClosed] and can never write the import twice. A
+     * [ImportResult.NotEnoughMemory] or [ImportResult.StorageFailed] with [prepared] closed
+     * therefore means the import may have been written. A cancellation still propagates as
+     * `CancellationException`; one that came before the transaction block ran, or during a
+     * transaction that found the plan changed (no new plan is then made), leaves [prepared] open.
      */
     suspend fun applyImport(prepared: PreparedImport, decisions: List<ConflictDecision>): ImportResult =
         withContext(dispatcher) { apply(prepared, decisions) }
@@ -165,28 +179,38 @@ internal class BackupService(
         var fresh: List<ExistingAccount>? = null
         var freshHandedOver = false
         var ended = false
+        // Set by the block as it returns its writes: from then on the store may commit them.
+        var mayBeCommitted = false
         try {
             try {
                 applyDecisions(prepared.plan, decisions)
             } catch (e: IllegalArgumentException) {
                 return ImportResult.DecisionsRejected
             }
-            val written = store.writeTransaction {
-                val rows = readAll().map { ExistingAccount(it.id, it.account) }
-                fresh = rows
-                val current = planImport(rows, prepared.incoming)
-                if (!current.matches(prepared.plan)) return@writeTransaction null
-                // Same pairings as the confirmed plan, so the decisions fit this plan too.
-                val writes = applyDecisions(current, decisions)
-                val rowsById = rows.associateBy { it.id }
-                for (replacement in writes.replacements) {
-                    val storedNow = rowsById.getValue(replacement.existingId)
-                    replace(replacement.existingId, replacement.accountToWrite(storedNow))
+            // Room resumes a cancelled caller at once while its transaction thread may still
+            // commit, so wait for the transaction to end whatever happens to the caller.
+            val written = withContext(NonCancellable) {
+                store.writeTransaction {
+                    val rows = readAll().map { ExistingAccount(it.id, it.account) }
+                    fresh = rows
+                    val current = planImport(rows, prepared.incoming)
+                    if (!current.matches(prepared.plan)) return@writeTransaction null
+                    // Same pairings as the confirmed plan, so the decisions fit this plan too.
+                    val writes = applyDecisions(current, decisions)
+                    val rowsById = rows.associateBy { it.id }
+                    for (replacement in writes.replacements) {
+                        val storedNow = rowsById.getValue(replacement.existingId)
+                        replace(replacement.existingId, replacement.accountToWrite(storedNow))
+                    }
+                    for (entry in writes.inserts) insert(entry.account, entry.createdAtMillis)
+                    mayBeCommitted = true
+                    writes
                 }
-                for (entry in writes.inserts) insert(entry.account, entry.createdAtMillis)
-                writes
             }
             if (written == null) {
+                // Nothing was written. A cancelled caller would drop a new plan with its
+                // secrets, so make none: this one is released below.
+                currentCoroutineContext().ensureActive()
                 // If replan throws (out of memory), the plan is still applying: release it below.
                 val next = prepared.replan(checkNotNull(fresh))
                 ended = true
@@ -211,7 +235,12 @@ internal class BackupService(
             return ImportResult.NotEnoughMemory
         } finally {
             if (!freshHandedOver) fresh?.let(::wipe)
-            if (!ended) prepared.release()
+            when {
+                ended -> Unit
+                // Maybe applied: never open again, so a retry cannot write the import twice.
+                mayBeCommitted -> prepared.finish()
+                else -> prepared.release()
+            }
         }
     }
 }
@@ -222,10 +251,10 @@ internal class BackupService(
  * [ImportConflict.sharesCounterpart]), then call [BackupService.applyImport].
  *
  * It holds decrypted secrets: the imported accounts, and the device's accounts as read for
- * the plan. [BackupService.applyImport] wipes them after a successful import; otherwise
- * [close] it (for example when the user cancels), which wipes them. Closing while an apply
- * runs takes effect when the apply ends, so it never wipes secrets that are being written.
- * [toString] prints only counts.
+ * the plan. [BackupService.applyImport] wipes them once an apply wrote the import, or may
+ * have; otherwise [close] it (for example when the user cancels), which wipes them. Closing
+ * while an apply runs takes effect when the apply ends, so it never wipes secrets that are
+ * being written. [toString] prints only counts.
  */
 internal class PreparedImport internal constructor(
     internal val incoming: List<BackupEntry>,
@@ -254,7 +283,7 @@ internal class PreparedImport internal constructor(
         if (closeRequested) closeNow() else state = State.OPEN
     }
 
-    /** Ends an apply that wrote the import: wipes every secret. */
+    /** Ends an apply that wrote the import, or may have: wipes every secret and closes this for good. */
     internal fun finish(): Unit = synchronized(lock) {
         check(state == State.APPLYING)
         closeNow()
@@ -405,7 +434,10 @@ internal sealed interface ImportResult {
      */
     data object DecisionsRejected : ImportResult
 
-    /** The plan was already applied, replaced by a new plan, or closed (or an apply of it is running). Nothing was written. */
+    /**
+     * The plan was already applied (or may have been, see [BackupService.applyImport]),
+     * replaced by a new plan, or closed, or an apply of it is running. Nothing was written.
+     */
     data object PlanClosed : ImportResult
 
     /** Account [accountId] on the device cannot be read. Nothing was written; the plan is still open. */
@@ -415,11 +447,17 @@ internal sealed interface ImportResult {
 
     /**
      * The database or the Keystore failed. The transaction was rolled back, so nothing was
-     * written; the plan is still open and the import can be retried.
+     * written; the plan is still open and the import can be retried. Exception: if the
+     * database failed while committing, the import may have been written, and the plan is
+     * closed (see [BackupService.applyImport]).
      */
     data object StorageFailed : ImportResult
 
-    /** Not enough memory. Nothing was written; the plan is still open. */
+    /**
+     * Not enough memory. Nothing was written; the plan is still open. Exception: if it
+     * happened after the transaction block had returned its writes, the import may have
+     * been written, and the plan is closed (see [BackupService.applyImport]).
+     */
     data object NotEnoughMemory : ImportResult
 }
 

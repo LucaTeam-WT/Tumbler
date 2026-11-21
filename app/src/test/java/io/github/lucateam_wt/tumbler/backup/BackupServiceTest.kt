@@ -16,7 +16,13 @@ import io.github.lucateam_wt.tumbler.domain.model.OtpAccount
 import io.github.lucateam_wt.tumbler.domain.model.OtpType
 import io.github.lucateam_wt.tumbler.domain.otp.OtpAlgorithm
 import io.github.lucateam_wt.tumbler.domain.repository.UnreadableAccountException
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.asCoroutineDispatcher
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertArrayEquals
@@ -646,6 +652,141 @@ class BackupServiceTest {
 
         assertTrue(codec.imported.all { it.isWiped() })
         assertTrue(store.handedOut.all { it.isWiped() })
+    }
+
+    // ---- apply: cancellation and failures around the commit ----
+
+    /** Runs applyImport in a job of its own, which [hook] gets first (to cancel it from the store); returns what it threw. */
+    private fun applyInJob(prepared: PreparedImport, vararg decisions: ConflictDecision, hook: (Job) -> Unit): Throwable? =
+        runBlocking {
+            var thrown: Throwable? = null
+            val job = launch(start = CoroutineStart.LAZY) {
+                try {
+                    service.applyImport(prepared, decisions.toList())
+                } catch (t: Throwable) {
+                    thrown = t
+                    throw t
+                }
+            }
+            hook(job)
+            job.start()
+            job.join()
+            thrown
+        }
+
+    /** A store holding [githubAccount] (created at 1), its service, and a plan to import [github] there. */
+    private fun keepBothCase(): Triple<FakeAccountBackupStore, BackupService, PreparedImport> {
+        val store = FakeAccountBackupStore()
+        val service = BackupService(store, executor.asCoroutineDispatcher(), codec)
+        store.add(githubAccount, createdAtMillis = 1)
+        val read = runBlocking { service.readBackup(ByteArrayInputStream(seal(listOf(github))), password()) }
+        return Triple(store, service, read.cast<ImportReadResult.Ready>().prepared)
+    }
+
+    /** Keep both wrote [github] once, and [prepared] is closed and wiped, so a retry writes nothing. */
+    private fun assertWrittenOnceAndClosed(store: FakeAccountBackupStore, service: BackupService, prepared: PreparedImport) {
+        assertEquals(listOf(githubAccount, github.account), store.accounts())
+        assertFalse(prepared.isOpen)
+        assertTrue(prepared.incoming.all { it.account.secret.isWiped() })
+        assertTrue(store.handedOut.all { it.isWiped() })
+
+        assertSame(ImportResult.PlanClosed, runBlocking { service.applyImport(prepared, listOf(KEEP_BOTH)) })
+
+        assertEquals(1, store.transactions)
+        assertEquals(1, store.writes)
+        assertEquals(listOf(githubAccount, github.account), store.accounts())
+    }
+
+    @Test
+    fun apply_cancelledBeforeTheTransactionIsEntered_keepsThePlanOpenForARetry() {
+        store.add(githubAccount, createdAtMillis = 1)
+        val prepared = prepare(github)
+        // Cancelled while waiting for the transaction, so its block never runs.
+        store.beforeTransaction = { throw CancellationException("cancelled before the transaction") }
+
+        assertThrows(CancellationException::class.java) { apply(prepared, KEEP_BOTH) }
+
+        assertEquals(listOf(githubAccount), store.accounts())
+        assertEquals(0, store.writes)
+        assertTrue(prepared.isOpen)
+        assertTrue(prepared.incoming.none { it.account.secret.isWiped() })
+        store.beforeTransaction = null
+        assertEquals(1, apply(prepared, KEEP_BOTH).cast<ImportResult.Success>().inserted)
+        assertEquals(listOf(githubAccount, github.account), store.accounts())
+    }
+
+    @Test
+    fun apply_cancelledRightAfterTheCommit_closesAndWipesThePlanSoARetryWritesNothing() {
+        store.add(githubAccount, createdAtMillis = 1)
+        val prepared = prepare(github)
+
+        val thrown = applyInJob(prepared, KEEP_BOTH) { job ->
+            // Like Room, the store resumes a caller cancelled during the commit with CancellationException.
+            store.afterCommit = {
+                job.cancel()
+                currentCoroutineContext().ensureActive()
+            }
+        }
+
+        assertTrue("$thrown", thrown is CancellationException)
+        assertEquals(1, store.commits)
+        assertWrittenOnceAndClosed(store, service, prepared)
+    }
+
+    @Test
+    fun apply_failureAfterTheCommit_closesAndWipesThePlanInsteadOfReleasingIt() {
+        val failures = listOf(
+            OutOfMemoryError("test") to ImportResult.NotEnoughMemory,
+            SQLException("disk I/O error") to ImportResult.StorageFailed,
+            CancellationException("cancelled after the commit") to null,
+        )
+        for ((failure, expected) in failures) {
+            val (store, service, prepared) = keepBothCase()
+            store.afterCommit = { throw failure }
+
+            if (expected != null) {
+                assertSame("$failure", expected, runBlocking { service.applyImport(prepared, listOf(KEEP_BOTH)) })
+            } else {
+                assertThrows(CancellationException::class.java) { runBlocking { service.applyImport(prepared, listOf(KEEP_BOTH)) } }
+            }
+
+            assertWrittenOnceAndClosed(store, service, prepared)
+        }
+    }
+
+    @Test
+    fun apply_storageFailedInsideTheTransaction_rollsBackAndKeepsThePlanOpenForARetry() {
+        store.add(githubAccount, createdAtMillis = 1)
+        val prepared = prepare(github)
+        store.writeFailure = SQLException("disk full")
+
+        assertSame(ImportResult.StorageFailed, apply(prepared, KEEP_BOTH))
+
+        assertEquals(listOf(githubAccount), store.accounts())
+        assertTrue(prepared.isOpen)
+        assertTrue(prepared.incoming.none { it.account.secret.isWiped() })
+        store.writeFailure = null
+        assertEquals(1, apply(prepared, KEEP_BOTH).cast<ImportResult.Success>().inserted)
+        assertEquals(listOf(githubAccount, github.account), store.accounts())
+    }
+
+    @Test
+    fun apply_cancelledDuringATransactionThatFindsThePlanChanged_makesNoNewPlanAndKeepsThisOne() {
+        val prepared = prepare(github)
+
+        val thrown = applyInJob(prepared) { job ->
+            store.beforeTransaction = {
+                store.add(githubAccount, createdAtMillis = 1)
+                job.cancel()
+            }
+        }
+
+        assertTrue("$thrown", thrown is CancellationException)
+        assertEquals(listOf(githubAccount), store.accounts())
+        assertEquals(0, store.writes)
+        assertTrue(prepared.isOpen)
+        assertTrue(prepared.incoming.none { it.account.secret.isWiped() })
+        assertTrue(store.handedOut.single().isWiped()) // the rows read in the transaction
     }
 
     @Test

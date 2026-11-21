@@ -426,8 +426,21 @@ On every result except `Ready` the imported secrets are already wiped.
 
 A failure while writing rolls the whole transaction back and leaves the plan open for a
 retry. Those results are `StorageFailed` (a database or Keystore error), `NotEnoughMemory`
-and `ExistingAccountUnreadable`. `PlanClosed` means the plan was already applied, replaced
-or closed, or is being applied.
+and `ExistingAccountUnreadable`. `PlanClosed` means the plan was already applied (or may
+have been, see below), replaced or closed, or is being applied.
+
+The transaction runs to its end even if the caller is cancelled meanwhile
+(`withContext(NonCancellable)`): Room's `withTransaction` runs the block on its own
+transaction thread and resumes a cancelled caller at once, while that thread may still
+commit. Once the transaction block has returned its writes, the import may have been
+committed, so every other exit from that point on (cancellation, running out of memory, a
+database error while committing) closes the plan and wipes its secrets; it is never left
+open. A retry then returns `PlanClosed`, so the accounts can never be imported twice. A
+`StorageFailed` or `NotEnoughMemory` that comes with a closed plan (`isOpen` is false)
+means the import may have been written: reload the accounts rather than offer a retry.
+Cancellation still propagates as `CancellationException`. Only a cancellation before the
+transaction block runs, or during a transaction that found the plan changed (no new plan
+is then made), leaves the plan open.
 
 `PreparedImport` holds decrypted secrets: the imported accounts, and the device's accounts
 as read for the plan. A successful apply wipes them. Otherwise the caller must `close()`
@@ -525,8 +538,8 @@ the screens. Each requirement says which part does what:
     the user cancels or leaves the screen (for example in `ViewModel.onCleared`).
 11. **Run instrumented tests on a real device.** *Done in B1:*
     `BackupServiceInstrumentedTest` (a round trip with the default parameters into an empty
-    database and into one with conflicts, the abort path, and the Conscrypt damage matrix
-    below) and `RoomAccountBackupStoreInstrumentedTest` (real transactions and rollback).
+    database and into one with conflicts, the abort path, a cancellation right after the
+    commit, and the Conscrypt damage matrix below) and `RoomAccountBackupStoreInstrumentedTest` (real transactions and rollback).
     These need a device run (`connectedDebugAndroidTest`). *B2:*
     the rest of this list:
     - Conscrypt AES-GCM (*B1 test*): a modified file maps to `WrongPasswordOrDamaged`

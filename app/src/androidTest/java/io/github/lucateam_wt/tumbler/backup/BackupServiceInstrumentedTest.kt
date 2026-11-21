@@ -11,7 +11,15 @@ import io.github.lucateam_wt.tumbler.data.repository.RoomAccountBackupStore
 import io.github.lucateam_wt.tumbler.data.repository.RoomAccountRepository
 import io.github.lucateam_wt.tumbler.domain.model.OtpAccount
 import io.github.lucateam_wt.tumbler.domain.model.OtpType
+import io.github.lucateam_wt.tumbler.domain.model.StoredAccount
 import io.github.lucateam_wt.tumbler.domain.otp.Base32
+import io.github.lucateam_wt.tumbler.domain.repository.AccountBackupStore
+import io.github.lucateam_wt.tumbler.domain.repository.AccountBackupWriter
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertArrayEquals
@@ -48,6 +56,22 @@ class BackupServiceInstrumentedTest {
         }
 
         override fun read(input: InputStream, password: CharArray): BackupReadResult = readBackup(input, password)
+    }
+
+    /**
+     * Cancels [cancel] as the service's transaction block returns its writes: Room then
+     * commits them and resumes a cancelled caller.
+     */
+    private class CancelAtCommit(private val delegate: AccountBackupStore) : AccountBackupStore {
+        @Volatile
+        var cancel: Job? = null
+
+        override suspend fun readAll(): List<StoredAccount> = delegate.readAll()
+
+        override suspend fun <R> writeTransaction(block: suspend AccountBackupWriter.() -> R): R =
+            delegate.writeTransaction {
+                block().also { cancel?.cancel() }
+            }
     }
 
     private class Device(context: Context, val alias: String, codec: BackupCodec = DefaultBackupCodec) : Closeable {
@@ -191,6 +215,35 @@ class BackupServiceInstrumentedTest {
         assertTrue(next.plan.conflicts.isEmpty())
         apply(target, next).cast<ImportResult.Success>()
         assertEquals(listOf(totp), target.store.readAll().map { it.account })
+    }
+
+    @Test
+    fun cancelledRightAfterTheCommit_closesThePlanAndARetryWritesNoDuplicate() = runBlocking {
+        source.repository.add(totp)
+        target.repository.add(totp)
+        val store = CancelAtCommit(target.store)
+        val service = BackupService(store)
+        val prepared = service.readBackup(ByteArrayInputStream(export(source)), password.toCharArray())
+            .cast<ImportReadResult.Ready>().prepared
+        var thrown: Throwable? = null
+        val job = launch(Dispatchers.Default, start = CoroutineStart.LAZY) {
+            try {
+                service.applyImport(prepared, listOf(ConflictDecision.KEEP_BOTH))
+            } catch (t: Throwable) {
+                thrown = t
+                throw t
+            }
+        }
+        store.cancel = job
+
+        job.start()
+        job.join()
+
+        assertTrue("$thrown", thrown is CancellationException)
+        assertFalse(prepared.isOpen)
+        assertEquals(listOf(totp, totp), target.store.readAll().map { it.account })
+        assertSame(ImportResult.PlanClosed, service.applyImport(prepared, listOf(ConflictDecision.KEEP_BOTH)))
+        assertEquals(listOf(totp, totp), target.store.readAll().map { it.account })
     }
 
     @Test

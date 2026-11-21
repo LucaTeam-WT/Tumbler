@@ -8,7 +8,7 @@ import io.github.lucateam_wt.tumbler.domain.repository.AccountBackupWriter
 /**
  * In-memory [AccountBackupStore] with the real store's semantics: reads return new secret
  * arrays, writes keep their own copy (the real store encrypts), and a transaction whose block
- * throws restores every row. Failures and concurrent writes can be injected.
+ * throws restores every row. Failures (also after a commit) and concurrent writes can be injected.
  */
 internal class FakeAccountBackupStore : AccountBackupStore {
 
@@ -45,6 +45,12 @@ internal class FakeAccountBackupStore : AccountBackupStore {
 
     /** Runs when a transaction starts, before its block: another write that committed just before it. */
     var beforeTransaction: (suspend () -> Unit)? = null
+
+    /**
+     * Runs after a transaction committed, before writeTransaction returns, where Room resumes
+     * its caller. What it throws reaches the caller; the commit stands.
+     */
+    var afterCommit: (suspend () -> Unit)? = null
 
     fun add(account: OtpAccount, createdAtMillis: Long = 0): String {
         val id = "row-${nextId++}"
@@ -91,14 +97,16 @@ internal class FakeAccountBackupStore : AccountBackupStore {
         transactions++
         val before = LinkedHashMap(rows)
         val writer = Writer()
-        try {
-            return writer.block().also { commits++ }
+        val result = try {
+            writer.block().also { commits++ }
         } catch (t: Throwable) {
             rows = before
             throw t
         } finally {
             writer.open = false
         }
+        afterCommit?.invoke()
+        return result
     }
 
     private inner class Writer : AccountBackupWriter {
