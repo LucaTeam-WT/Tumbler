@@ -17,6 +17,8 @@ import io.github.lucateam_wt.tumbler.domain.model.OtpType
 import io.github.lucateam_wt.tumbler.domain.otp.OtpAlgorithm
 import io.github.lucateam_wt.tumbler.domain.repository.UnreadableAccountException
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.asCoroutineDispatcher
@@ -40,6 +42,7 @@ import java.io.InputStream
 import java.io.OutputStream
 import java.security.SecureRandom
 import java.util.concurrent.Executors
+import kotlin.coroutines.CoroutineContext
 
 class BackupServiceTest {
 
@@ -787,6 +790,81 @@ class BackupServiceTest {
         assertTrue(prepared.isOpen)
         assertTrue(prepared.incoming.none { it.account.secret.isWiped() })
         assertTrue(store.handedOut.single().isWiped()) // the rows read in the transaction
+    }
+
+    // ---- a result the cancelled caller never receives ----
+
+    /** Queues what is dispatched to it, after [onDispatch]; [runAll] runs the queue on the calling thread. */
+    private class QueueDispatcher(private val onDispatch: (CoroutineContext) -> Unit = {}) : CoroutineDispatcher() {
+        private val tasks = ArrayDeque<Runnable>()
+
+        override fun dispatch(context: CoroutineContext, block: Runnable) {
+            onDispatch(context)
+            tasks.addLast(block)
+        }
+
+        fun runAll() {
+            while (tasks.isNotEmpty()) tasks.removeFirst().run()
+        }
+    }
+
+    /**
+     * Runs [call] on a service whose dispatcher is a queue, from a caller that is cancelled
+     * exactly when the service hands its result back: after the service's work has ended and
+     * before the caller resumes, so `withContext` drops that result. Everything runs on this
+     * thread, in order. Returns what [call] threw.
+     */
+    private fun callCancelledOnReturn(call: suspend BackupService.() -> Unit): Throwable? {
+        val worker = QueueDispatcher()
+        val caller = QueueDispatcher(onDispatch = { context -> context[Job]?.cancel() })
+        val service = BackupService(store, worker, codec)
+        var thrown: Throwable? = null
+        val job = CoroutineScope(caller).launch(start = CoroutineStart.UNDISPATCHED) {
+            try {
+                service.call()
+            } catch (t: Throwable) {
+                thrown = t
+                throw t
+            }
+        }
+        worker.runAll() // the whole call, up to dispatching its result back to the caller
+        assertTrue(job.isCancelled)
+        caller.runAll()
+        assertTrue(job.isCompleted)
+        return thrown
+    }
+
+    @Test
+    fun read_planDroppedByACancellationAfterItWasMade_isWiped() {
+        store.add(bankAccount())
+        val file = seal(listOf(github, bank()))
+        val password = password()
+
+        val thrown = callCancelledOnReturn { readBackup(ByteArrayInputStream(file), password) }
+
+        assertTrue("$thrown", thrown is CancellationException)
+        assertTrue(password.all { it == '\u0000' })
+        assertEquals(2, codec.imported.size)
+        assertTrue(codec.imported.all { it.isWiped() })
+        assertEquals(1, store.handedOut.size) // the plan was made against the account on the device
+        assertTrue(store.handedOut.all { it.isWiped() })
+    }
+
+    @Test
+    fun apply_newPlanDroppedByACancellationAfterItWasMade_isWiped() {
+        val prepared = prepare(github)
+        store.add(githubAccount, createdAtMillis = 1)
+
+        val thrown = callCancelledOnReturn { applyImport(prepared, emptyList()) }
+
+        assertTrue("$thrown", thrown is CancellationException)
+        assertEquals(1, store.transactions)
+        assertEquals(0, store.writes)
+        assertEquals(listOf(githubAccount), store.accounts())
+        assertFalse(prepared.isOpen) // replaced by the new plan, which the caller never received
+        assertTrue(codec.imported.all { it.isWiped() })
+        assertEquals(1, store.handedOut.size) // the row read in the transaction, held by the new plan
+        assertTrue(store.handedOut.all { it.isWiped() })
     }
 
     @Test

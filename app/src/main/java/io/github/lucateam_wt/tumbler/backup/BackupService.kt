@@ -30,8 +30,11 @@ import java.io.OutputStream
  * zeros before it returns, whatever the outcome. **Secrets:** the decrypted secrets the
  * service reads (the accounts on the device, the accounts in a backup) are wiped once they
  * are no longer needed; see [PreparedImport] for the ones an import holds while the user
- * decides. Nothing is logged, and no result's `toString` contains a password, a secret, a
- * label or an account id.
+ * decides. A cancellation never leaves un-wiped secrets that nothing references: a result
+ * that `withContext` drops because the caller was cancelled after the service made it (an
+ * [ImportReadResult.Ready] or an [ImportResult.PlanChanged]) is closed before the
+ * cancellation propagates. Nothing is logged, and no result's `toString` contains a
+ * password, a secret, a label or an account id.
  *
  * The service never opens or closes a stream: the caller owns both.
  */
@@ -65,16 +68,25 @@ internal class BackupService(
      * device as they are now ([planImport]). Writes nothing.
      *
      * On [ImportReadResult.Ready] the caller must eventually pass the [PreparedImport] to
-     * [applyImport] or close it. On every other result the imported secrets are already wiped.
+     * [applyImport] or close it. On every other result the imported secrets are already wiped,
+     * and so they are if the caller is cancelled before it receives a [ImportReadResult.Ready].
      */
-    suspend fun readBackup(input: InputStream, password: CharArray): ImportReadResult =
-        withContext(dispatcher) {
-            try {
-                read(input, password)
-            } finally {
-                password.fill(WIPED_CHAR)
+    suspend fun readBackup(input: InputStream, password: CharArray): ImportReadResult {
+        var made: ImportReadResult? = null
+        try {
+            return withContext(dispatcher) {
+                try {
+                    read(input, password).also { made = it }
+                } finally {
+                    password.fill(WIPED_CHAR)
+                }
             }
+        } catch (t: Throwable) {
+            // The caller never gets the plan (cancelled after it was made): wipe it here.
+            (made as? ImportReadResult.Ready)?.prepared?.close()
+            throw t
         }
+    }
 
     /**
      * Writes [prepared] with one [decisions] entry per conflict (in [ImportPlan.conflicts]
@@ -109,8 +121,16 @@ internal class BackupService(
      * `CancellationException`; one that came before the transaction block ran, or during a
      * transaction that found the plan changed (no new plan is then made), leaves [prepared] open.
      */
-    suspend fun applyImport(prepared: PreparedImport, decisions: List<ConflictDecision>): ImportResult =
-        withContext(dispatcher) { apply(prepared, decisions) }
+    suspend fun applyImport(prepared: PreparedImport, decisions: List<ConflictDecision>): ImportResult {
+        var made: ImportResult? = null
+        try {
+            return withContext(dispatcher) { apply(prepared, decisions).also { made = it } }
+        } catch (t: Throwable) {
+            // As in readBackup: the old plan is already closed, so nothing else would wipe the new one.
+            (made as? ImportResult.PlanChanged)?.newPlan?.close()
+            throw t
+        }
+    }
 
     private suspend fun export(password: CharArray, output: OutputStream): ExportResult {
         val check = validatePassword(password)
