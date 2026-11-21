@@ -105,7 +105,7 @@ internal fun exportBackup(
 /**
  * **For tests only.** Production code must only call [exportBackup], which is the one
  * production caller of this function. `@VisibleForTesting(otherwise = PRIVATE)` makes lint
- * report any other caller outside the test source sets.
+ * report any other caller outside the test source sets, as an error (`app/lint.xml`).
  *
  * This is the seam behind [exportBackup]. It takes the salt, nonce, scrypt parameters and
  * [kdf] explicitly, for the golden file and for fast tests. A fixed salt and nonce used with

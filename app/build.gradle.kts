@@ -38,6 +38,10 @@ android {
     buildFeatures {
         compose = true
     }
+    lint {
+        // Raises VisibleForTests to an error; see the comment in app/lint.xml.
+        lintConfig = file("lint.xml")
+    }
     // Lets instrumented tests read the exported schema from the test APK's assets.
     sourceSets.getByName("androidTest").assets.directories.add("$projectDir/schemas")
 }

@@ -7,6 +7,13 @@ import io.github.lucateam_wt.tumbler.domain.model.OtpAccount
 import io.github.lucateam_wt.tumbler.domain.model.OtpType
 import io.github.lucateam_wt.tumbler.domain.otp.OtpAlgorithm
 
+/**
+ * The associated data that binds an account's encrypted secret to its row: the id as UTF-8.
+ * [RoomAccountRepository] and [RoomAccountBackupStore] both use it, so each reads what the
+ * other wrote.
+ */
+internal fun accountAssociatedData(id: String): ByteArray = id.toByteArray(Charsets.UTF_8)
+
 /** Builds the row for [this] account. Enums are stored by name. */
 internal fun OtpAccount.toEntity(id: String, secretBlob: ByteArray, createdAt: Long) = AccountEntity(
     id = id,

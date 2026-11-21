@@ -1,5 +1,6 @@
 package io.github.lucateam_wt.tumbler.domain.otp
 
+import io.github.lucateam_wt.tumbler.domain.model.AccountLimits
 import io.github.lucateam_wt.tumbler.domain.model.OtpAccount
 import io.github.lucateam_wt.tumbler.domain.model.OtpType
 import java.io.ByteArrayOutputStream
@@ -29,8 +30,11 @@ object OtpAuthUri {
      * otherwise from the label prefix before the first `:`. Unknown parameters are
      * ignored; for duplicated parameters the last value wins.
      *
-     * @throws IllegalArgumentException if [uri] is malformed or has invalid values.
-     *   The message never contains the secret or the URI.
+     * @throws IllegalArgumentException if [uri] is malformed or has invalid values,
+     *   including an issuer or account name above [AccountLimits.MAX_LABEL_UTF8_BYTES]
+     *   UTF-8 bytes or with an unpaired surrogate, and a secret above
+     *   [AccountLimits.MAX_SECRET_BYTES] bytes. The message never contains the secret,
+     *   a label or the URI.
      */
     fun parse(uri: String): OtpAccount {
         val text = uri.trim()
@@ -81,9 +85,15 @@ object OtpAuthUri {
             }
         }
 
+        val issuer = params["issuer"]?.trim()?.takeIf { it.isNotEmpty() } ?: labelIssuer
+        // The backup format's limits, so every account added here can be exported.
+        require(AccountLimits.isLabelWithinLimits(issuer)) { "Issuer too long or not valid text" }
+        require(AccountLimits.isLabelWithinLimits(accountName)) { "Account name too long or not valid text" }
+        require(secret.size <= AccountLimits.MAX_SECRET_BYTES) { "Secret too long" }
+
         // Ranges (digits, period, counter, non-empty secret) are validated by OtpAccount.
         return OtpAccount(
-            issuer = params["issuer"]?.trim()?.takeIf { it.isNotEmpty() } ?: labelIssuer,
+            issuer = issuer,
             accountName = accountName,
             type = type,
             secret = secret,

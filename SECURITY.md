@@ -83,9 +83,12 @@ it in the system preview. It is not cleared automatically.
 ## Known limitations and planned work
 
 - **No app lock yet.** Anyone who can unlock the phone can open the app and see codes.
-- **No encrypted export/import yet.** There is no way to move or back up accounts.
-  (The planned file format is specified in [docs/backup-format.md](docs/backup-format.md);
-  not yet wired into the app.)
+- **No encrypted export/import yet.** There is no way to move or back up accounts. The
+  file format ([docs/backup-format.md](docs/backup-format.md)) and a service that exports
+  and imports through it (`BackupService`) exist in code, but no screen calls them, so they
+  are not reachable from the app and R8 removes them from release builds. That service
+  only writes to a stream its caller passes in, opens no file itself, and wipes the
+  passwords and decrypted secrets it handles after use (best-effort, as above).
 - **No screen-capture protection yet.** `FLAG_SECURE` is not set; screenshots and
   recents thumbnails can show codes.
 - **No clipboard auto-clear yet.**
