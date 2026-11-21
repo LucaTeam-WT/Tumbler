@@ -429,18 +429,24 @@ retry. Those results are `StorageFailed` (a database or Keystore error), `NotEno
 and `ExistingAccountUnreadable`. `PlanClosed` means the plan was already applied (or may
 have been, see below), replaced or closed, or is being applied.
 
-The transaction runs to its end even if the caller is cancelled meanwhile
-(`withContext(NonCancellable)`): Room's `withTransaction` runs the block on its own
-transaction thread and resumes a cancelled caller at once, while that thread may still
-commit. Once the transaction block has returned its writes, the import may have been
-committed, so every other exit from that point on (cancellation, running out of memory, a
-database error while committing) closes the plan and wipes its secrets; it is never left
-open. A retry then returns `PlanClosed`, so the accounts can never be imported twice. A
+Once `applyImport` has started, a cancellation does not stop the transaction. Room's
+`withTransaction` runs the block on its own transaction thread and would resume a
+cancelled caller at once while that thread may still commit, so the service waits for the
+transaction under `withContext(NonCancellable)`. Room's wait for its transaction thread
+and the write lock then cannot be cancelled either, so the import is written and the plan
+closed (or the plan is found changed and nothing is written). Once the transaction block
+has returned its writes, the import may have been committed, so every other exit from
+that point on (cancellation, running out of memory, a database error while committing)
+closes the plan and wipes its secrets; it is never left open. A retry then returns
+`PlanClosed`, so the accounts can never be imported twice. Cancellation still propagates
+as `CancellationException`; after one, `isOpen` says whether a retry is possible. A
+cancellation never leaves un-wiped secrets that nothing references: a `Ready` or
+`PlanChanged` made for a caller that was cancelled before it received it is closed.
+
+For the UI (B2): do not `join()` the import's job on the main thread, since it waits for
+the transaction, and `withTimeout` cannot stop an import that has started. A
 `StorageFailed` or `NotEnoughMemory` that comes with a closed plan (`isOpen` is false)
-means the import may have been written: reload the accounts rather than offer a retry.
-Cancellation still propagates as `CancellationException`. Only a cancellation before the
-transaction block runs, or during a transaction that found the plan changed (no new plan
-is then made), leaves the plan open.
+means the import may have been written: reload the accounts instead of offering a retry.
 
 `PreparedImport` holds decrypted secrets: the imported accounts, and the device's accounts
 as read for the plan. A successful apply wipes them. Otherwise the caller must `close()`
@@ -544,8 +550,8 @@ the screens. Each requirement says which part does what:
     the user cancels or leaves the screen (for example in `ViewModel.onCleared`).
 11. **Run instrumented tests on a real device.** *Done in B1:*
     `BackupServiceInstrumentedTest` (a round trip with the default parameters into an empty
-    database and into one with conflicts, the abort path, a cancellation right after the
-    commit, and the Conscrypt damage matrix below) and `RoomAccountBackupStoreInstrumentedTest` (real transactions and rollback).
+    database and into one with conflicts, the abort path, a cancellation inside the
+    import's last insert, and the Conscrypt damage matrix below) and `RoomAccountBackupStoreInstrumentedTest` (real transactions and rollback).
     These need a device run (`connectedDebugAndroidTest`). *B2:*
     the rest of this list:
     - Conscrypt AES-GCM (*B1 test*): a modified file maps to `WrongPasswordOrDamaged`

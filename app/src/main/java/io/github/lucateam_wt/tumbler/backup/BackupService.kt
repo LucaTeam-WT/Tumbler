@@ -110,16 +110,25 @@ internal class BackupService(
      * [ImportResult.PlanClosed]), so the caller can retry or close it. After
      * [ImportResult.Success] its secrets are wiped and it is closed.
      *
-     * **Maybe applied:** the transaction runs to its end even if the caller is cancelled
-     * meanwhile, so the service learns whether it wrote. Once the transaction block has
-     * returned its writes, the store may have committed them, so every other exit from that
-     * point on (cancellation, running out of memory, a database error while committing)
-     * closes [prepared] and wipes its secrets instead of reopening it: a retry returns
-     * [ImportResult.PlanClosed] and can never write the import twice. A
-     * [ImportResult.NotEnoughMemory] or [ImportResult.StorageFailed] with [prepared] closed
-     * therefore means the import may have been written. A cancellation still propagates as
-     * `CancellationException`; one that came before the transaction block ran, or during a
-     * transaction that found the plan changed (no new plan is then made), leaves [prepared] open.
+     * **Cancellation:** once [applyImport] has started, a cancellation does not stop the
+     * transaction. The service waits for it under `NonCancellable`, and Room's wait for its
+     * transaction thread and the write lock cannot be cancelled, so the import is written and
+     * [prepared] closed (or the plan is found changed and nothing is written). The
+     * cancellation then propagates as `CancellationException`; after one,
+     * [PreparedImport.isOpen] says whether a retry is possible. A new plan made for a caller
+     * cancelled meanwhile is closed, never dropped with its secrets.
+     *
+     * **Maybe applied:** once the transaction block has returned its writes, the store may
+     * have committed them, so every other exit from that point on (cancellation, running out
+     * of memory, a database error while committing) closes [prepared] and wipes its secrets
+     * instead of reopening it: a retry returns [ImportResult.PlanClosed] and can never write
+     * the import twice.
+     *
+     * **For the UI:** do not `join()` the import's job on the main thread (it waits for the
+     * transaction), and `withTimeout` cannot stop an import that has started. A
+     * [ImportResult.StorageFailed] or [ImportResult.NotEnoughMemory] with
+     * [PreparedImport.isOpen] false means the import may have been written: reload the
+     * accounts instead of offering a retry.
      */
     suspend fun applyImport(prepared: PreparedImport, decisions: List<ConflictDecision>): ImportResult {
         var made: ImportResult? = null

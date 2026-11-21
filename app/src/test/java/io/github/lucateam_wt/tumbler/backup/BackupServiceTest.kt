@@ -713,11 +713,13 @@ class BackupServiceTest {
     }
 
     @Test
-    fun apply_cancelledBeforeTheTransactionIsEntered_keepsThePlanOpenForARetry() {
+    fun apply_storeThrowsCancellationBeforeTheBlockRuns_releasesThePlanForARetry() {
         store.add(githubAccount, createdAtMillis = 1)
         val prepared = prepare(github)
-        // Cancelled while waiting for the transaction, so its block never runs.
-        store.beforeTransaction = { throw CancellationException("cancelled before the transaction") }
+        // Only the fake can do this: a CancellationException from the store before the block has
+        // returned its writes, so nothing may have been committed. Room cannot once applyImport has
+        // started, since the service waits for its transaction (see the Room-shaped store test).
+        store.beforeTransaction = { throw CancellationException("thrown by the store before the block") }
 
         assertThrows(CancellationException::class.java) { apply(prepared, KEEP_BOTH) }
 
@@ -736,7 +738,8 @@ class BackupServiceTest {
         val prepared = prepare(github)
 
         val thrown = applyInJob(prepared, KEEP_BOTH) { job ->
-            // Like Room, the store resumes a caller cancelled during the commit with CancellationException.
+            // Cancelled as the transaction commits; the store checks for it as it returns (under the
+            // service's NonCancellable it finds none, and withContext rethrows the cancellation).
             store.afterCommit = {
                 job.cancel()
                 currentCoroutineContext().ensureActive()
