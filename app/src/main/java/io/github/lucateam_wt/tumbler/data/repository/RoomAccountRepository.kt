@@ -63,5 +63,5 @@ class RoomAccountRepository(
         dao.delete(id)
     }
 
-    private fun associatedData(id: String): ByteArray = id.toByteArray(Charsets.UTF_8)
+    private fun associatedData(id: String): ByteArray = accountAssociatedData(id)
 }
