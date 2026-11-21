@@ -597,6 +597,169 @@ class ImportPlannerTest {
         assertEquals(listOf("h"), applyDecisions(withRow, listOf(SKIP, REPLACE)).replacements.map { it.existingId })
     }
 
+    // Several existing accounts that match: same label first, then a row not paired yet
+
+    @Test
+    fun plan_hotpPrefersTheSameLabelRowAmongSeveralSameSecretHotpRows() {
+        val vpn = existing("vpn", hotp(100))
+        val backupRow = existing("backup", hotp(200, issuer = "VPN backup"))
+        for (rows in listOf(listOf(vpn, backupRow), listOf(backupRow, vpn))) {
+            for ((incoming, expectedId) in listOf(hotp(300, issuer = "VPN backup") to "backup", hotp(300) to "vpn")) {
+                val description = "${rows.map { it.id }} -> $expectedId"
+                val conflict = planImport(rows, listOf(incoming)).conflicts.single()
+                assertEquals(description, expectedId, conflict.existing.id)
+                assertEquals(description, ConflictReason.SAME_LABEL_AND_SECRET, conflict.reason)
+                assertFalse(description, conflict.sharesCounterpart)
+            }
+        }
+    }
+
+    @Test
+    fun plan_totpPrefersTheSameLabelRowAmongSameSecretRows() {
+        val other = existing("other", entry(issuer = "Other", accountName = "x", secret = secretA()))
+        val same = existing("same", github)
+        for (rows in listOf(listOf(other, same), listOf(same, other))) {
+            val conflict = planImport(rows, listOf(github.copy(createdAtMillis = 1))).conflicts.single()
+            assertEquals("${rows.map { it.id }}", "same", conflict.existing.id)
+            assertEquals(ConflictReason.SAME_LABEL_AND_SECRET, conflict.reason)
+        }
+    }
+
+    @Test
+    fun plan_hotpFallsBackToASameSecretHotpRowNotPairedYet() {
+        // Two imported HOTP accounts with secret B and labels the device does not have: each
+        // gets its own HOTP row, in existing order, instead of both pairing with the first.
+        val rows = listOf(existing("h1", hotp(100)), existing("h2", hotp(200, issuer = "VPN 2")))
+        val plan = planImport(rows, listOf(hotp(5, issuer = "Elsewhere"), hotp(6, issuer = "Elsewhere 2")))
+        assertEquals(listOf("h1", "h2"), plan.conflicts.map { it.existing.id })
+        assertEquals(listOf(ConflictReason.SAME_SECRET, ConflictReason.SAME_SECRET), plan.conflicts.map { it.reason })
+        assertTrue(plan.conflicts.none { it.sharesCounterpart })
+        assertEquals(listOf("h1", "h2"), applyDecisions(plan, listOf(REPLACE, REPLACE)).replacements.map { it.existingId })
+    }
+
+    @Test
+    fun plan_aLaterSameLabelMatchKeepsItsRowFromAnEarlierFallback() {
+        // The first imported account matches only by secret, the second by label and secret.
+        // In one pass in backup order the first would take h1 and the second would share it;
+        // passes by rank give the second h1 and the first h2.
+        val rows = listOf(existing("h1", hotp(100)), existing("h2", hotp(200, issuer = "VPN 2")))
+        val plan = planImport(rows, listOf(hotp(5, issuer = "Elsewhere"), hotp(6)))
+        assertEquals(listOf("h2", "h1"), plan.conflicts.map { it.existing.id })
+        assertEquals(
+            listOf(ConflictReason.SAME_SECRET, ConflictReason.SAME_LABEL_AND_SECRET),
+            plan.conflicts.map { it.reason },
+        )
+        assertTrue(plan.conflicts.none { it.sharesCounterpart })
+    }
+
+    @Test
+    fun plan_reportsTwoImportedAccountsPairedWithTheSameRow() {
+        // One HOTP row with secret B and two imported HOTP accounts with it: both must pair
+        // with that row (Keep both is not allowed), and both conflicts say it is shared.
+        val incoming = listOf(hotp(5), hotp(9, issuer = "VPN copy"))
+        val plan = planImport(listOf(existing("h", hotp(100))), incoming)
+        assertEquals(listOf("h", "h"), plan.conflicts.map { it.existing.id })
+        assertTrue(plan.conflicts.all { it.sharesCounterpart })
+        for (conflict in plan.conflicts) assertEquals(listOf(SKIP, REPLACE), allowedDecisions(conflict).toList())
+        assertThrows(IllegalArgumentException::class.java) { applyDecisions(plan, listOf(REPLACE, REPLACE)) }
+        assertEquals(listOf("h"), applyDecisions(plan, listOf(REPLACE, SKIP)).replacements.map { it.existingId })
+
+        // A TOTP row with that secret is never taken to avoid sharing the HOTP row.
+        val withTotp = planImport(listOf(existing("totp", mailTotp), existing("h", hotp(100))), incoming)
+        assertEquals(listOf("h", "h"), withTotp.conflicts.map { it.existing.id })
+        assertTrue(withTotp.conflicts.all { it.sharesCounterpart })
+    }
+
+    @Test
+    fun plan_everyOrder_pairsSameLabelRowsAndReportsTheOnlySharedRow() {
+        // Three imported HOTP accounts with secret B, two HOTP rows with it and a TOTP row with
+        // it, in every order on both sides.
+        val rows = listOf(existing("h100", hotp(100)), existing("h200", hotp(200, issuer = "VPN backup")), existing("totp", mailTotp))
+        val incomings = listOf(hotp(5), hotp(6, issuer = "VPN backup"), hotp(7, issuer = "Elsewhere"))
+        for (order in permutations(rows)) for (backup in permutations(incomings)) {
+            val description = "${order.map { it.id }} ${backup.map { it.account.issuer }}"
+            val byIssuer = planImport(order, backup).conflicts.associateBy { it.incoming.account.issuer }
+            assertEquals(description, 3, byIssuer.size)
+            assertTrue(description, byIssuer.values.all { isHotpWithSecretB(it.existing.account) })
+            assertEquals(description, "h100", byIssuer.getValue("VPN").existing.id)
+            assertEquals(description, "h200", byIssuer.getValue("VPN backup").existing.id)
+            // Two rows for three imports: the fallback shares one of them, and says so.
+            val shared = byIssuer.values.filter { it.sharesCounterpart }
+            assertEquals(description, 2, shared.size)
+            assertTrue(description, byIssuer.getValue("Elsewhere").sharesCounterpart)
+            assertEquals(description, 1, shared.map { it.existing.id }.distinct().size)
+        }
+    }
+
+    // ImportPlan.matches: planning again inside the write transaction
+
+    private val vpnRow = existing("vpn", hotp(100))
+
+    /** A clean TOTP import (no row has secret A) and a HOTP import that pairs with [vpnRow]. */
+    private val matchIncoming = listOf(github, hotp(5))
+
+    @Test
+    fun matches_sameRowsAndCounterChangesKeepThePlan() {
+        val confirmed = planImport(listOf(vpnRow), matchIncoming)
+        assertTrue(confirmed.matches(planImport(listOf(vpnRow), matchIncoming)))
+        // A HOTP code generated since the plan moves only the counter.
+        assertTrue(confirmed.matches(planImport(listOf(existing("vpn", hotp(103))), matchIncoming)))
+        // An account that is no import's counterpart takes no part, added or deleted.
+        val unrelated = existing("unrelated", entry(issuer = "Mail", accountName = "bob", secret = secretC()))
+        assertTrue(confirmed.matches(planImport(listOf(unrelated, vpnRow), matchIncoming)))
+        assertTrue(planImport(listOf(unrelated, vpnRow), matchIncoming).matches(confirmed))
+    }
+
+    @Test
+    fun matches_detectsEveryChangeToWhatTheUserConfirmed() {
+        val confirmed = planImport(listOf(vpnRow), matchIncoming)
+        fun vpn(algorithm: OtpAlgorithm = OtpAlgorithm.SHA1, digits: Int = 6, period: Int = 30) = existing(
+            "vpn",
+            entry(issuer = "VPN", accountName = "alice", type = OtpType.HOTP, secret = secretB(), algorithm = algorithm, digits = digits, period = period, counter = 100),
+        )
+        val changedRows = mapOf(
+            "counterpart deleted" to emptyList(),
+            "account added that a clean import now conflicts with" to listOf(vpnRow, existing("g", github)),
+            "counterpart deleted and re-added under another id" to listOf(existing("vpn-2", hotp(100))),
+            "counterpart secret changed" to listOf(existing("vpn", hotp(100, secretA()))),
+            "counterpart renamed" to listOf(existing("vpn", hotp(100, issuer = "VPN (renamed)"))),
+            "counterpart turned into TOTP" to listOf(existing("vpn", vpnTotp())),
+            "counterpart algorithm changed" to listOf(vpn(algorithm = OtpAlgorithm.SHA256)),
+            "counterpart digits changed" to listOf(vpn(digits = 8)),
+            "counterpart period changed" to listOf(vpn(period = 60)),
+        )
+        for ((description, rows) in changedRows) {
+            assertFalse(description, confirmed.matches(planImport(rows, matchIncoming)))
+            assertFalse(description, planImport(rows, matchIncoming).matches(confirmed))
+        }
+
+        // A label-only counterpart given yet another secret keeps its reason, but the row
+        // the user saw has still changed.
+        val labelOnly = listOf(hotp(5, secretA()))
+        val labelPlan = planImport(listOf(vpnRow), labelOnly)
+        assertEquals(ConflictReason.SAME_LABEL, labelPlan.conflicts.single().reason)
+        val otherSecret = planImport(listOf(existing("vpn", hotp(100, secretC()))), labelOnly)
+        assertEquals(ConflictReason.SAME_LABEL, otherSecret.conflicts.single().reason)
+        assertFalse(labelPlan.matches(otherSecret))
+    }
+
+    @Test
+    fun matches_detectsADifferentImportOrderOrSharing() {
+        val confirmed = planImport(listOf(vpnRow), matchIncoming)
+        assertFalse(confirmed.matches(planImport(listOf(vpnRow), matchIncoming.reversed())))
+        assertFalse(confirmed.matches(planImport(listOf(vpnRow), matchIncoming.take(1))))
+        assertFalse(confirmed.matches(planImport(listOf(vpnRow), matchIncoming + hotp(9))))
+        // Same pairing, but another imported account in the conflict (or the clean item).
+        assertFalse(confirmed.matches(planImport(listOf(vpnRow), listOf(github, hotp(6)))))
+        assertFalse(confirmed.matches(planImport(listOf(vpnRow), listOf(github.copy(createdAtMillis = 1), hotp(5)))))
+
+        // Two imports sharing one row; a second HOTP row with the secret ends the sharing.
+        val pair = listOf(hotp(5), hotp(9, issuer = "VPN copy"))
+        val shared = planImport(listOf(vpnRow), pair)
+        assertTrue(shared.conflicts.all { it.sharesCounterpart })
+        assertFalse(shared.matches(planImport(listOf(vpnRow, existing("copy", hotp(1, issuer = "VPN copy"))), pair)))
+    }
+
     @Test
     fun toString_neverShowsSecretsOrLabels() {
         val plan = planImport(listOf(existing("id-1", github)), listOf(github, bank))

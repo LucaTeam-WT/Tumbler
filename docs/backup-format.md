@@ -269,16 +269,27 @@ is copied (its NFC copy is at most 3 times that, and its UTF-8 form at most 4 Ki
 - the same type, issuer and account name (exact, case-sensitive string comparison), or
 - identical secret bytes.
 
-If several existing accounts match, the counterpart is the first (in the order given) of:
+If several existing accounts match, the counterpart is chosen by rank, best first:
 
-1. if the imported account is HOTP, a HOTP account with the same secret;
-2. an account with the same secret;
-3. an account with the same label.
+1. an account with the same label and the same secret (for an imported HOTP account this
+   is a HOTP account, since the type is part of the label);
+2. if the imported account is HOTP, another HOTP account with the same secret;
+3. an account with the same secret;
+4. an account with the same label.
 
-Step 1 makes the HOTP rules below hold against every existing HOTP account with that
-secret, wherever it sits in the list. Without it, an existing TOTP account with the same
+Ranks 1 and 2 make the HOTP rules below hold against every existing HOTP account with that
+secret, wherever it sits in the list. Without them, an existing TOTP account with the same
 secret listed first would be picked, Keep both would be offered, and the device could end
-with two HOTP rows sharing a secret, one of them behind.
+with two HOTP rows sharing a secret, one of them behind. Rank 1 before rank 2 pairs an
+imported HOTP account with the row of the same label when the device holds several HOTP
+accounts with its secret.
+
+Ranks are assigned in passes, best rank first and, within a pass, in backup order. Within
+one rank, an existing account that no other imported account is paired with yet is
+preferred, then the order given. A worse rank is never taken just to avoid sharing. If two
+imported accounts still end up with the same counterpart (the device has fewer matching
+accounts than the backup), both conflicts report it (`ImportConflict.sharesCounterpart`),
+and at most one of them may replace it.
 
 Duplicates inside the backup are not conflicts with each other. **Exception to the HOTP
 rule below:** two HOTP accounts with the same secret *inside one backup* do not conflict
@@ -337,6 +348,18 @@ was re-enrolled: the old counter says nothing about the new secret, and a larger
 counter could run past the server's look-ahead window (the codes would then be
 rejected). A type change never matches by label, because the type is part of the label,
 so the mixed case only happens when the secrets are identical.
+
+**Planning again before writing.** The accounts on the device can change while the user
+decides. The writer therefore plans again, inside the write transaction, against the rows
+it reads there, and compares the result with the plan the user confirmed
+(`ImportPlan.matches`). The plans match if they hold equal imported accounts in the same
+order and each one is clean in both, or conflicting in both with the same existing id and
+an existing account equal in every field except the counter (so the reasons, the shared
+counterparts and the allowed decisions are the same too). If they do not match (for example the counterpart was deleted, renamed or given
+another secret, or an account was added that a clean import now conflicts with), nothing
+is written and the user must decide again. Two changes do not count: a different counter
+(generating a HOTP code moves it, and `accountToWrite` resolves it against the row read at
+write time), and an added or deleted account that is no import's counterpart.
 
 ## Sensitive data in memory
 
