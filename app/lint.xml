@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<lint>
+    <!--
+    sealBackup (backup/BackupFormat.kt) takes a fixed salt and nonce for tests and is
+    @VisibleForTesting(otherwise = PRIVATE): a production caller could reuse an AES-GCM key and
+    nonce. Fail lint on any such call outside the test source sets instead of warning.
+    -->
+    <issue id="VisibleForTests" severity="error" />
+</lint>

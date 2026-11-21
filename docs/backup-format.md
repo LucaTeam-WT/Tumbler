@@ -203,8 +203,9 @@ run before scrypt, so a rejected account costs no key derivation. It throws:
 
 `sealBackup`, which takes the salt, nonce, parameters and KDF explicitly, is a test seam:
 a fixed salt and nonce would reuse a GCM key and nonce. It is annotated
-`@VisibleForTesting(otherwise = PRIVATE)`, so lint reports any caller outside the test
-source sets (as a warning); `exportBackup` is its only production caller.
+`@VisibleForTesting(otherwise = PRIVATE)`, and `app/lint.xml` raises lint's
+`VisibleForTests` check to an error, so `lintDebug` fails for any caller outside the test
+source sets; `exportBackup` is its only production caller.
 
 ## Reading
 
@@ -257,7 +258,9 @@ never by the bytes or the password: an `IllegalStateException` if AES-GCM is mis
 the platform, an `OutOfMemoryError` outside scrypt, and any exception other than
 `IOException` that the caller's `InputStream` throws. Every allocation other than
 scrypt's is bounded: buffers for the file and the payload by the 4 MiB limit (about two
-file-sized buffers at the peak of a stream read), and buffers derived from the password
+file-sized buffers at the end of a stream read, and about three during decryption; see
+item 11 under [Requirements for the integration](#requirements-for-the-integration-pr-b)),
+and buffers derived from the password
 by the password cap, because an input longer than 8,192 UTF-16 units is refused before it
 is copied (its NFC copy is at most 3 times that, and its UTF-8 form at most 4 KiB).
 
@@ -442,8 +445,14 @@ repository must:
       path, the longest canonical decomposition of 4) and its UTF-8 decoder strictness:
       run `BackupPayloadTest.decode_rejectsMalformedUtf8` as an instrumented test;
     - the `Character` whitespace tables across API levels (26 to current), for item 7;
-    - real memory and timing: a 64 MiB scrypt plus the read buffers (about 8 MiB at the
-      peak) on a low-RAM device, with p up to 4 (the most a file can ask for);
+    - real memory and timing on a low-RAM device, with p up to 4 (the most a file can ask
+      for). The stream read peaks at about two file-sized buffers (about 8 MiB) during its
+      final copy, but that peak ends before scrypt runs: while scrypt holds its 64 MiB, only
+      the file bytes (at most 4 MiB) stay in memory besides it. The larger peak outside
+      scrypt comes after it, during decryption: the file, the cipher's internal buffer (an
+      AEAD cipher may copy the whole ciphertext before it can check the tag) and the
+      decrypted plaintext, so about 12 MiB for a 4 MiB file. The device test should measure
+      that peak;
     - an export then import round trip on a release (R8-minified) build, since R8 has only
       been checked statically (no keep rules were added).
 
