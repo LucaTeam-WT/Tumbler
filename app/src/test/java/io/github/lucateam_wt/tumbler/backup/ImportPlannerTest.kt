@@ -17,6 +17,7 @@ import org.junit.Assert.assertSame
 import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.lang.reflect.Modifier
 
 class ImportPlannerTest {
 
@@ -159,8 +160,7 @@ class ImportPlannerTest {
         assertEquals(listOf(newOne), writes.inserts)
         val replacement = writes.replacements.single()
         assertEquals("b", replacement.existingId)
-        assertEquals(bankAgain.account, replacement.imported)
-        assertEquals(CounterPolicy.USE_IMPORTED, replacement.counterPolicy)
+        assertEquals(bankAgain.account, replacement.accountToWrite(existingAccounts[1]))
     }
 
     @Test
@@ -260,8 +260,8 @@ class ImportPlannerTest {
         val writes = applyDecisions(plan, listOf(KEEP_BOTH, REPLACE))
         assertEquals(1, writes.inserts.size)
         val replacement = writes.replacements.single()
-        assertEquals(CounterPolicy.KEEP_LARGER_OF_STORED_AND_IMPORTED, replacement.counterPolicy)
-        assertEquals(20L, resolveCounter(10, replacement))
+        assertEquals(20L, replacement.accountToWrite(existing("v", vpn)).counter)
+        assertEquals(30L, replacement.accountToWrite(existing("v", hotp(30, issuer = "VPN"))).counter)
     }
 
     @Test
@@ -287,13 +287,13 @@ class ImportPlannerTest {
         return applyDecisions(plan, listOf(REPLACE)).replacements.single()
     }
 
-    /** The account the repository writes for [replacement] when the row's counter is [storedNow] at write time. */
-    private fun written(replacement: Replacement, storedNow: Long) =
-        replacement.imported.copy(counter = resolveCounter(storedNow, replacement))
+    /** The account written for [replacement] when row "x" holds [storedNow] at write time. */
+    private fun written(replacement: Replacement, storedNow: OtpAccount) =
+        replacement.accountToWrite(ExistingAccount("x", storedNow))
 
-    /** [replaced], then the account written when the stored counter has not moved since the plan. */
+    /** [replaced], then the account written when the row has not changed since the plan. */
     private fun replacedAccount(existingEntry: BackupEntry, incoming: BackupEntry, expectedReason: ConflictReason) =
-        written(replaced(existingEntry, incoming, expectedReason), existingEntry.account.counter)
+        written(replaced(existingEntry, incoming, expectedReason), existingEntry.account)
 
     @Test
     fun hotpReplace_sameSecret_keepsTheLargerCounter() {
@@ -369,81 +369,106 @@ class ImportPlannerTest {
         assertEquals(incomingTotp.account, replacedAccount(hotp(50), incomingTotp, ConflictReason.SAME_SECRET))
     }
 
-    // Write-time counter rule: resolveCounter uses the counter stored when the write happens
+    // Write-time counter rule: decided from the row as read when the write happens
 
     private val same = ConflictReason.SAME_LABEL_AND_SECRET
 
+    /** A TOTP row "VPN:alice" with secret B, the secret of every `hotp(...)`. */
+    private fun vpnTotp(counter: Long = 0) = entry(issuer = "VPN", accountName = "alice", secret = secretB(), counter = counter)
+
     @Test
-    fun resolveCounter_sameSecretHotp_usesTheCounterStoredAtWriteTime() {
+    fun accountToWrite_sameSecretHotp_usesTheCounterStoredAtWriteTime() {
         // Planned while the stored counter was 100; the user then generated 3 codes (stored
         // 103) and confirmed Replace with an imported counter of 5. Writing the plan-time
         // value (100) would move the counter backwards from 103.
         val replacement = replaced(hotp(100), hotp(5), same)
-        assertEquals(CounterPolicy.KEEP_LARGER_OF_STORED_AND_IMPORTED, replacement.counterPolicy)
-        assertEquals(100L, replacement.counterAtPlanTime)
-        assertEquals(100L, replacement.plannedCounter) // display hint only
-        assertEquals(103L, resolveCounter(103, replacement))
-        assertEquals(hotp(5).account.copy(counter = 103), written(replacement, 103))
+        assertEquals(100L, resolveCounter(hotp(100).account, hotp(5).account)) // plan-time display hint
+        assertEquals(hotp(5).account.copy(counter = 103), written(replacement, hotp(103).account))
         // The imported counter still wins when it is the larger one.
-        assertEquals(5L, resolveCounter(0, replacement))
-        assertEquals(5L, resolveCounter(4, replacement))
+        assertEquals(5L, written(replacement, hotp(0).account).counter)
+        assertEquals(5L, written(replacement, hotp(4).account).counter)
     }
 
     @Test
-    fun resolveCounter_sameSecretHotp_equalCounters() {
+    fun accountToWrite_sameSecretHotp_equalCounters() {
         val replacement = replaced(hotp(7), hotp(7), same)
-        assertEquals(7L, replacement.plannedCounter)
-        assertEquals(7L, resolveCounter(7, replacement))
-        assertEquals(8L, resolveCounter(8, replacement))
+        assertEquals(7L, written(replacement, hotp(7).account).counter)
+        assertEquals(8L, written(replacement, hotp(8).account).counter)
     }
 
     @Test
-    fun resolveCounter_sameSecretHotp_longMaxValue() {
+    fun accountToWrite_sameSecretHotp_longMaxValue() {
         val storedMax = replaced(hotp(Long.MAX_VALUE), hotp(0), same)
-        assertEquals(Long.MAX_VALUE, storedMax.plannedCounter)
-        assertEquals(Long.MAX_VALUE, resolveCounter(Long.MAX_VALUE, storedMax))
-        assertEquals(0L, resolveCounter(0, storedMax))
+        assertEquals(Long.MAX_VALUE, written(storedMax, hotp(Long.MAX_VALUE).account).counter)
+        assertEquals(0L, written(storedMax, hotp(0).account).counter)
 
         val importedMax = replaced(hotp(0), hotp(Long.MAX_VALUE), same)
         for (storedNow in listOf(0L, 5L, Long.MAX_VALUE)) {
-            assertEquals(Long.MAX_VALUE, resolveCounter(storedNow, importedMax))
+            assertEquals(Long.MAX_VALUE, written(importedMax, hotp(storedNow).account).counter)
         }
     }
 
     @Test
-    fun resolveCounter_differentSecrets_alwaysUsesTheImportedCounter() {
+    fun accountToWrite_differentSecrets_alwaysUsesTheImportedCounter() {
         val replacement = replaced(hotp(100, secretB()), hotp(5, secretC()), ConflictReason.SAME_LABEL)
-        assertEquals(CounterPolicy.USE_IMPORTED, replacement.counterPolicy)
-        assertEquals(5L, replacement.plannedCounter)
         for (storedNow in listOf(0L, 5L, 100L, 103L, Long.MAX_VALUE)) {
-            assertEquals("stored $storedNow", 5L, resolveCounter(storedNow, replacement))
+            assertEquals("stored $storedNow", 5L, written(replacement, hotp(storedNow, secretB()).account).counter)
         }
     }
 
     @Test
-    fun resolveCounter_totpAndMixedTypes_useTheImportedCounter() {
+    fun accountToWrite_totpAndMixedTypes_useTheImportedCounter() {
         val existingTotp = entry(issuer = "Mail", accountName = "alice", secret = secretB(), counter = 50)
-        val totp = replaced(existingTotp, entry(issuer = "Mail", accountName = "alice", secret = secretB()), same)
-        assertEquals(CounterPolicy.USE_IMPORTED, totp.counterPolicy)
-        for (storedNow in listOf(0L, 50L, 103L, Long.MAX_VALUE)) assertEquals(0L, resolveCounter(storedNow, totp))
+        val incomingTotp = entry(issuer = "Mail", accountName = "alice", secret = secretB())
+        assertEquals(CounterPolicy.USE_IMPORTED, counterPolicy(existingTotp.account, incomingTotp.account))
+        val totp = replaced(existingTotp, incomingTotp, same)
+        for (storedNow in listOf(0L, 50L, 103L, Long.MAX_VALUE)) {
+            assertEquals(0L, written(totp, existingTotp.account.copy(counter = storedNow)).counter)
+        }
 
-        val totpToHotp = replaced(
-            entry(issuer = "VPN", accountName = "alice", secret = secretB(), counter = 99),
-            hotp(3),
-            ConflictReason.SAME_SECRET,
-        )
-        assertEquals(CounterPolicy.USE_IMPORTED, totpToHotp.counterPolicy)
-        assertEquals(3L, resolveCounter(150, totpToHotp))
-        val hotpToTotp = replaced(hotp(50), entry(issuer = "VPN", accountName = "alice", secret = secretB()), ConflictReason.SAME_SECRET)
-        assertEquals(CounterPolicy.USE_IMPORTED, hotpToTotp.counterPolicy)
-        assertEquals(0L, resolveCounter(53, hotpToTotp))
+        val totpToHotp = replaced(vpnTotp(counter = 99), hotp(3), ConflictReason.SAME_SECRET)
+        assertEquals(3L, written(totpToHotp, vpnTotp(counter = 150).account).counter)
+        val hotpToTotp = replaced(hotp(50), vpnTotp(), ConflictReason.SAME_SECRET)
+        assertEquals(0L, written(hotpToTotp, hotp(53).account).counter)
     }
 
     @Test
-    fun resolveCounter_rejectsANegativeStoredCounter() {
+    fun accountToWrite_decidesThePolicyFromTheRowAtWriteTime() {
+        // Planned against a HOTP row with the imported secret, which would keep the larger
+        // counter. At write time the row holds another secret, or is TOTP: the policy follows
+        // the row as it is now, so the imported counter is written.
+        val sameSecretAtPlan = replaced(hotp(100), hotp(5), same)
+        assertEquals(5L, written(sameSecretAtPlan, hotp(500, secretA()).account).counter)
+        assertEquals(5L, written(sameSecretAtPlan, vpnTotp(counter = 500).account).counter)
+
+        // Planned against a HOTP row with another secret (imported counter). At write time
+        // the row holds the imported secret: the larger counter is kept.
+        val otherSecretAtPlan = replaced(hotp(100, secretA()), hotp(5), ConflictReason.SAME_LABEL)
+        assertEquals(500L, written(otherSecretAtPlan, hotp(500).account).counter)
+        assertEquals(
+            CounterPolicy.KEEP_LARGER_OF_STORED_AND_IMPORTED,
+            counterPolicy(hotp(500).account, hotp(5).account),
+        )
+    }
+
+    @Test
+    fun accountToWrite_rejectsAnotherRow() {
         val replacement = replaced(hotp(100), hotp(5), same)
-        assertThrows(IllegalArgumentException::class.java) { resolveCounter(-1, replacement) }
-        assertThrows(IllegalArgumentException::class.java) { resolveCounter(Long.MIN_VALUE, replacement) }
+        val error = assertThrows(IllegalArgumentException::class.java) {
+            replacement.accountToWrite(ExistingAccount("other-row", hotp(100).account))
+        }
+        assertFalse(error.message.orEmpty().contains("other-row"))
+    }
+
+    @Test
+    fun replacement_exposesTheImportedAccountOnlyThroughAccountToWrite() {
+        // No getter or public field hands out the imported account with its raw counter.
+        val type = Replacement::class.java
+        assertEquals(listOf("accountToWrite"), type.methods.filter { it.returnType == OtpAccount::class.java }.map { it.name })
+        assertTrue(type.fields.none { it.type == OtpAccount::class.java })
+        assertTrue(
+            type.declaredFields.filter { it.type == OtpAccount::class.java }.all { Modifier.isPrivate(it.modifiers) },
+        )
     }
 
     // Several existing accounts with the imported HOTP account's secret
@@ -481,9 +506,8 @@ class ImportPlannerTest {
                 // also after codes were generated since the plan.
                 val replacement = applyDecisions(plan, listOf(REPLACE)).replacements.single()
                 assertEquals(description, "hotp", replacement.existingId)
-                assertEquals(description, CounterPolicy.KEEP_LARGER_OF_STORED_AND_IMPORTED, replacement.counterPolicy)
-                assertEquals(description, 100L, resolveCounter(100, replacement))
-                assertEquals(description, 103L, resolveCounter(103, replacement))
+                assertEquals(description, 100L, replacement.accountToWrite(existing("hotp", hotp(100))).counter)
+                assertEquals(description, 103L, replacement.accountToWrite(existing("hotp", hotp(103))).counter)
             }
         }
     }
@@ -541,7 +565,7 @@ class ImportPlannerTest {
                 for (replacement in writes.replacements) {
                     replaces++
                     val stored = after.getValue(replacement.existingId)
-                    after[replacement.existingId] = written(replacement, stored.counter)
+                    after[replacement.existingId] = replacement.accountToWrite(ExistingAccount(replacement.existingId, stored))
                 }
                 for ((id, before) in storedNow) {
                     if (!isHotpWithSecretB(before)) continue

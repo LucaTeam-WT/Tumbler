@@ -306,31 +306,30 @@ is ever overwritten by default. Each decision must be allowed for its conflict. 
 or extra decision, a decision that is not allowed, and two Replace decisions for the same
 existing account are each rejected with an `IllegalArgumentException`, and no writes are
 returned. Otherwise it returns inserts (non-conflicting accounts and "Keep both"
-accounts, in backup order) and replacements (`Replacement`: the existing id, the
-imported account and a counter policy).
+accounts, in backup order) and replacements (`Replacement`: the existing id and the
+imported account, which it hands out only through `accountToWrite`).
 
 **Replace** overwrites every field of the existing account with the imported one, except
 the counter, which follows a **counter policy**; the stored row keeps its id and creation
 time.
 
-| Existing and imported account | Counter policy | Counter written |
+| Row as read at write time, and imported account | Counter policy | Counter written |
 |---|---|---|
-| both HOTP, identical secret bytes (any label) | `KEEP_LARGER_OF_STORED_AND_IMPORTED` | the **larger** of the counter stored at write time and the imported one |
+| both HOTP, identical secret bytes (any label) | `KEEP_LARGER_OF_STORED_AND_IMPORTED` | the **larger** of the stored counter and the imported one |
 | both HOTP, different secrets (only the labels matched) | `USE_IMPORTED` | the **imported** counter |
 | both TOTP, or HOTP on one side only | `USE_IMPORTED` | the imported account as it is |
 
-**The counter rule is applied at write time, not when the plan is made.** A `Replacement`
-carries the policy, not a final counter. The pure function
-`resolveCounter(storedNow, replacement)` gives the value to write, where `storedNow` is
-the counter read from the row inside the same repository transaction as the write. A
-value fixed at plan time could be stale: with a plan made while the row held 100, three
-codes generated before the user confirms (the row now holds 103) and an imported 5,
-writing the plan-time 100 would move the counter backwards. `Replacement.plannedCounter`
-is that plan-time value, kept **only as a display hint** (for example on a confirmation
-screen); it must never be written, and neither may `imported.counter` be written directly.
-Because the policy was chosen from the row's type and secret at plan time, the
-transaction must also check that the row still exists with them, and otherwise abort and
-plan again.
+**The counter rule is applied at write time, from the row as it is then.** A
+`Replacement` exposes neither the imported account nor a counter. The only way to get the
+account to write is `accountToWrite(storedNow)`, where `storedNow` is row `existingId` as
+read inside the same repository transaction as the write (another row is an
+`IllegalArgumentException`). The policy is decided from that row's type and secret
+(`counterPolicy(storedNow, imported)`), not from what the plan saw, and
+`resolveCounter(storedNow, imported)` gives the counter. A counter or policy fixed at plan
+time could be stale: with a plan made while the row held 100, three codes generated before
+the user confirms (the row now holds 103) and an imported 5, writing the plan-time 100
+would move the counter backwards. Called with the plan-time account, `resolveCounter` is
+only a display hint (for example on a confirmation screen).
 
 With the same secret, a replace can never move the counter backwards, which would
 regenerate codes the server has already accepted. With a different secret, the account
@@ -390,11 +389,10 @@ repository must:
    (no Keep both for two HOTP accounts with the same secret), and prevent two Replace
    decisions for the same existing account. `applyDecisions` throws for either.
 4. **Write Replace counters at write time.** Inside the repository transaction, read the
-   row, check that it still exists with the type and secret it had when the plan was made,
-   and write `replacement.imported` with the counter `resolveCounter(row.counter,
-   replacement)`. Alternatively, plan again inside the transaction and abort if the row
-   changed. Never write `plannedCounter` or `imported.counter` directly. Replace keeps the
-   row's id and creation time; inserts use the imported creation time.
+   row and write `replacement.accountToWrite(row)`; never write a counter computed when the
+   plan was made. Also plan again inside the transaction and abort, writing nothing, if
+   the plan no longer matches what the user confirmed. Replace keeps the row's id and
+   creation time; inserts use the imported creation time.
 5. **Match the export limits on the add path, or handle the export failure.** The add path
    bounds no lengths today. Either apply the backup's limits (1024 UTF-8 bytes per label,
    1024 bytes per secret) and the parser's trimming to every way of creating or renaming an
