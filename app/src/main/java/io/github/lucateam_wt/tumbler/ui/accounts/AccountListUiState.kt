@@ -66,7 +66,17 @@ enum class HotpError {
 }
 
 /** Why saving a pasted link failed. The UI maps each value to a fixed message. */
-enum class AddError { INVALID_LINK, STORAGE_FAILED }
+enum class AddError {
+    INVALID_LINK,
+
+    /** The issuer or account name is over the backup format's label limit. */
+    LABEL_TOO_LONG,
+
+    /** The secret is over the backup format's secret limit. */
+    SECRET_TOO_LONG,
+
+    STORAGE_FAILED,
+}
 
 /** Result of the last [AccountListViewModel.add] call. */
 data class AddState(

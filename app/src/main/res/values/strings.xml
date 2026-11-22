@@ -39,4 +39,12 @@
     <string name="add_cancel">Cancel</string>
     <string name="add_error_invalid_link">This is not a valid otpauth:// link.</string>
     <string name="add_error_storage">The account could not be saved. Please try again.</string>
+    <plurals name="add_error_label_too_long">
+        <item quantity="one">The issuer or account name in this link is too long to fit in a backup (more than %1$d byte).</item>
+        <item quantity="other">The issuer or account name in this link is too long to fit in a backup (more than %1$d bytes).</item>
+    </plurals>
+    <plurals name="add_error_secret_too_long">
+        <item quantity="one">The secret in this link is too long to fit in a backup (more than %1$d byte).</item>
+        <item quantity="other">The secret in this link is too long to fit in a backup (more than %1$d bytes).</item>
+    </plurals>
 </resources>

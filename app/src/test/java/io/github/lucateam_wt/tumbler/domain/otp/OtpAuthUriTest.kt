@@ -1,12 +1,14 @@
 package io.github.lucateam_wt.tumbler.domain.otp
 
 import io.github.lucateam_wt.tumbler.backup.BackupPayload
+import io.github.lucateam_wt.tumbler.domain.model.AccountLimitException
 import io.github.lucateam_wt.tumbler.domain.model.AccountLimits
 import io.github.lucateam_wt.tumbler.domain.model.OtpType
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertThrows
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class OtpAuthUriTest {
@@ -177,6 +179,101 @@ class OtpAuthUriTest {
             assertRejected("otpauth://totp/$label:alice?secret=$secret")
             assertRejected("otpauth://totp/alice?secret=$secret&issuer=$label")
         }
+    }
+
+    @Test
+    fun parse_reportsLabelsOverTheLimitAsALimitErrorNamingTheField() {
+        val tooLong = encode("é".repeat(512) + "a")
+        val cases = mapOf(
+            "otpauth://totp/ACME:$tooLong?secret=$secret" to AccountLimitException.Field.ACCOUNT_NAME,
+            "otpauth://totp/$tooLong:alice?secret=$secret" to AccountLimitException.Field.ISSUER,
+            "otpauth://totp/alice?secret=$secret&issuer=$tooLong" to AccountLimitException.Field.ISSUER,
+        )
+        for ((uri, field) in cases) {
+            val error = assertThrows(AccountLimitException::class.java) { OtpAuthUri.parse(uri) }
+            assertEquals(field, error.field)
+            assertFalse(error.message.orEmpty().contains("é"))
+        }
+    }
+
+    @Test
+    fun parse_reportsAnUnpairedSurrogateAsAnInvalidLinkNotALimitError() {
+        // Too long and not valid text: not valid text wins, so the add screen says "invalid link".
+        for (label in listOf("al\ud800ice", "a".repeat(2000) + "\udc00")) {
+            val error = assertThrows(IllegalArgumentException::class.java) { totp("ACME:$label") }
+            assertFalse(error is AccountLimitException)
+        }
+    }
+
+    @Test
+    fun parse_reportsOnlySizeLimitsAsLimitErrors() {
+        val uris = listOf(
+            "otpauth://totp/a?secret=$secret&digits=5",
+            "otpauth://totp/a?secret=${secret}1",
+            "otpauth://hotp/a?secret=$secret",
+            "otpauth://motp/a?secret=$secret",
+        )
+        for (uri in uris) {
+            val error = assertThrows(uri, IllegalArgumentException::class.java) { OtpAuthUri.parse(uri) }
+            assertFalse(uri, error is AccountLimitException)
+        }
+    }
+
+    @Test
+    fun parse_checksTheLabelsBeforeDecodingTheSecret() {
+        val tooLong = "a".repeat(1025)
+        var decoded = 0
+        val decoder = { text: String -> decoded++; Base32.decode(text) }
+        for (uri in listOf(
+            "otpauth://totp/ACME:$tooLong?secret=$secret",
+            "otpauth://totp/alice?secret=$secret&issuer=$tooLong",
+            "otpauth://totp/al\ud800ice?secret=$secret",
+        )) {
+            assertThrows(IllegalArgumentException::class.java) { OtpAuthUri.parse(uri, decoder) }
+        }
+        assertEquals(0, decoded)
+    }
+
+    @Test
+    fun parse_wipesADecodedSecretThatIsTooLong() {
+        val decoded = mutableListOf<ByteArray>()
+        val decoder = { text: String -> Base32.decode(text).also { decoded += it } }
+        val error = assertThrows(AccountLimitException::class.java) {
+            OtpAuthUri.parse("otpauth://totp/ACME:alice?secret=" + "GEZDGNBV".repeat(205), decoder)
+        }
+        assertEquals(AccountLimitException.Field.SECRET, error.field)
+        assertEquals(1025, decoded.single().size)
+        assertTrue(decoded.single().all { it == 0.toByte() })
+    }
+
+    @Test
+    fun parse_wipesTheDecodedSecretWhenTheAccountIsInvalid() {
+        val decoded = mutableListOf<ByteArray>()
+        val decoder = { text: String -> Base32.decode(text).also { decoded += it } }
+        assertThrows(IllegalArgumentException::class.java) {
+            OtpAuthUri.parse("otpauth://totp/a?secret=$secret&digits=9", decoder)
+        }
+        assertEquals(20, decoded.single().size)
+        assertTrue(decoded.single().all { it == 0.toByte() })
+    }
+
+    @Test
+    fun parse_keepsTheSecretOfAValidLink() {
+        val decoded = mutableListOf<ByteArray>()
+        val account = OtpAuthUri.parse("otpauth://totp/a?secret=$secret") { text -> Base32.decode(text).also { decoded += it } }
+        assertArrayEquals(seed, account.secret)
+        assertArrayEquals(seed, decoded.single())
+    }
+
+    @Test
+    fun accountLimits_checkLabelTellsTooLongFromNotValidText() {
+        assertEquals(AccountLimits.LabelCheck.OK, AccountLimits.checkLabel(""))
+        assertEquals(AccountLimits.LabelCheck.OK, AccountLimits.checkLabel("😀".repeat(256)))
+        assertEquals(AccountLimits.LabelCheck.TOO_LONG, AccountLimits.checkLabel("😀".repeat(256) + "a"))
+        assertEquals(AccountLimits.LabelCheck.NOT_VALID_TEXT, AccountLimits.checkLabel("\ud83d"))
+        assertEquals(AccountLimits.LabelCheck.NOT_VALID_TEXT, AccountLimits.checkLabel("\ude00a"))
+        // An unpaired surrogate after the limit is still found.
+        assertEquals(AccountLimits.LabelCheck.NOT_VALID_TEXT, AccountLimits.checkLabel("a".repeat(1025) + "\ud800"))
     }
 
     @Test

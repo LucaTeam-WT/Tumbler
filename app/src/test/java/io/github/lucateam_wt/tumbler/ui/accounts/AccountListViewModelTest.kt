@@ -175,6 +175,40 @@ class AccountListViewModelTest {
     }
 
     @Test
+    fun `add reports a label over the backup limit with its own error`() = runTest {
+        val viewModel = createViewModel()
+
+        viewModel.add("otpauth://totp/Example:${"a".repeat(1025)}?secret=$rfcBase32Secret")
+        assertEquals(AddState(error = AddError.LABEL_TOO_LONG), viewModel.addState.value)
+
+        viewModel.add("otpauth://totp/alice?secret=$rfcBase32Secret&issuer=${"a".repeat(1025)}")
+        assertEquals(AddState(error = AddError.LABEL_TOO_LONG), viewModel.addState.value)
+        assertTrue(repository.storedAccounts.isEmpty())
+    }
+
+    @Test
+    fun `add reports a secret over the backup limit with its own error`() = runTest {
+        val viewModel = createViewModel()
+
+        // 1025 bytes: repeats of the public RFC seed's Base32 ("GEZDGNBV" is "12345").
+        viewModel.add("otpauth://totp/Example:alice?secret=" + "GEZDGNBV".repeat(205))
+
+        assertEquals(AddState(error = AddError.SECRET_TOO_LONG), viewModel.addState.value)
+        assertTrue(repository.storedAccounts.isEmpty())
+    }
+
+    @Test
+    fun `add keeps the invalid link error for every other bad link`() = runTest {
+        val viewModel = createViewModel()
+
+        viewModel.add("otpauth://totp/al\ud800ice?secret=$rfcBase32Secret")
+        assertEquals(AddState(error = AddError.INVALID_LINK), viewModel.addState.value)
+
+        viewModel.add("otpauth://totp/alice?secret=$rfcBase32Secret&digits=9")
+        assertEquals(AddState(error = AddError.INVALID_LINK), viewModel.addState.value)
+    }
+
+    @Test
     fun `add reports a storage failure`() = runTest {
         repository.addFailure = SecretCipherException("Encryption failed")
         val viewModel = createViewModel()

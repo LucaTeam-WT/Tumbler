@@ -8,6 +8,7 @@ import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
 import io.github.lucateam_wt.tumbler.TumblerApplication
 import io.github.lucateam_wt.tumbler.domain.crypto.SecretCipherException
+import io.github.lucateam_wt.tumbler.domain.model.AccountLimitException
 import io.github.lucateam_wt.tumbler.domain.model.AccountSummary
 import io.github.lucateam_wt.tumbler.domain.model.OtpAccount
 import io.github.lucateam_wt.tumbler.domain.model.OtpType
@@ -118,8 +119,10 @@ class AccountListViewModel(
     }
 
     /**
-     * Parses [uri] and stores the account; the outcome is published in [addState]. Ignored
-     * while a previous call is still saving, so a double tap stores one account.
+     * Parses [uri] and stores the account; the outcome is published in [addState]. A link
+     * over the backup format's size limits gets its own error, every other bad link
+     * [AddError.INVALID_LINK]. Ignored while a previous call is still saving, so a double tap
+     * stores one account.
      */
     fun add(uri: String) {
         if (_addState.value.saving) return
@@ -128,6 +131,15 @@ class AccountListViewModel(
             _addState.value = try {
                 repository.add(OtpAuthUri.parse(uri))
                 AddState(saved = true)
+            } catch (e: AccountLimitException) {
+                AddState(
+                    error = when (e.field) {
+                        AccountLimitException.Field.ISSUER,
+                        AccountLimitException.Field.ACCOUNT_NAME,
+                        -> AddError.LABEL_TOO_LONG
+                        AccountLimitException.Field.SECRET -> AddError.SECRET_TOO_LONG
+                    },
+                )
             } catch (_: IllegalArgumentException) {
                 AddState(error = AddError.INVALID_LINK)
             } catch (_: SecretCipherException) {

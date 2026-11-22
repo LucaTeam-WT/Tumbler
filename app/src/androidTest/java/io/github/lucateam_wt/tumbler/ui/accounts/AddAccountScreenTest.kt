@@ -1,6 +1,9 @@
 package io.github.lucateam_wt.tumbler.ui.accounts
 
 import androidx.activity.ComponentActivity
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.assertIsNotEnabled
@@ -10,6 +13,7 @@ import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performTextInput
 import io.github.lucateam_wt.tumbler.R
+import io.github.lucateam_wt.tumbler.domain.model.AccountLimits
 import io.github.lucateam_wt.tumbler.ui.theme.TumblerTheme
 import org.junit.Assert.assertEquals
 import org.junit.Rule
@@ -46,6 +50,34 @@ class AddAccountScreenTest {
         show(error = AddError.INVALID_LINK)
 
         composeRule.onNodeWithText(string(R.string.add_error_invalid_link)).assertIsDisplayed()
+    }
+
+    @Test
+    fun backupLimitErrorsAreShownInlineWithTheLimit() {
+        var error by mutableStateOf<AddError?>(AddError.LABEL_TOO_LONG)
+        composeRule.setContent {
+            TumblerTheme {
+                AddAccountScreen(error = error, saving = false, onSave = {}, onCancel = {}, onInputChange = {})
+            }
+        }
+
+        composeRule.onNodeWithText(
+            composeRule.activity.resources.getQuantityString(
+                R.plurals.add_error_label_too_long,
+                AccountLimits.MAX_LABEL_UTF8_BYTES,
+                AccountLimits.MAX_LABEL_UTF8_BYTES,
+            ),
+        ).assertIsDisplayed()
+
+        error = AddError.SECRET_TOO_LONG
+        composeRule.onNodeWithText(
+            composeRule.activity.resources.getQuantityString(
+                R.plurals.add_error_secret_too_long,
+                AccountLimits.MAX_SECRET_BYTES,
+                AccountLimits.MAX_SECRET_BYTES,
+            ),
+        ).assertIsDisplayed()
+        composeRule.onNodeWithText(string(R.string.add_error_invalid_link)).assertDoesNotExist()
     }
 
     @Test

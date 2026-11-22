@@ -38,4 +38,10 @@
     <string name="add_cancel">Hủy</string>
     <string name="add_error_invalid_link">Đây không phải là liên kết otpauth:// hợp lệ.</string>
     <string name="add_error_storage">Không thể lưu tài khoản. Vui lòng thử lại.</string>
+    <plurals name="add_error_label_too_long">
+        <item quantity="other">Tên nhà cung cấp hoặc tên tài khoản trong liên kết này quá dài để lưu trong bản sao lưu (hơn %1$d byte).</item>
+    </plurals>
+    <plurals name="add_error_secret_too_long">
+        <item quantity="other">Khóa bí mật trong liên kết này quá dài để lưu trong bản sao lưu (hơn %1$d byte).</item>
+    </plurals>
 </resources>
