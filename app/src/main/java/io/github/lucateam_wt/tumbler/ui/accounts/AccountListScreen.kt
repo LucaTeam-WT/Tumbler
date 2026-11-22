@@ -133,6 +133,9 @@ internal object AccountListTags {
     const val NEXT_CODE = "account-next-code"
     const val HOTP_ERROR = "account-hotp-error"
     const val ADD_BUTTON = "account-add-button"
+    const val MORE_OPTIONS = "accounts-more-options"
+    const val MENU_EXPORT = "accounts-menu-export"
+    const val MENU_IMPORT = "accounts-menu-import"
 }
 
 /**
@@ -200,11 +203,14 @@ fun AccountListScreen(
     onDelete: (String) -> Unit,
     onActionFailureShown: () -> Unit,
     modifier: Modifier = Modifier,
+    onExportBackup: () -> Unit = {},
+    onImportBackup: () -> Unit = {},
 ) {
     val snackbarHostState = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
     val copiedMessage = stringResource(R.string.account_code_copied)
     val actionFailedMessage = stringResource(R.string.accounts_action_failed)
+    val noAccountsMessage = stringResource(R.string.backup_export_no_accounts)
     var pendingDeleteId by rememberSaveable { mutableStateOf<String?>(null) }
 
     LaunchedEffect(state.actionFailed) {
@@ -235,7 +241,27 @@ fun AccountListScreen(
 
     Scaffold(
         modifier = modifier,
-        topBar = { TopAppBar(title = { Text(stringResource(R.string.accounts_title)) }) },
+        topBar = {
+            TopAppBar(
+                title = { Text(stringResource(R.string.accounts_title)) },
+                actions = {
+                    OverflowMenu(
+                        onExport = {
+                            if (state.nothingToExport) {
+                                // A short message instead of a password dialog for an empty backup.
+                                scope.launch {
+                                    snackbarHostState.currentSnackbarData?.dismiss()
+                                    snackbarHostState.showSnackbar(noAccountsMessage)
+                                }
+                            } else {
+                                onExportBackup()
+                            }
+                        },
+                        onImport = onImportBackup,
+                    )
+                },
+            )
+        },
         floatingActionButton = {
             FloatingActionButton(
                 onClick = onAddClick,
@@ -730,6 +756,40 @@ private fun CountdownRing(secondsRemaining: Int, period: Int) {
             strokeWidth = 3.dp,
             trackColor = MaterialTheme.colorScheme.surfaceVariant,
         )
+    }
+}
+
+/** The top bar's three-dots menu: backup export and import. */
+@Composable
+private fun OverflowMenu(onExport: () -> Unit, onImport: () -> Unit) {
+    var expanded by remember { mutableStateOf(false) }
+    Box {
+        IconButton(onClick = { expanded = true }, modifier = Modifier.testTag(AccountListTags.MORE_OPTIONS)) {
+            Icon(
+                painter = painterResource(R.drawable.ic_more_vert),
+                contentDescription = stringResource(R.string.accounts_more_options),
+            )
+        }
+        DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+            DropdownMenuItem(
+                text = { Text(stringResource(R.string.backup_export_menu)) },
+                leadingIcon = { Icon(painterResource(R.drawable.ic_file_upload), contentDescription = null) },
+                onClick = {
+                    expanded = false
+                    onExport()
+                },
+                modifier = Modifier.testTag(AccountListTags.MENU_EXPORT),
+            )
+            DropdownMenuItem(
+                text = { Text(stringResource(R.string.backup_import_menu)) },
+                leadingIcon = { Icon(painterResource(R.drawable.ic_file_download), contentDescription = null) },
+                onClick = {
+                    expanded = false
+                    onImport()
+                },
+                modifier = Modifier.testTag(AccountListTags.MENU_IMPORT),
+            )
+        }
     }
 }
 

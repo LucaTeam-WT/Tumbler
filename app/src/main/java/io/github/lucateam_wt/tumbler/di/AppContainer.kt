@@ -21,10 +21,7 @@ class AppContainer(private val context: Context) {
         RoomAccountRepository(database, secretCipher)
     }
 
-    /**
-     * Backup export and import. No screen uses it yet (that is the next step), so release
-     * builds strip it and the backup code with it.
-     */
+    /** Backup export and import, used by the backup screens through `BackupViewModel`. */
     internal val backupService: BackupService by lazy {
         BackupService(RoomAccountBackupStore(database, secretCipher))
     }

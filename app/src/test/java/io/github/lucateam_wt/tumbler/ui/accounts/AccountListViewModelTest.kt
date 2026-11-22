@@ -309,6 +309,42 @@ class AccountListViewModelTest {
     }
 
     @Test
+    fun `reload restarts a list whose loading had failed`() = runTest {
+        repository.observeFailure = SQLException("corrupt")
+        val viewModel = createViewModel()
+        assertTrue(viewModel.uiState.value.loadFailed)
+
+        repository.observeFailure = null
+        repository.add(totpAccount())
+        viewModel.reload()
+
+        assertFalse(viewModel.uiState.value.loadFailed)
+        assertEquals("94287082", (viewModel.items().single() as TotpItem).code)
+    }
+
+    @Test
+    fun `reload decrypts the accounts again`() = runTest {
+        val id = repository.add(totpAccount(digits = 8))
+        val viewModel = createViewModel()
+        assertEquals("94287082", (viewModel.items().single() as TotpItem).code)
+        // Overwritten like a committed import whose change the list has not been told about.
+        repository.replaceWithoutPublishing(id, totpAccount(digits = 6))
+
+        viewModel.reload()
+
+        assertEquals("287082", (viewModel.items().single() as TotpItem).code)
+    }
+
+    @Test
+    fun `nothing to export only once the list has loaded empty without a failure`() {
+        assertTrue(AccountListUiState(isLoading = false).nothingToExport)
+        assertFalse(AccountListUiState(isLoading = true).nothingToExport)
+        assertFalse(AccountListUiState(isLoading = false, loadFailed = true).nothingToExport)
+        val item = AccountItem.UnavailableItem("id", "ACME", "alice")
+        assertFalse(AccountListUiState(isLoading = false, accounts = listOf(item)).nothingToExport)
+    }
+
+    @Test
     fun `resetAddState clears the last result`() = runTest {
         val viewModel = createViewModel()
         viewModel.add("nonsense")

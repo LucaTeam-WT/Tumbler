@@ -47,4 +47,113 @@
         <item quantity="one">The secret in this link is too long to fit in a backup (more than %1$d byte).</item>
         <item quantity="other">The secret in this link is too long to fit in a backup (more than %1$d bytes).</item>
     </plurals>
+
+    <string name="accounts_more_options">More options</string>
+    <string name="backup_export_menu">Export backup</string>
+    <string name="backup_import_menu">Import backup</string>
+    <string name="backup_export_no_accounts">There are no accounts to export.</string>
+
+    <string name="backup_export_title">Export backup</string>
+    <string name="backup_export_body">Choose a password for the backup file. You will need it to restore the backup. Tumbler does not store it and cannot recover it if you forget it.</string>
+    <string name="backup_password_label">Password</string>
+    <string name="backup_password_confirm_label">Repeat password</string>
+    <plurals name="backup_password_hint">
+        <item quantity="one">At least %1$d character.</item>
+        <item quantity="other">At least %1$d characters.</item>
+    </plurals>
+    <plurals name="backup_password_too_long">
+        <item quantity="one">Too long: at most %1$d character.</item>
+        <item quantity="other">Too long: at most %1$d characters.</item>
+    </plurals>
+    <string name="backup_password_invalid">The password contains characters that cannot be used.</string>
+    <string name="backup_password_mismatch">The passwords do not match.</string>
+    <string name="backup_password_show">Show password</string>
+    <string name="backup_password_hide">Hide password</string>
+    <string name="backup_password_confirm_show">Show repeated password</string>
+    <string name="backup_password_confirm_hide">Hide repeated password</string>
+    <string name="backup_export_choose_file">Choose file</string>
+    <string name="backup_continue">Continue</string>
+    <string name="backup_ok">OK</string>
+
+    <string name="backup_exporting">Encrypting the backup…</string>
+    <string name="backup_reading">Decrypting the backup…</string>
+    <string name="backup_importing">Importing accounts…</string>
+    <string name="backup_progress_wait">This can take a few seconds.</string>
+
+    <string name="backup_export_done_title">Backup saved</string>
+    <plurals name="backup_export_done_body">
+        <item quantity="one">The backup holds %1$d account.\n\nIt is only as safe as its password: anyone who has the file and the password can read your accounts. The password is not stored anywhere and cannot be recovered. Without it, this backup cannot be restored.</item>
+        <item quantity="other">The backup holds %1$d accounts.\n\nIt is only as safe as its password: anyone who has the file and the password can read your accounts. The password is not stored anywhere and cannot be recovered. Without it, this backup cannot be restored.</item>
+    </plurals>
+    <string name="backup_export_failed_title">Backup not saved</string>
+    <string name="backup_export_partial_deleted">The incomplete file was deleted.</string>
+    <string name="backup_export_partial_not_deleted">The incomplete file could not be deleted. Delete it yourself: it is not a usable backup.</string>
+    <string name="backup_export_error_password">The password does not meet the requirements.</string>
+    <plurals name="backup_export_error_too_many">
+        <item quantity="one">A backup can hold at most %1$d account, and this device has more.</item>
+        <item quantity="other">A backup can hold at most %1$d accounts, and this device has more.</item>
+    </plurals>
+    <string name="backup_export_error_label_too_long">The issuer or account name of “%1$s” is too long for a backup. Delete the account or add it again with a shorter name, then try again.</string>
+    <string name="backup_export_error_label_invalid">The issuer or account name of “%1$s” cannot be put in a backup (it starts or ends with a space, or contains an invalid character). Delete the account or add it again, then try again.</string>
+    <string name="backup_export_error_secret_too_long">The secret of “%1$s” is too long for a backup.</string>
+    <string name="backup_export_error_account_unnamed">An account on this device cannot be put in a backup. Check your accounts and try again.</string>
+    <string name="backup_export_error_unreadable">An account on this device cannot be decrypted (it shows “Code unavailable” in the list), so no backup was made. Delete that account, then try again.</string>
+    <string name="backup_export_error_memory">Not enough memory to encrypt the backup. Close other apps and try again.</string>
+    <string name="backup_export_error_write">The file could not be written.</string>
+    <string name="backup_export_error_open">The file could not be opened for writing.</string>
+    <string name="backup_export_error_interrupted">The export was interrupted because the app was closed. Please export again.</string>
+    <string name="backup_export_error_unexpected">The backup could not be made.</string>
+    <string name="backup_error_storage">The accounts could not be read from storage. Please try again.</string>
+    <string name="backup_error_no_picker">No app is available to choose a file.</string>
+
+    <string name="backup_import_title">Import backup</string>
+    <string name="backup_import_password_body">Enter the password that was chosen when this backup was made.</string>
+    <string name="backup_import_wrong_password">Wrong password or damaged file.</string>
+    <string name="backup_import_failed_title">Nothing was imported</string>
+    <string name="backup_import_error_not_a_backup">This file is not a Tumbler backup.</string>
+    <string name="backup_import_error_not_supported">This version of Tumbler cannot read this backup. It may be damaged, or made by a newer version.</string>
+    <string name="backup_import_error_invalid">The backup was decrypted, but its content is not valid.</string>
+    <string name="backup_import_error_too_large">This file is too large to be a Tumbler backup.</string>
+    <string name="backup_import_error_read">The file could not be read.</string>
+    <string name="backup_import_error_open">The file could not be opened.</string>
+    <string name="backup_import_error_memory">Not enough memory to decrypt the backup. Close other apps and try again.</string>
+    <string name="backup_import_error_unreadable">An account on this device cannot be decrypted (it shows “Code unavailable” in the list), so the backup cannot be compared with your accounts safely. Delete that account, then try again.</string>
+    <string name="backup_import_error_unexpected">The import failed.</string>
+    <string name="backup_import_done_title">Import complete</string>
+    <string name="backup_import_done_body">Added: %1$d\nReplaced: %2$d\nSkipped: %3$d</string>
+    <string name="backup_import_maybe_title">Check your accounts</string>
+    <string name="backup_import_maybe_body">Something went wrong while the import was being saved, and it may have been saved anyway. Check your list of accounts before you import this backup again.</string>
+
+    <string name="backup_review_close">Cancel import</string>
+    <string name="backup_review_new">New accounts to add</string>
+    <string name="backup_review_identical">Already on this device (skipped)</string>
+    <string name="backup_review_conflicts">Need a decision</string>
+    <string name="backup_review_nothing">There is nothing to import.</string>
+    <string name="backup_review_conflicts_header">Accounts that match one on this device</string>
+    <string name="backup_review_imported">In the backup: %1$s</string>
+    <string name="backup_review_existing">On this device: %1$s</string>
+    <string name="backup_review_reason_label">Same name</string>
+    <string name="backup_review_reason_secret">Same secret</string>
+    <string name="backup_review_reason_both">Same name and secret</string>
+    <string name="backup_review_shared">Another account in the backup matches the same account on this device. Only one of them can replace it.</string>
+    <string name="backup_decision_skip">Skip</string>
+    <string name="backup_decision_keep_both">Keep both</string>
+    <string name="backup_decision_replace">Replace</string>
+    <string name="backup_decision_skip_desc">Do not import this account. Nothing changes on this device.</string>
+    <string name="backup_decision_keep_both_desc">Add it as a separate account. The account on this device stays as it is.</string>
+    <string name="backup_decision_keep_both_desc_hotp">Add it as a separate account with its own counter (%1$d). The account on this device stays as it is.</string>
+    <string name="backup_decision_replace_desc">Overwrite the account on this device with the one from the backup.</string>
+    <string name="backup_decision_replace_desc_imported">Overwrite the account on this device with the one from the backup. The counter is set to the value in the backup (%1$d).</string>
+    <string name="backup_decision_replace_desc_larger">Overwrite the account on this device with the one from the backup. They share the same secret, so the counter keeps the larger value (now %1$d on this device, %2$d in the backup) and never goes back.</string>
+    <string name="backup_decision_replace_taken">Another account from the backup already replaces this one.</string>
+    <string name="backup_notice_plan_changed">Your accounts changed in the meantime, so nothing was imported. Check the choices below and confirm again.</string>
+    <string name="backup_notice_rejected">Some choices no longer fit, so nothing was imported. They were reset: check them and confirm again.</string>
+    <string name="backup_notice_storage">Storage failed and nothing was imported. You can try again.</string>
+    <string name="backup_notice_memory">There was not enough memory and nothing was imported. Close other apps and try again.</string>
+    <string name="backup_confirm_title">Import these accounts?</string>
+    <string name="backup_total_add">To add: %1$d</string>
+    <string name="backup_total_replace">To replace: %1$d</string>
+    <string name="backup_total_skip">To skip: %1$d</string>
+    <string name="backup_confirm_body">Nothing else on this device changes.</string>
+    <string name="backup_import_confirm">Import</string>
 </resources>

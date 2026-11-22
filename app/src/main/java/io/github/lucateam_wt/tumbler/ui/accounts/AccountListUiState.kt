@@ -13,6 +13,13 @@ data class AccountListUiState(
     val actionFailed: Boolean = false,
 )
 
+/**
+ * The list has loaded without a storage failure and holds no account, so an export would be
+ * empty: the menu shows a short message instead of the password dialog.
+ */
+internal val AccountListUiState.nothingToExport: Boolean
+    get() = !isLoading && !loadFailed && accounts.isEmpty()
+
 sealed interface AccountItem {
     val id: String
     val issuer: String

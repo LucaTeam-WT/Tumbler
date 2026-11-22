@@ -16,6 +16,7 @@ import io.github.lucateam_wt.tumbler.domain.otp.OtpAuthUri
 import io.github.lucateam_wt.tumbler.domain.otp.Totp
 import io.github.lucateam_wt.tumbler.domain.repository.AccountRepository
 import io.github.lucateam_wt.tumbler.domain.repository.NextHotpCodeResult
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -101,8 +102,25 @@ class AccountListViewModel(
     private val _addState = MutableStateFlow(AddState())
     val addState: StateFlow<AddState> = _addState
 
+    private var observation: Job? = null
+
     init {
-        viewModelScope.launch {
+        observe()
+    }
+
+    /**
+     * Reads the accounts again from storage, for example after an import that may have
+     * changed them. The list already follows every change through the repository's flow;
+     * this also restarts that flow if a storage failure had stopped it.
+     */
+    fun reload() {
+        observe()
+    }
+
+    private fun observe() {
+        observation?.cancel()
+        loadFailed.value = false
+        observation = viewModelScope.launch {
             try {
                 repository.observeAccounts().collectLatest { summaries ->
                     val loaded = summaries.mapNotNull { load(it) }
