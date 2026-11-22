@@ -459,16 +459,15 @@ it, which wipes them too. A close during an apply takes effect when that apply e
 never wipes secrets that are being written. Results and `PreparedImport` print only
 counts and reasons, never an id, a label or a secret.
 
-**Known limit (must be fixed before B2 makes import reachable):** the accounts screen
-generates the next HOTP code from its cached, decrypted copy of the account: it writes the
-absolute counter "cached counter + 1" (`AccountRepository.updateCounter`, which sets only
-the counter column) and shows the code of the cached secret. That cache is replaced only
-after an import has committed and the list has decrypted every account again, so in
-between it still holds the account as it was before the import. After a Replace that
-changed the secret, the row holds the new secret with its own counter, say 50, while the
-cache still holds the old secret with counter 3: "next code" then writes 3 + 1 over 50
-and shows a code of the old secret. After a Replace with the same HOTP secret the cached
-counter can also be lower than the one the import kept. See item 12 below.
+**Stale list cache (fixed, see item 12 below):** the accounts screen keeps a cached,
+decrypted copy of each account. That cache is replaced only after an import has committed
+and the list has decrypted every account again, so in between it still holds the account
+as it was before the import. "Next code" no longer reads it: the code and the counter come
+from one repository transaction on the stored row. After a Replace that changed the secret
+and set the counter to 50, a tap in that window shows the new secret's code for counter 50
+and stores 51. Before this fix it wrote the absolute counter "cached counter + 1" (3 + 1
+over 50) and showed a code of the old secret; after a Replace with the same HOTP secret it
+could also move the counter below the one the import kept.
 
 ## Sensitive data in memory
 
@@ -577,17 +576,25 @@ the screens. Each requirement says which part does what:
     - an export then import round trip on a release (R8-minified) build, once a screen calls
       the service. Until then R8 removes the backup code from release builds, so there is
       nothing to test; no keep rules were added.
-12. **Make "next code" atomic before import is reachable (mandatory).** *B2, before any
-    screen can start an import:* the HOTP "next code" path must be one repository call
-    that, in a single transaction, reads the row, generates the code from the secret and
-    counter it read, and writes counter + 1; or a compare-and-set that writes counter + 1
-    only while both the counter and the secret are still the ones the code came from (and
-    otherwise writes nothing and shows no code). Disabling "next code" while an import
-    runs is not enough: the screen's cached account stays stale after the commit, until
-    the list has decrypted every account again (see the known limit above). A tap in that
-    window, after a Replace that changed only the secret, makes `updateCounter` write a
-    value computed from the old secret's counter (for example 3 + 1) over the new
-    secret's counter 50.
+12. **Make "next code" atomic before import is reachable (mandatory).** *Done in B2a, so
+    it no longer blocks a screen from starting an import:* `AccountRepository.nextHotpCode`
+    (`RoomAccountRepository`) runs in one Room write transaction (`withTransaction`, through
+    the same `TransactionRunner` as `RoomAccountBackupStore`). It reads the row; returns
+    `NotFound`, `NotHotp`, or `LimitReached` at `Long.MAX_VALUE` (before decrypting or
+    writing anything); decrypts the secret with the row's associated data; generates the
+    code for the counter it read; and writes counter + 1 with a compare-and-set
+    (`AccountDao.advanceCounter`, which updates the row only while it still holds that
+    counter and that encrypted secret). The decrypted secret is wiped in a `finally` on
+    every path, cancellation included. The accounts screen no longer generates HOTP codes
+    from its cached account or writes an absolute counter (`updateCounter` is removed); the
+    cache only decides whether a row offers "next code", and the screen shows the code the
+    repository returns. The cache is therefore not involved any more (see the stale list
+    cache above). Both guards are used because they are cheap together: Room's write
+    transaction keeps other writers out between the read and the write, and the
+    compare-and-set turns a row changed in between into `Failed` (no code, nothing
+    written) instead of an overwrite; a unit test shows it holding without any transaction
+    isolation. `NextHotpCodeInstrumentedTest` (real Room and Keystore: a replace between
+    the list load and the tap, 20 concurrent calls, the counter limit) needs a device run.
 13. **Delete a partial export.** *B2:* on `ExportResult.WriteFailed`, delete the document
     the user picked. Also treat an `IOException` from closing the stream as a failed
     write: a buffered stream may write its last bytes on close.

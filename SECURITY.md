@@ -42,8 +42,11 @@ missing key surfaces as an error, not as silent data loss.
 when the list loads and keeps the `ByteArray` secrets in memory for as long as the
 screen's view model lives, to compute codes each second. Generated codes are held in UI
 state only. Secrets are not placed in saved instance state. Plaintext is not
-guaranteed to be wiped from memory (the JVM may copy it); the repository wipes the
-decrypted array on one error path only.
+guaranteed to be wiped from memory (the JVM may copy it). When the list loads, the
+repository wipes the decrypted array on one error path only. "Next code" on a HOTP account
+decrypts that account's secret again inside its database transaction and wipes that
+array on every path; the copies the HOTP generator and the JCA HMAC key make are left to
+the garbage collector.
 
 **Plaintext on disk.** Issuer, account name, OTP type, algorithm, digits, period,
 counter and creation time are stored unencrypted in the database, and the pasted
