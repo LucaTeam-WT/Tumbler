@@ -3,7 +3,8 @@
 > **Tumbler is beta software and has not been audited.** Do not store accounts whose
 > loss or compromise would be critical until the planned items under
 > [Known limitations](#known-limitations-and-planned-work) land. Keep recovery codes
-> for every account elsewhere: there is no backup, export or transfer.
+> for every account elsewhere: the only way to move accounts is the app's encrypted
+> export, which is only as safe as the password you give it.
 
 Every statement below describes the code as it is today. Planned work is listed
 separately and is not a promise of a date.
@@ -17,9 +18,11 @@ separately and is not a promise of a date.
 ## How it protects them today
 
 **Storage.** Accounts live in a Room (SQLite) database named `lucaauth.db` in the
-app-private storage (`TumblerDatabase`). The app's own code writes no files other than
-the Room database and its journal files (`-wal`/`-shm`), and uses no `SharedPreferences`
-or external storage. (Android and the libraries the app uses may keep their own files
+app-private storage (`TumblerDatabase`). The app's own code writes no files in its storage
+other than the Room database and its journal files (`-wal`/`-shm`), and uses no
+`SharedPreferences` or external storage. The only other file it writes is an encrypted
+export, to a document the user creates with the system file picker (see
+[Encrypted export and import](#encrypted-export-and-import)). (Android and the libraries the app uses may keep their own files
 in app-private storage, such as caches or the Compose/ART profile data; the app's code
 does not put secrets there.)
 
@@ -52,10 +55,46 @@ the garbage collector.
 counter and creation time are stored unencrypted in the database, and the pasted
 `otpauth://` link is parsed in memory and not stored.
 
-**Backup.** Cloud backup and device-to-device transfer are disabled by design:
+**System backup.** Cloud backup and device-to-device transfer are disabled by design:
 `android:allowBackup="false"`, `res/xml/data_extraction_rules.xml` (API 31+) and
 `res/xml/backup_rules.xml` (API 30 and lower) exclude all domains. A restored database
 would be useless anyway, because the Keystore key never leaves the device.
+
+### Encrypted export and import
+
+The accounts screen's menu exports every account into one file and imports such a file
+(`BackupService`, `ui/backup/`; the format is specified in
+[docs/backup-format.md](docs/backup-format.md)).
+
+- **As strong as its password.** The file is encrypted with AES-256-GCM under a key that
+  scrypt derives from the password (N = 2^16, r = 8, p = 2 by default; random salt and
+  nonce per file). The password must have 12 to 1024 characters after NFC normalization
+  and is entered twice. Anyone who has the file can try passwords offline, so a short or
+  guessable password makes the backup weak. The header (format version, scrypt
+  parameters, salt, nonce) is readable without the password, and the file size reveals
+  roughly how many accounts it holds.
+- **The password is not stored** anywhere and cannot be recovered; without it the file
+  cannot be restored. The app keeps it in memory only for the export or import: the
+  password fields are not in saved instance state or a `SavedStateHandle`, so they do not
+  survive process death. The text reaches the backup code as a `CharArray` copy, which is
+  wiped after use, on cancel and when the screen's view model is cleared.
+- **Wrong password and damaged file look the same**, by design: AES-GCM cannot tell them
+  apart, and the app shows one message ("Wrong password or damaged file") for both.
+- **The file is the user's responsibility.** It is written through the system file picker
+  (Storage Access Framework, no storage permission) to wherever the user chooses, which
+  may be a folder that another app or a cloud service syncs. The app does not keep track
+  of it or delete it later. An export that fails after the file was created deletes it;
+  if the storage provider refuses, the app empties it and asks the user to delete it.
+- **Import never writes without confirmation.** It shows the new accounts and each
+  conflict by label (never a secret), offers only the choices that are safe for it with
+  "skip" preselected, and writes everything in one database transaction after a final
+  confirmation. If the accounts changed in a way that changes the plan, it writes nothing
+  and asks again.
+- **Plaintext in memory.** An export decrypts every secret while it writes the file; an
+  import holds the backup's decrypted secrets, and the device's secrets read for the
+  plan, until it is written or cancelled. The code wipes these arrays and the passwords
+  after use on every path, including cancellation and running out of memory
+  (best-effort; see the limitations below).
 
 **Network and telemetry.** The app declares no `INTERNET` permission (and no other
 permission), sets `android:usesCleartextTraffic="false"`, contains no analytics or
@@ -81,19 +120,24 @@ it in the system preview. It is not cleared automatically.
 | Another app on the same phone reading our files: app-private storage, secrets encrypted with a key other apps cannot use | Malware without root reading app storage: it cannot read secrets, but can read labels, and can read the clipboard after a copy | A rooted or otherwise compromised device |
 | A lost or stolen **locked** phone: secrets are encrypted with a hardware-backed-where-available Keystore key, so a copy of the database file alone does not reveal them (the app does not itself guarantee device storage encryption; that is up to the OS and device) | A stolen phone that is unlocked or whose screen lock is weak: there is no app lock yet, so the app opens straight to the codes | A malicious or modified OS |
 | A user's backup leaking: no cloud backup or transfer contains app data | Shoulder surfing: codes are always visible (no hiding, no screen-capture protection yet) | Physical attacks on a running, unlocked phone (including memory extraction) |
+| A damaged or modified export file: AES-GCM authentication rejects it before anything is imported | An exported file that leaks: encrypted, but only as strong as its password, which can be guessed offline | Where the user keeps an exported file and who else can reach it |
 | Secrets leaking through logs, network or telemetry: none exist | A code lingering in the clipboard: marked sensitive on Android 13+, not auto-cleared | Screen recording or accessibility tooling run by the user themselves |
 
 ## Known limitations and planned work
 
 - **No app lock yet.** Anyone who can unlock the phone can open the app and see codes.
-- **No encrypted export/import yet.** There is no way to move or back up accounts. The
-  file format ([docs/backup-format.md](docs/backup-format.md)) and a service that exports
-  and imports through it (`BackupService`) exist in code, but no screen calls them, so they
-  are not reachable from the app and R8 removes them from release builds. That service
-  only writes to a stream its caller passes in, opens no file itself, and wipes the
-  passwords and decrypted secrets it handles after use (best-effort, as above).
+- **Backup wiping is best-effort.** Some copies cannot be wiped: the key copies that the
+  HOTP generator, `SecretKeySpec` and `Cipher` make; Bouncy Castle's PBKDF2/HMAC state;
+  the `String`s that Compose's text fields and NFC normalization create from a password;
+  and the decrypted labels. The keyboard app sees every character typed. Details are in
+  [docs/backup-format.md](docs/backup-format.md#sensitive-data-in-memory).
+- **No password strength check** beyond the 12-character minimum.
 - **No screen-capture protection yet.** `FLAG_SECURE` is not set; screenshots and
-  recents thumbnails can show codes.
+  recents thumbnails can show codes, the import review (account labels) and a password
+  that the user chose to show.
+- **Backup device tests not run yet.** The export/import device and Compose UI tests are
+  written and compile, but have not been run on a device, and no round trip has been done
+  on a release build.
 - **No clipboard auto-clear yet.**
 - **Labels are not encrypted** (see above): someone who can read the app's private
   storage can see which accounts exist.
