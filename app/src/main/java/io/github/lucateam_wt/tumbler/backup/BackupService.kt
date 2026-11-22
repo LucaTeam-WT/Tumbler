@@ -33,9 +33,11 @@ import java.io.OutputStream
  * decides. A plan the service has made is closed and wiped if a cancellation stops it from
  * reaching the caller: a result that `withContext` drops because the caller was cancelled
  * after the service made it (an [ImportReadResult.Ready] or an [ImportResult.PlanChanged])
- * is closed before the cancellation propagates. This covers the service's own results only:
- * a secret the store is decrypting at the moment the caller is cancelled can still be
- * dropped without being wiped (best-effort; a known follow-up, see
+ * is closed before the cancellation propagates. The same holds when allocating that result
+ * runs out of memory: the result is allocated before the plan is handed over, and a plan
+ * that cannot be handed over is closed (or, in [applyImport], left open for a retry). The
+ * store wipes a secret it is decrypting when the caller is cancelled, and every secret read
+ * so far when converting them runs out of memory (best-effort, as everywhere: see
  * `docs/backup-format.md`). Nothing is logged, and no result's `toString` contains a
  * password, a secret, a label or an account id.
  *
@@ -45,6 +47,7 @@ internal class BackupService(
     private val store: AccountBackupStore,
     private val dispatcher: CoroutineDispatcher = Dispatchers.Default,
     private val codec: BackupCodec = DefaultBackupCodec,
+    private val results: PlanResults = DefaultPlanResults,
 ) {
 
     /**
@@ -188,15 +191,23 @@ internal class BackupService(
                 BackupReadResult.NotEnoughMemory -> return ImportReadResult.NotEnoughMemory
                 is BackupReadResult.Failure -> return ImportReadResult.FileRejected(result)
             }
-            val existing = store.readAll().map { ExistingAccount(it.id, it.account) }
+            val existing = store.readAll().toExistingAccounts()
             val prepared = try {
                 PreparedImport(incoming, existing)
             } catch (e: Throwable) {
                 wipe(existing)
                 throw e
             }
+            // Allocate the result before handing the plan over: if that runs out of memory, the
+            // plan is closed here instead of being dropped with its secrets.
+            val ready = try {
+                results.ready(prepared)
+            } catch (e: Throwable) {
+                prepared.close()
+                throw e
+            }
             handedOver = true
-            return ImportReadResult.Ready(prepared)
+            return ready
         } catch (e: UnreadableAccountException) {
             return ImportReadResult.ExistingAccountUnreadable(e.accountId)
         } catch (e: SQLException) {
@@ -225,7 +236,7 @@ internal class BackupService(
             // commit, so wait for the transaction to end whatever happens to the caller.
             val written = withContext(NonCancellable) {
                 store.writeTransaction {
-                    val rows = readAll().map { ExistingAccount(it.id, it.account) }
+                    val rows = readAll().toExistingAccounts()
                     fresh = rows
                     val current = planImport(rows, prepared.incoming)
                     if (!current.matches(prepared.plan)) return@writeTransaction null
@@ -245,12 +256,18 @@ internal class BackupService(
                 // Nothing was written. A cancelled caller would drop a new plan with its
                 // secrets, so make none: this one is released below.
                 currentCoroutineContext().ensureActive()
-                // If replan throws (out of memory), the plan is still applying: release it below.
-                val next = prepared.replan(checkNotNull(fresh))
+                // Make the new plan and its result before this plan changes state. If either
+                // allocation runs out of memory, nothing has been handed over: this plan is
+                // released below (still open, so isOpen does not report a write that never
+                // happened) and the rows just read are wiped. The new plan shares this plan's
+                // imported accounts, so it is dropped without closing it.
+                val next = prepared.planAgain(checkNotNull(fresh))
+                val changed = results.planChanged(next)
+                val replaced = prepared.replaceWith(next)
                 ended = true
-                if (next == null) return ImportResult.PlanClosed
+                if (!replaced) return ImportResult.PlanClosed
                 freshHandedOver = true
-                return ImportResult.PlanChanged(next)
+                return changed
             }
             prepared.finish()
             ended = true
@@ -324,21 +341,35 @@ internal class PreparedImport internal constructor(
     }
 
     /**
-     * Ends an apply that found the accounts changed: returns a new plan of the same imported
-     * accounts against [current] (the rows read in the transaction, which it then owns) and
-     * closes this one, wiping only its own existing accounts. Returns null, wiping
-     * everything except [current], if [close] was called meanwhile.
+     * During an apply that found the accounts changed: a new plan of the same imported accounts
+     * against [current] (the rows read in the transaction). Changes nothing here, so if this
+     * throws (out of memory) or the new plan is never handed over, this plan can still be
+     * released. The new plan shares this plan's imported accounts: only [replaceWith] hands
+     * them over, so a new plan that was not handed over must be dropped without closing it
+     * (closing it would wipe this plan's imported accounts).
      */
-    internal fun replan(current: List<ExistingAccount>): PreparedImport? = synchronized(lock) {
+    internal fun planAgain(current: List<ExistingAccount>): PreparedImport = synchronized(lock) {
         check(state == State.APPLYING)
+        PreparedImport(incoming, current)
+    }
+
+    /**
+     * Ends an apply that found the accounts changed by handing over to [next] (from
+     * [planAgain]): closes this plan, wiping only its own existing accounts, and returns
+     * true; [next] then owns the imported accounts and the rows it was planned against.
+     * Returns false, wiping everything this plan holds, if [close] was called meanwhile; the
+     * caller then wipes the rows [next] was planned against. Allocates nothing.
+     */
+    internal fun replaceWith(next: PreparedImport): Boolean = synchronized(lock) {
+        check(state == State.APPLYING)
+        check(next.incoming === incoming)
         if (closeRequested) {
             closeNow()
-            return null
+            return false
         }
-        val next = PreparedImport(incoming, current)
         state = State.CLOSED
         wipe(existing)
-        next
+        true
     }
 
     override fun close(): Unit = synchronized(lock) {
@@ -351,7 +382,7 @@ internal class PreparedImport internal constructor(
 
     private fun closeNow() {
         state = State.CLOSED
-        incoming.forEach { it.account.secret.fill(0) }
+        for (i in incoming.indices) incoming[i].account.secret.fill(0)
         wipe(existing)
     }
 
@@ -496,6 +527,21 @@ internal sealed interface ImportResult {
 }
 
 /**
+ * Allocates the results that hand a plan to the caller. A seam so tests can make that
+ * allocation run out of memory after the plan was made; [DefaultPlanResults] is the only
+ * production implementation.
+ */
+internal interface PlanResults {
+    fun ready(prepared: PreparedImport): ImportReadResult.Ready
+    fun planChanged(newPlan: PreparedImport): ImportResult.PlanChanged
+}
+
+internal object DefaultPlanResults : PlanResults {
+    override fun ready(prepared: PreparedImport): ImportReadResult.Ready = ImportReadResult.Ready(prepared)
+    override fun planChanged(newPlan: PreparedImport): ImportResult.PlanChanged = ImportResult.PlanChanged(newPlan)
+}
+
+/**
  * The backup format as [BackupService] uses it: [exportBackup] and the `InputStream`
  * overload of [readBackup]. A seam so tests can use fast scrypt parameters.
  */
@@ -510,6 +556,22 @@ internal object DefaultBackupCodec : BackupCodec {
     override fun read(input: InputStream, password: CharArray): BackupReadResult = readBackup(input, password)
 }
 
-private fun wipe(accounts: List<ExistingAccount>) = accounts.forEach { it.account.secret.fill(0) }
+/** An index loop allocates nothing, so wiping still works after an OutOfMemoryError. */
+private fun wipe(accounts: List<ExistingAccount>) {
+    for (i in accounts.indices) accounts[i].account.secret.fill(0)
+}
+
+/**
+ * The stored accounts as [ExistingAccount]s, sharing their secret arrays. If converting them
+ * fails (out of memory), every secret read is wiped before the error propagates, so none is
+ * dropped un-wiped.
+ */
+private fun List<StoredAccount>.toExistingAccounts(): List<ExistingAccount> =
+    try {
+        map { ExistingAccount(it.id, it.account) }
+    } catch (t: Throwable) {
+        for (i in indices) this[i].account.secret.fill(0)
+        throw t
+    }
 
 private const val WIPED_CHAR = '\u0000'

@@ -12,6 +12,8 @@ import io.github.lucateam_wt.tumbler.domain.model.StoredAccount
 import io.github.lucateam_wt.tumbler.domain.otp.Base32
 import io.github.lucateam_wt.tumbler.domain.otp.OtpAlgorithm
 import io.github.lucateam_wt.tumbler.domain.repository.UnreadableAccountException
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
@@ -40,13 +42,19 @@ class RoomAccountBackupStoreTest {
         val decrypted = mutableListOf<ByteArray>()
         var encryptFailure: SecretCipherException? = null
 
+        /** Runs after each decryption, before the plaintext is returned. */
+        var afterDecrypt: (() -> Unit)? = null
+
         override fun encrypt(plaintext: ByteArray, associatedData: ByteArray): ByteArray {
             encryptFailure?.let { throw it }
             return delegate.encrypt(plaintext, associatedData)
         }
 
         override fun decrypt(payload: ByteArray, associatedData: ByteArray): ByteArray =
-            delegate.decrypt(payload, associatedData).also { decrypted += it }
+            delegate.decrypt(payload, associatedData).also {
+                decrypted += it
+                afterDecrypt?.invoke()
+            }
     }
 
     /** Runs the block as one transaction would: every row is restored if it throws. */
@@ -121,6 +129,39 @@ class RoomAccountBackupStoreTest {
         val message = error.message.orEmpty()
         assertFalse(message, message.contains(badId) || message.contains("Bank") || message.contains("bob"))
         // The account decrypted before the unreadable one was wiped.
+        assertTrue(cipher.decrypted.single().all { it == 0.toByte() })
+    }
+
+    @Test
+    fun readAll_callerCancelledWhileASecretIsDecrypted_wipesThatSecretAndTheOnesBefore() = runBlocking {
+        repository.add(totp)
+        repository.add(hotp)
+        cipher.decrypted.clear()
+        lateinit var reader: Job
+        // The cipher runs on the store's dispatcher (IO); cancelling the caller there makes
+        // withContext drop the plaintext it is about to return.
+        cipher.afterDecrypt = { if (cipher.decrypted.size == 2) reader.cancel() }
+
+        reader = launch { store.readAll() }
+        reader.join()
+
+        assertTrue(reader.isCancelled)
+        assertEquals(2, cipher.decrypted.size)
+        assertTrue("earlier secret", cipher.decrypted[0].all { it == 0.toByte() })
+        assertTrue("secret dropped by the cancellation", cipher.decrypted[1].all { it == 0.toByte() })
+    }
+
+    @Test
+    fun readAll_callerCancelledWhileTheOnlySecretIsDecrypted_wipesIt() = runBlocking {
+        repository.add(hotp)
+        cipher.decrypted.clear()
+        lateinit var reader: Job
+        cipher.afterDecrypt = { reader.cancel() }
+
+        reader = launch { store.writeTransaction { readAll() } }
+        reader.join()
+
+        assertTrue(reader.isCancelled)
         assertTrue(cipher.decrypted.single().all { it == 0.toByte() })
     }
 

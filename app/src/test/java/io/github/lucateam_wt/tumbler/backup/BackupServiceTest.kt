@@ -104,11 +104,28 @@ class BackupServiceTest {
         }
     }
 
+    /** Can make allocating the result that hands a plan over run out of memory. */
+    private class TestResults : PlanResults {
+        var readyRunsOutOfMemory = false
+        var planChangedRunsOutOfMemory = false
+
+        override fun ready(prepared: PreparedImport): ImportReadResult.Ready {
+            if (readyRunsOutOfMemory) throw OutOfMemoryError("test: allocating the result")
+            return DefaultPlanResults.ready(prepared)
+        }
+
+        override fun planChanged(newPlan: PreparedImport): ImportResult.PlanChanged {
+            if (planChangedRunsOutOfMemory) throw OutOfMemoryError("test: allocating the result")
+            return DefaultPlanResults.planChanged(newPlan)
+        }
+    }
+
     private val workerName = "backup-worker"
     private val executor = Executors.newSingleThreadExecutor { Thread(it, workerName) }
     private val store = FakeAccountBackupStore()
     private val codec = TestCodec()
-    private val service = BackupService(store, executor.asCoroutineDispatcher(), codec)
+    private val results = TestResults()
+    private val service = BackupService(store, executor.asCoroutineDispatcher(), codec, results)
 
     private val githubAccount = OtpAccount("GitHub", "alice", OtpType.TOTP, secretA())
     private fun bankAccount(counter: Long = 3) =
@@ -361,7 +378,75 @@ class BackupServiceTest {
         assertHides(unreadable.toString(), "row-3")
     }
 
+    @Test
+    fun read_resultAllocationRunsOutOfMemory_closesThePlanAndWipesEverySecret() {
+        store.add(bankAccount())
+        results.readyRunsOutOfMemory = true
+
+        assertSame(ImportReadResult.NotEnoughMemory, readFile(seal(listOf(github, bank()))))
+
+        assertEquals(2, codec.imported.size)
+        assertTrue("imported secrets", codec.imported.all { it.isWiped() })
+        assertEquals(1, store.handedOut.size)
+        assertTrue("rows the plan was made against", store.handedOut.all { it.isWiped() })
+    }
+
+    @Test
+    fun read_convertingTheRowsRunsOutOfMemory_wipesEveryRowRead() {
+        store.add(githubAccount)
+        store.add(bankAccount())
+        store.conversionRunsOutOfMemory = true
+
+        assertSame(ImportReadResult.NotEnoughMemory, readFile(seal(listOf(github))))
+
+        assertEquals(2, store.handedOut.size)
+        assertTrue(store.handedOut.all { it.isWiped() })
+        assertTrue(codec.imported.all { it.isWiped() })
+    }
+
     // ---- apply ----
+
+    @Test
+    fun apply_newPlanResultAllocationRunsOutOfMemory_writesNothingAndKeepsThePlanOpenForARetry() {
+        val prepared = prepare(github)
+        store.add(githubAccount, createdAtMillis = 1)
+        results.planChangedRunsOutOfMemory = true
+
+        assertSame(ImportResult.NotEnoughMemory, apply(prepared))
+
+        // Nothing was written or handed over, so isOpen must not suggest the import may have been applied.
+        assertEquals(0, store.writes)
+        assertTrue(prepared.isOpen)
+        assertTrue("imported secrets", prepared.incoming.none { it.account.secret.isWiped() })
+        assertEquals(1, store.handedOut.size)
+        assertTrue("rows read in the transaction", store.handedOut.all { it.isWiped() })
+
+        results.planChangedRunsOutOfMemory = false
+        val next = apply(prepared).cast<ImportResult.PlanChanged>().newPlan
+        assertFalse(prepared.isOpen)
+        assertEquals(1, next.plan.conflicts.size)
+        apply(next, KEEP_BOTH).cast<ImportResult.Success>()
+        assertEquals(2, store.ids.size)
+    }
+
+    @Test
+    fun apply_convertingTheRowsRunsOutOfMemory_wipesEveryRowReadAndKeepsThePlanOpen() {
+        store.add(githubAccount)
+        store.add(bankAccount())
+        val prepared = prepare(github, bank())
+        val planTimeRows = store.handedOut.size
+        store.conversionRunsOutOfMemory = true
+
+        assertSame(ImportResult.NotEnoughMemory, apply(prepared, SKIP, SKIP))
+
+        assertEquals(0, store.writes)
+        assertTrue(prepared.isOpen)
+        val readInTheTransaction = store.handedOut.drop(planTimeRows)
+        assertEquals(2, readInTheTransaction.size)
+        assertTrue(readInTheTransaction.all { it.isWiped() })
+        assertTrue(store.handedOut.take(planTimeRows).none { it.isWiped() }) // still held by the open plan
+        prepared.close()
+    }
 
     @Test
     fun apply_intoAnEmptyStore_insertsEveryAccountInOneTransactionAndWipesTheImport() {

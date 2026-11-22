@@ -23,7 +23,8 @@ import java.util.UUID
  * the other wrote. The schema is unchanged.
  *
  * Cipher calls run on [dispatcher] (by default [Dispatchers.IO]), because Android Keystore
- * operations block on IPC. A read that fails wipes the secrets it had already decrypted.
+ * operations block on IPC. A read that fails wipes the secrets it had already decrypted,
+ * including the one being decrypted when the caller is cancelled or memory runs out.
  * Nothing is logged, and no message holds an id, a label or a secret.
  */
 class RoomAccountBackupStore internal constructor(
@@ -103,21 +104,35 @@ class RoomAccountBackupStore internal constructor(
             complete = true
             return accounts
         } finally {
-            if (!complete) accounts.forEach { it.account.secret.fill(0) }
+            // Any failure (an unreadable row, cancellation, running out of memory) wipes the
+            // secrets read so far. An index loop allocates nothing, which matters after an
+            // OutOfMemoryError.
+            if (!complete) for (i in accounts.indices) accounts[i].account.secret.fill(0)
         }
     }
 
+    /**
+     * Decrypts [row]. The plaintext is wiped on every failure: an invalid row, running out of
+     * memory while the account is built, and a cancellation of the caller while the cipher
+     * runs. In the last case `withContext` drops the block's result and throws, so the block
+     * also stores its result in [plaintext], which the catch can still reach.
+     */
     private suspend fun decrypt(row: AccountEntity): StoredAccount {
-        val secret = try {
-            withContext(dispatcher) { cipher.decrypt(row.secretBlob, accountAssociatedData(row.id)) }
-        } catch (e: SecretCipherException) {
-            throw UnreadableAccountException(row.id, e)
-        }
+        var plaintext: ByteArray? = null
         try {
+            val secret = withContext(dispatcher) {
+                cipher.decrypt(row.secretBlob, accountAssociatedData(row.id)).also { plaintext = it }
+            }
             return StoredAccount(row.id, row.toOtpAccount(secret), row.createdAt)
-        } catch (e: IllegalArgumentException) {
-            secret.fill(0)
+        } catch (e: SecretCipherException) {
+            // Nothing was decrypted.
             throw UnreadableAccountException(row.id, e)
+        } catch (e: IllegalArgumentException) {
+            plaintext?.fill(0)
+            throw UnreadableAccountException(row.id, e)
+        } catch (t: Throwable) {
+            plaintext?.fill(0)
+            throw t
         }
     }
 }
