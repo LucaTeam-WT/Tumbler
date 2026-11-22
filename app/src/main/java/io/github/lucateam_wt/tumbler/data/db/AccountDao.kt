@@ -28,13 +28,20 @@ interface AccountDao {
     suspend fun insert(entity: AccountEntity)
 
     /**
-     * Updates only the counter, and only of a HOTP row. `'HOTP'` is the stored name of
+     * Compare-and-set for "next code": adds 1 to the counter of HOTP row [id] only while it
+     * still holds [expectedCounter] and [expectedSecretBlob] and the counter is below
+     * `Long.MAX_VALUE`. `'HOTP'` is the stored name of
      * [io.github.lucateam_wt.tumbler.domain.model.OtpType.HOTP].
      *
-     * @return the number of rows updated: 1, or 0 if [id] is unknown or not a HOTP row.
+     * @return the number of rows updated: 1, or 0 if the row is unknown, not HOTP, changed
+     *   since it was read, or at the counter limit.
      */
-    @Query("UPDATE accounts SET counter = :counter WHERE id = :id AND type = 'HOTP'")
-    suspend fun updateCounter(id: String, counter: Long): Int
+    @Query(
+        "UPDATE accounts SET counter = counter + 1 WHERE id = :id AND type = 'HOTP' " +
+            "AND counter = :expectedCounter AND secretBlob = :expectedSecretBlob " +
+            "AND counter < 9223372036854775807",
+    )
+    suspend fun advanceCounter(id: String, expectedCounter: Long, expectedSecretBlob: ByteArray): Int
 
     /**
      * Overwrites every column of row [id] except `id` and `createdAt`, which are kept.

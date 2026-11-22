@@ -85,7 +85,7 @@ class BackupServiceInstrumentedTest {
     private class Device(context: Context, val alias: String, codec: BackupCodec = DefaultBackupCodec) : Closeable {
         val database: TumblerDatabase = Room.inMemoryDatabaseBuilder(context, TumblerDatabase::class.java).build()
         private val cipher = AesGcmSecretCipher(AndroidKeystoreKeyProvider(alias))
-        val repository = RoomAccountRepository(database.accountDao(), cipher)
+        val repository = RoomAccountRepository(database, cipher)
         val store = RoomAccountBackupStore(database, cipher)
         val service = BackupService(store, codec = codec)
 
@@ -181,7 +181,8 @@ class BackupServiceInstrumentedTest {
         assertEquals(listOf(totpId, hotpId), conflicts.map { it.existing.id })
         assertEquals(setOf(ConflictDecision.SKIP, ConflictDecision.REPLACE), allowedDecisions(conflicts[1]))
         // The user generates codes while deciding: the counter moves past the imported one.
-        target.repository.updateCounter(hotpId, 10)
+        repeat(7) { target.repository.nextHotpCode(hotpId) }
+        assertEquals(10L, target.repository.getAccount(hotpId)?.counter)
 
         val result = apply(target, prepared, ConflictDecision.KEEP_BOTH, ConflictDecision.REPLACE).cast<ImportResult.Success>()
 

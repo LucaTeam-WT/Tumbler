@@ -18,7 +18,7 @@ class AppContainer(private val context: Context) {
     private val secretCipher: SecretCipher by lazy { AesGcmSecretCipher(AndroidKeystoreKeyProvider()) }
 
     val accountRepository: AccountRepository by lazy {
-        RoomAccountRepository(database.accountDao(), secretCipher)
+        RoomAccountRepository(database, secretCipher)
     }
 
     /**

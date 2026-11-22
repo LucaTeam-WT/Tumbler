@@ -58,7 +58,10 @@ enum class HotpError {
     /** The counter is `Long.MAX_VALUE`, so it cannot be advanced and no more codes can be made. */
     LIMIT_REACHED,
 
-    /** The repository refused to advance the counter (an unexpected state; nothing was changed). */
+    /**
+     * The repository made no code (an unexpected state: the account is gone or no longer HOTP,
+     * or its secret cannot be read); nothing was changed.
+     */
     FAILED,
 }
 

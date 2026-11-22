@@ -11,10 +11,10 @@ import io.github.lucateam_wt.tumbler.domain.crypto.SecretCipherException
 import io.github.lucateam_wt.tumbler.domain.model.AccountSummary
 import io.github.lucateam_wt.tumbler.domain.model.OtpAccount
 import io.github.lucateam_wt.tumbler.domain.model.OtpType
-import io.github.lucateam_wt.tumbler.domain.otp.Hotp
 import io.github.lucateam_wt.tumbler.domain.otp.OtpAuthUri
 import io.github.lucateam_wt.tumbler.domain.otp.Totp
 import io.github.lucateam_wt.tumbler.domain.repository.AccountRepository
+import io.github.lucateam_wt.tumbler.domain.repository.NextHotpCodeResult
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -164,42 +164,37 @@ class AccountListViewModel(
 
     /**
      * Shows the code for the HOTP account's current counter and stores the next counter.
-     * The counter is saved first, so a code is never shown that could be generated again.
-     * Does nothing if the account is gone or is not a usable HOTP account. At the counter
-     * limit (`Long.MAX_VALUE`) the counter is not touched and the row shows
-     * [HotpError.LIMIT_REACHED]; if the repository rejects the counter the row shows
-     * [HotpError.FAILED]. If storage fails no code is shown and
-     * [AccountListUiState.actionFailed] is set.
+     * Both come from one repository call ([AccountRepository.nextHotpCode]) that reads the
+     * stored row, so the cached list never decides which code or counter is used. The
+     * counter is saved before the code is shown, so a code is never shown that could be
+     * generated again. Does nothing if the list has no usable HOTP row with [id]. At the
+     * counter limit (`Long.MAX_VALUE`) the counter is not touched and the row shows
+     * [HotpError.LIMIT_REACHED]; if the repository makes no code for another reason the row
+     * shows [HotpError.FAILED]. If storage fails no code is shown and
+     * [AccountListUiState.actionFailed] is set. Requests run one at a time.
      */
     fun nextHotpCode(id: String) {
         viewModelScope.launch {
             hotpMutex.withLock {
+                // The list only decides whether the row offers "next code".
                 val entry = entries.value?.firstOrNull { it.summary.id == id } as? Entry.Ready ?: return@withLock
-                val account = entry.account
-                if (account.type != OtpType.HOTP) return@withLock
-                val counter = account.counter
-                if (counter == Long.MAX_VALUE) {
-                    // counter + 1 would overflow: do not touch the repository or the stored counter.
-                    hotpResults.update { it + (id to HotpResult(error = HotpError.LIMIT_REACHED)) }
-                    return@withLock
-                }
-                try {
-                    repository.updateCounter(id, counter + 1)
-                } catch (_: NoSuchElementException) {
-                    hotpResults.update { it + (id to HotpResult(error = HotpError.FAILED)) }
-                    return@withLock
-                } catch (_: IllegalArgumentException) {
-                    hotpResults.update { it + (id to HotpResult(error = HotpError.FAILED)) }
-                    return@withLock
+                if (entry.summary.type != OtpType.HOTP) return@withLock
+                val result = try {
+                    repository.nextHotpCode(id)
                 } catch (_: SQLException) {
                     actionFailed.value = true
                     return@withLock
                 }
-                val code = Hotp(account.secret, account.algorithm, account.digits).generate(counter)
-                hotpResults.update { it + (id to HotpResult(code = code)) }
-                entries.update { list ->
-                    list?.map { if (it === entry) Entry.Ready(it.summary, account.copy(counter = counter + 1)) else it }
+                val shown = when (result) {
+                    is NextHotpCodeResult.Code -> HotpResult(code = result.code)
+                    NextHotpCodeResult.LimitReached -> HotpResult(error = HotpError.LIMIT_REACHED)
+                    NextHotpCodeResult.NotHotp,
+                    NextHotpCodeResult.NotFound,
+                    NextHotpCodeResult.Failed,
+                    -> HotpResult(error = HotpError.FAILED)
                 }
+                // The stored counter changed, so the repository's flow reloads the list.
+                hotpResults.update { it + (id to shown) }
             }
         }
     }
