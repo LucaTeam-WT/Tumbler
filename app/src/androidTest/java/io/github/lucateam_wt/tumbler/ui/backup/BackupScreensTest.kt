@@ -12,6 +12,7 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.semantics.SemanticsProperties
+import androidx.compose.ui.semantics.getOrNull
 import androidx.compose.ui.test.SemanticsMatcher
 import androidx.compose.ui.test.SemanticsNodeInteraction
 import androidx.compose.ui.test.assert
@@ -38,6 +39,7 @@ import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performScrollToKey
 import androidx.compose.ui.test.performSemanticsAction
 import androidx.compose.ui.test.performTextInput
+import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.dp
 import io.github.lucateam_wt.tumbler.R
@@ -197,20 +199,95 @@ class BackupScreensTest {
         tag(BackupTags.EXPORT_SUBMIT).assertIsNotEnabled()
     }
 
+    // A text field keeps what was typed in its EditableText (and InputText) semantics, whether
+    // it is masked or not, and marks itself with Password so that accessibility services mask
+    // it; `onNodeWithText` matches EditableText too, so it always finds a filled-in field. What
+    // is checked instead: the Password property, what the field draws, the toggles' names, and
+    // that no node carries the text as a label.
+
+    /** A node whose Text (its visible label) or content description holds [secret]: something TalkBack reads out. */
+    private fun labelHolds(secret: String) = SemanticsMatcher("Text or ContentDescription holds the password") { node ->
+        node.config.getOrNull(SemanticsProperties.Text).orEmpty().any { secret in it.text } ||
+            node.config.getOrNull(SemanticsProperties.ContentDescription).orEmpty().any { secret in it }
+    }
+
+    private fun editableTextHolds(secret: String) = SemanticsMatcher("EditableText holds the password") { node ->
+        node.config.getOrNull(SemanticsProperties.EditableText)?.text?.contains(secret) == true
+    }
+
+    /** In both trees: no label holds [secret], and only password fields hold it as editable text. */
+    private fun assertNoLabelHolds(secret: String) {
+        for (unmerged in listOf(false, true)) {
+            composeRule.onAllNodes(labelHolds(secret), useUnmergedTree = unmerged).assertCountEquals(0)
+            composeRule.onAllNodes(
+                editableTextHolds(secret) and !SemanticsMatcher.keyIsDefined(SemanticsProperties.Password),
+                useUnmergedTree = unmerged,
+            ).assertCountEquals(0)
+        }
+    }
+
+    /** The text the field lays out and draws, after its mask; compared, never printed. */
+    private fun SemanticsNodeInteraction.drawnText(): String {
+        val layouts = mutableListOf<TextLayoutResult>()
+        performSemanticsAction(SemanticsActions.GetTextLayoutResult) { it(layouts) }
+        return layouts.single().layoutInput.text.text
+    }
+
+    /** The field draws one mask character per character typed, and none of the password's. */
+    private fun SemanticsNodeInteraction.assertMasked(): SemanticsNodeInteraction {
+        val drawn = drawnText()
+        assertEquals("masked length", password.length, drawn.length)
+        assertTrue("the field draws a character of the password", drawn.none { it in password })
+        return this
+    }
+
+    private fun toggle(description: Int) = composeRule.onNode(hasContentDescription(string(description)) and hasClickAction())
+
+    /**
+     * [field] is hidden by default, behind a toggle named [showDescription], which shows it
+     * and then offers [hideDescription]. While shown, the field stays a password field for
+     * accessibility: `BasicSecureTextField` sets Password in every obfuscation mode.
+     */
+    private fun assertHiddenWithANamedToggle(field: SemanticsNodeInteraction, showDescription: Int, hideDescription: Int) {
+        field.assert(SemanticsMatcher.keyIsDefined(SemanticsProperties.Password)).assertMasked()
+        assertNoLabelHolds(password)
+
+        toggle(showDescription).assertIsDisplayed().performClick()
+
+        toggle(hideDescription).assertIsDisplayed()
+        assertTrue("the shown field draws the password as typed", field.drawnText() == password)
+        field.assert(SemanticsMatcher.keyIsDefined(SemanticsProperties.Password))
+        assertNoLabelHolds(password)
+
+        toggle(hideDescription).performClick()
+
+        toggle(showDescription).assertIsDisplayed()
+        field.assertMasked()
+    }
+
     @Test
     fun passwordFieldsAreHiddenAndHaveNamedVisibilityToggles() {
         show { ExportPasswordDialog(PasswordInput(), PasswordInput(), onSubmit = {}, onCancel = {}) }
-        tag(BackupTags.EXPORT_PASSWORD).performTextInput(password)
+        val first = tag(BackupTags.EXPORT_PASSWORD)
+        val second = tag(BackupTags.EXPORT_CONFIRMATION)
+        first.performTextInput(password)
+        second.performTextInput(password)
 
-        tag(BackupTags.EXPORT_PASSWORD).assert(SemanticsMatcher.keyIsDefined(SemanticsProperties.Password))
-        tag(BackupTags.EXPORT_CONFIRMATION).assert(SemanticsMatcher.keyIsDefined(SemanticsProperties.Password))
-        composeRule.onNodeWithText(password).assertDoesNotExist()
+        second.assert(SemanticsMatcher.keyIsDefined(SemanticsProperties.Password)).assertMasked()
+        assertHiddenWithANamedToggle(first, R.string.backup_password_show, R.string.backup_password_hide)
+        // Each field has its own toggle: showing the first left the second hidden.
+        second.assertMasked()
+        assertHiddenWithANamedToggle(second, R.string.backup_password_confirm_show, R.string.backup_password_confirm_hide)
+        first.assertMasked()
+    }
 
-        val show = composeRule.onNode(hasContentDescription(string(R.string.backup_password_show)) and hasClickAction())
-        show.performClick()
-        composeRule.onNode(hasContentDescription(string(R.string.backup_password_hide)) and hasClickAction()).assertIsDisplayed()
-        composeRule.onNode(hasContentDescription(string(R.string.backup_password_confirm_show)) and hasClickAction())
-            .assertIsDisplayed()
+    @Test
+    fun importPasswordFieldIsHiddenAndHasANamedVisibilityToggle() {
+        show { ImportPasswordDialog(PasswordInput(), wrongPasswordOrDamaged = true, onSubmit = {}, onCancel = {}) }
+        val field = tag(BackupTags.IMPORT_PASSWORD)
+        field.performTextInput(password)
+
+        assertHiddenWithANamedToggle(field, R.string.backup_password_show, R.string.backup_password_hide)
     }
 
     @Test
