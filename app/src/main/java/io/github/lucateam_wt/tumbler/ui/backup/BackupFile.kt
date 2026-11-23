@@ -3,6 +3,8 @@ package io.github.lucateam_wt.tumbler.ui.backup
 import android.content.ContentResolver
 import android.net.Uri
 import android.provider.DocumentsContract
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.ensureActive
 import java.io.FileNotFoundException
 import java.io.IOException
 import java.io.InputStream
@@ -59,12 +61,19 @@ internal interface BackupFile {
  * returned with content keeps it. The open runs on the thread that writes (the service's
  * dispatcher).
  *
+ * The open is refused once [caller] (the export's job) is no longer active: scrypt blocks
+ * and does not stop when the caller is cancelled, so the service may still write after the
+ * cancellation. The write then throws the job's `CancellationException` without opening the
+ * file, which the service does not catch, and [isOpen] and [openFailed] stay false. A
+ * cancellation that lands after this check, while the file is being opened or written, is
+ * not refused: the file may be truncated and is then deleted like any other partial file.
+ *
  * If the open fails ([IOException], [SecurityException], [IllegalArgumentException] or
  * [UnsupportedOperationException], which providers throw), [openFailed] is set and the write
  * throws an [IOException], which the service reports as a failed write. [flush] and [close]
  * do nothing until the file is open.
  */
-internal class OpenOnFirstWriteOutput(private val file: BackupFile) : OutputStream() {
+internal class OpenOnFirstWriteOutput(private val file: BackupFile, private val caller: Job) : OutputStream() {
 
     @Volatile
     private var stream: OutputStream? = null
@@ -80,6 +89,8 @@ internal class OpenOnFirstWriteOutput(private val file: BackupFile) : OutputStre
     private fun opened(): OutputStream {
         stream?.let { return it }
         if (openFailed) throw FileNotOpenedException()
+        // Never open (and so truncate) the file for a caller that was cancelled meanwhile.
+        caller.ensureActive()
         val opened = try {
             file.openOutput()
         } catch (e: IOException) {

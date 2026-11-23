@@ -38,6 +38,7 @@ import io.github.lucateam_wt.tumbler.domain.repository.UnreadableAccountExceptio
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.StandardTestDispatcher
@@ -61,6 +62,9 @@ import java.io.IOException
 import java.io.InputStream
 import java.io.OutputStream
 import java.security.SecureRandom
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class BackupViewModelTest {
@@ -69,7 +73,12 @@ class BackupViewModelTest {
     private class FastCodec : BackupCodec {
         val imported = mutableListOf<ByteArray>()
 
+        /** Runs at the start of [export], where the real codec blocks in scrypt. */
+        @Volatile
+        var onExport: (() -> Unit)? = null
+
         override fun export(accounts: List<BackupEntry>, password: CharArray): ByteArray {
+            onExport?.invoke()
             val random = SecureRandom()
             val salt = ByteArray(BackupFormat.SALT_LENGTH).also(random::nextBytes)
             val nonce = ByteArray(BackupFormat.NONCE_LENGTH).also(random::nextBytes)
@@ -610,6 +619,46 @@ class BackupViewModelTest {
 
         assertTrue(file.untouched)
         assertCopiesWiped()
+    }
+
+    /**
+     * Scrypt blocks and does not stop when the export's caller is cancelled, so the service
+     * still writes once it returns. The file must not be opened (and so truncated), written
+     * or deleted for a caller cancelled meanwhile, and no message is shown.
+     */
+    @Test
+    fun export_cancelledWhileScryptBlocks_neverOpensTheFileAndSaysNothing() {
+        store.add(github)
+        val worker = Executors.newSingleThreadExecutor()
+        try {
+            val viewModel = viewModel(serviceDispatcher = worker.asCoroutineDispatcher())
+            val entered = CountDownLatch(1)
+            val release = CountDownLatch(1)
+            codec.onExport = {
+                entered.countDown()
+                check(release.await(5, TimeUnit.SECONDS))
+            }
+            val file = backupFile(entry("Old", "backup"))
+            viewModel.enterExportPassword()
+            viewModel.exportFileChosen(file)
+            assertTrue(entered.await(5, TimeUnit.SECONDS))
+
+            clear() // the activity finished while the codec blocks in "scrypt"
+            release.countDown()
+            // The export's last step wipes its password copy, after the file was dealt with.
+            val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5)
+            while (!copies.all { copy -> copy.all { it == '\u0000' } } && System.nanoTime() < deadline) Thread.sleep(10)
+
+            assertCopiesWiped()
+            assertEquals(0, file.openOutputCalls)
+            assertFalse(file.truncated)
+            assertEquals(0, file.deleteCalls)
+            assertTrue(file.untouched)
+            assertNull(viewModel.message.value)
+            assertTrue(store.handedOut.isNotEmpty() && store.handedOut.all { it.isWiped() })
+        } finally {
+            worker.shutdownNow()
+        }
     }
 
     @Test

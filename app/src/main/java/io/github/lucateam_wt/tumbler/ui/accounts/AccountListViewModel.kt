@@ -10,6 +10,7 @@ import io.github.lucateam_wt.tumbler.TumblerApplication
 import io.github.lucateam_wt.tumbler.domain.crypto.SecretCipherException
 import io.github.lucateam_wt.tumbler.domain.model.AccountLimitException
 import io.github.lucateam_wt.tumbler.domain.model.AccountSummary
+import io.github.lucateam_wt.tumbler.domain.model.OtpAccount
 import io.github.lucateam_wt.tumbler.domain.model.OtpType
 import io.github.lucateam_wt.tumbler.domain.otp.OtpAuthUri
 import io.github.lucateam_wt.tumbler.domain.otp.Totp
@@ -46,9 +47,14 @@ internal fun nextCodeWindowSeconds(period: Int): Int =
  * account's secret is decrypted when the list loads: a TOTP account keeps it, inside its
  * [Totp] generator (which copies it), in memory only (never in saved state, never logged),
  * for the codes every second; a HOTP account keeps none, because "next code" decrypts the
- * stored row again ([AccountRepository.nextHotpCode]). Either way the decrypted array is
- * wiped as soon as it was used. Generators of an earlier load are dropped, not wiped, when
- * the list loads again.
+ * stored row again ([AccountRepository.nextHotpCode]). The array the repository decrypts is
+ * wiped as soon as the row was checked (and, for TOTP, the generator made), also when that
+ * fails or a reload cancels the load ([load]); a cancellation while it is being decrypted
+ * never hands it over ([AccountRepository.getAccount] wipes it). Not wiped: the copy each
+ * TOTP generator keeps (held until the generator is dropped, also when a reload cancels a
+ * load that had made some generators already, then left to the garbage collector), and the
+ * copy the platform's `SecretKeySpec` makes each time a code is generated (every second
+ * for every TOTP account while the list is observed, twice while the next code shows).
  *
  * Storage failures ([SecretCipherException], [SQLException]) never crash the app: they
  * become [AddError.STORAGE_FAILED], [AccountListUiState.loadFailed] or
@@ -233,26 +239,27 @@ class AccountListViewModel(
 
     /**
      * Decrypts the account to tell whether its row is usable. For TOTP the generator copies
-     * the secret; for HOTP nothing is kept. The decrypted array is wiped either way.
+     * the secret; for HOTP nothing is kept. Decrypting and using the secret happen in one
+     * `try` whose `finally` wipes the array the repository returned, on every exit:
+     * the result, a failure and a cancellation. A cancellation while the repository decrypts
+     * never hands an array over ([AccountRepository.getAccount] wipes it itself).
      */
     private suspend fun load(summary: AccountSummary): Entry? {
-        val account = try {
-            repository.getAccount(summary.id) ?: return null
+        var account: OtpAccount? = null
+        try {
+            val read = repository.getAccount(summary.id) ?: return null
+            account = read
+            return if (read.type == OtpType.TOTP) {
+                Entry.TotpReady(summary, Totp(read.secret, read.algorithm, read.digits, read.period))
+            } else {
+                Entry.HotpReady(summary)
+            }
         } catch (_: SecretCipherException) {
             return Entry.Unavailable(summary)
         } catch (_: IllegalArgumentException) {
             return Entry.Unavailable(summary)
-        }
-        return try {
-            if (account.type == OtpType.TOTP) {
-                Entry.TotpReady(summary, Totp(account.secret, account.algorithm, account.digits, account.period))
-            } else {
-                Entry.HotpReady(summary)
-            }
-        } catch (_: IllegalArgumentException) {
-            Entry.Unavailable(summary)
         } finally {
-            account.secret.fill(0)
+            account?.secret?.fill(0)
         }
     }
 

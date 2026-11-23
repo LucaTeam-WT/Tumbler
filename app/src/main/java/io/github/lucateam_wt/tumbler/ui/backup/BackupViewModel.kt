@@ -25,12 +25,14 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.receiveAsFlow
+import kotlinx.coroutines.job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.Closeable
@@ -60,12 +62,16 @@ import java.io.IOException
  * false) reloads the list and says so instead of offering a retry.
  *
  * **Export.** The file from the picker is opened (which truncates it) only when the service
- * writes the finished backup ([OpenOnFirstWriteOutput]), so a failure or a cancellation
- * before that leaves it as it was, even if the picker returned a file that already held
- * something. Once the file was opened, every outcome but success (including a failed close
- * and a cancellation) deletes it, or empties it if the provider refuses, so no broken file
- * is left looking like a backup. A file that could not be opened, and one that arrives after
- * the app was restarted, is deleted only if it is empty.
+ * writes the finished backup, and only while the export's job is still active
+ * ([OpenOnFirstWriteOutput]). So the file is left exactly as it was (not opened, truncated,
+ * looked into or deleted), even if the picker returned a file that already held something,
+ * when the export fails before that write, and when it is cancelled (the view model is
+ * cleared) at any time before the open is attempted, including while scrypt runs. Once the
+ * file was opened, every outcome but success (including a failed close and a cancellation
+ * that lands while the file is opened or written) deletes it, or empties it if the provider
+ * refuses, so no broken file is left looking like a backup. A file that could not be
+ * opened, and one that arrives after the app was restarted, is deleted only if it is empty:
+ * an existing empty file the user picked is deleted too.
  *
  * @param accountSummaries the accounts on the device, to name an account the backup cannot hold.
  * @param chars copies a field's text into a new array; a seam so tests can check the wiping.
@@ -208,12 +214,14 @@ internal class BackupViewModel(
     /**
      * Exports into [file], which is opened only when the finished backup is written. A failed
      * close is a failed write. What happens to the file on a failure:
-     * - not opened (the failure came first): left as it was, [PartialFile.UNTOUCHED];
+     * - not opened (the failure came first, or the caller was cancelled before the open was
+     *   attempted): left as it was, [PartialFile.UNTOUCHED];
      * - the open failed: deleted only if it is empty ([deleteIfEmpty]);
      * - opened (so truncated, maybe partly written): deleted, whatever it held before.
+     * A cancellation still rethrows, so no message is published for it.
      */
     private suspend fun export(file: BackupFile, password: CharArray): BackupMessage {
-        val output = OpenOnFirstWriteOutput(file)
+        val output = OpenOnFirstWriteOutput(file, currentCoroutineContext().job)
         var result: ExportResult? = null
         var unexpected = false
         var partial = PartialFile.UNTOUCHED

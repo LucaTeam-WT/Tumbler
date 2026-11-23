@@ -45,9 +45,15 @@ missing key surfaces as an error, not as silent data loss.
 when the list loads. A TOTP account's secret is copied into its code generator, which
 stays in memory for as long as the screen's view model lives, to compute codes each
 second. A HOTP account keeps no secret: the list decrypts it only to check that the row is
-readable. The view model wipes each decrypted array right after that (on its error path
-the repository wipes it). When the list loads again, the previous TOTP generators are
-dropped without being wiped, and left to the garbage collector. Generated codes are held
+readable. The view model wipes each decrypted array in one `finally` as soon as the row
+was checked (and, for TOTP, the generator made), also when that fails or a reload cancels
+the load. If the load is cancelled while the repository is still decrypting, or the row
+holds invalid values, the repository wipes the array itself and never hands it over. Not
+wiped: the copy each TOTP generator keeps, which lives until the generator is dropped
+(when the list loads again, also by a load that a reload cancelled after it had made some
+generators) and is then left to the garbage collector; and the key copy that the JCA
+`SecretKeySpec` makes each time a code is generated (every second for every TOTP account
+while the list is shown). Generated codes are held
 in UI state only. Secrets are not placed in saved instance state. Plaintext is not
 guaranteed to be wiped from memory (the JVM may copy it). "Next code" on a HOTP account
 decrypts that account's secret again inside its database transaction and wipes that
@@ -89,8 +95,11 @@ The accounts screen's menu exports every account into one file and imports such 
   (Storage Access Framework, no storage permission) to wherever the user chooses, which
   may be a folder that another app or a cloud service syncs. The app does not keep track
   of it or delete it later. It opens the chosen file for writing only once the encrypted
-  backup is complete in memory, so an export that fails before then leaves the file as it
-  was. If the write then fails halfway, the app deletes the incomplete file (if the
+  backup is complete in memory, and only if the export was not cancelled meanwhile (for
+  example when the app is closed while scrypt runs), so an export that fails or is
+  cancelled before then leaves the file as it was. A cancellation that lands while the
+  file is being opened or written deletes it like a failed write. If the write then fails
+  halfway, the app deletes the incomplete file (if the
   storage provider refuses, it empties it and asks the user to delete it). Android cannot
   replace a file atomically, so if the chosen file already held something, that content
   is lost in this case. A file that cannot be opened, or that arrives after the app was
@@ -100,7 +109,8 @@ The accounts screen's menu exports every account into one file and imports such 
   "skip" preselected, and writes everything in one database transaction after a final
   confirmation. If the accounts changed in a way that changes the plan, it writes nothing
   and asks again.
-- **Plaintext in memory.** An export decrypts every secret while it writes the file; an
+- **Plaintext in memory.** An export decrypts every secret to build the backup and wipes
+  those arrays as soon as the backup is encrypted, before it opens the file; an
   import holds the backup's decrypted secrets, and the device's secrets read for the
   plan, until it is written or cancelled. The code wipes these arrays and the passwords
   after use on every path, including cancellation and running out of memory

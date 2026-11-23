@@ -397,7 +397,9 @@ calls `exportBackup`, writes the bytes and flushes the stream. Other results:
   exist;
 - `StorageFailed`: a database error.
 
-The decrypted secrets are wiped in every case.
+The decrypted secrets are wiped in every case: as soon as `exportBackup` returns the
+encrypted file, before the stream (and so the document provider) is touched, and on every
+other exit before the call returns.
 
 **`readBackup(input, password)`** uses the stream overload, then plans the backup against
 the accounts as they are now and returns `Ready(PreparedImport)`. Other results:
@@ -504,11 +506,20 @@ dialog. Otherwise:
    account is never named.
 
 **Partial export (item 13).** The document from the picker is opened for writing only when
-the service writes the finished file. Every failure before that point leaves the document
-as it was: a refused password, an account the backup cannot hold, an unreadable account,
-a database error, not enough memory, an unexpected exception, and a cancellation (the view
-model cleared). The message then says that the chosen file was not changed, and that if it
-was created for this backup it is empty and can be deleted.
+the service writes the finished file, and only while the export's job is still active:
+`OpenOnFirstWriteOutput` checks the job right before it opens the document and, if it was
+cancelled, throws its `CancellationException` without opening anything. The document is
+therefore left exactly as it was (not opened, truncated, read or deleted) in these cases:
+every failure before that write (a refused password, an account the backup cannot hold, an
+unreadable account, a database error, not enough memory, an unexpected exception), and a
+cancellation (the view model cleared) that lands at any time before that check, including
+while scrypt runs. scrypt blocks and does not stop on cancellation, so the service still
+reaches the write after it; the check is what keeps the document untouched then. For a
+failure the message says that the chosen file was not changed, and that if it was created
+for this backup it is empty and can be deleted; a cancellation shows no message. A
+cancellation that lands after the check, while the document is being opened or written,
+is handled like a failed write (below): the document may already be truncated, and it is
+deleted.
 
 Once the document was opened, every outcome but `Success` deletes it under
 `NonCancellable`, with `DocumentsContract.deleteDocument`. That covers `WriteFailed`, a
@@ -825,8 +836,11 @@ does what, and what is left:
     code is never shown or reused.
 13. **Delete a partial export, and leave the document alone until the backup is ready.**
     *Done in B2:* the view model opens the document ("wt") only at the service's one write
-    of the finished file (`OpenOnFirstWriteOutput`), so a failure or a cancellation before
-    it leaves the document unchanged, whatever it held. Once the document is open, every
+    of the finished file (`OpenOnFirstWriteOutput`), and only if the export's job is still
+    active at that moment. So a failure before that write, and a cancellation that lands
+    before the open is attempted (also one during scrypt, which does not stop on
+    cancellation), leave the document unchanged, whatever it held; a cancellation after
+    that check is handled like a failed write. Once the document is open, every
     outcome but `Success` deletes it (`DocumentsContract.deleteDocument`, under
     `NonCancellable`), including `WriteFailed`, a `close()` that throws (treated as a
     failed write, since a provider may write its last bytes on close), an unexpected
@@ -835,8 +849,9 @@ does what, and what is left:
     opened, or that arrives after the app was restarted, is deleted only if it is empty.
     A write that fails halfway still loses what the document held before (see "What a
     failed write loses" above). Unit tests use a fake document that records every open for
-    writing, every look into it and every delete: failures before the write leave a
-    document holding a backup untouched; a write that fails midway, a failed close and a
+    writing, every look into it and every delete: failures before the write, and a
+    cancellation while the codec blocks in its scrypt step, leave a document holding a
+    backup untouched; a write that fails midway, a failed close and a
     cancellation during the write delete it; each open failure deletes an empty document
     and keeps one with content; a result after a restart deletes an empty document and
     never one with content.
@@ -846,8 +861,11 @@ does what, and what is left:
       `Throwable` (a cancellation that drops the block's result included) before it
       rethrows. `decryptAll` wipes every secret already read if a later row fails.
       `BackupService` converts the rows (`toExistingAccounts`) inside a `try` that wipes
-      them all if that runs out of memory. Unit tests cancel the caller while a decrypt
-      runs, and run out of memory during the conversion.
+      them all if that runs out of memory. `RoomAccountRepository.getAccount`, which the
+      accounts list uses, does the same with its one decrypted array, and the list wipes
+      the array it receives in one `finally` (also when a reload cancels the load). Unit
+      tests cancel the caller while a decrypt runs, and run out of memory during the
+      conversion.
     - *Out of memory when a result is allocated.* `BackupService` allocates `Ready` and
       `PlanChanged` (through an internal `PlanResults` seam that tests can make fail)
       before it sets `handedOver` or `freshHandedOver`. In `read`, a failed allocation

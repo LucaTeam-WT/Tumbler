@@ -53,14 +53,18 @@ class RoomAccountRepository internal constructor(
 
     override suspend fun getAccount(id: String): OtpAccount? {
         val entity = dao.getById(id) ?: return null
-        val secret = withContext(dispatcher) {
-            cipher.decrypt(entity.secretBlob, associatedData(entity.id))
-        }
+        // Set inside the cipher block, so the plaintext is wiped even if withContext drops
+        // its result because the caller was cancelled (as in nextHotpCode).
+        var plaintext: ByteArray? = null
         try {
+            val secret = withContext(dispatcher) {
+                cipher.decrypt(entity.secretBlob, associatedData(entity.id)).also { plaintext = it }
+            }
             return entity.toOtpAccount(secret)
-        } catch (e: IllegalArgumentException) {
-            secret.fill(0)
-            throw e
+        } catch (t: Throwable) {
+            // Not handed over (cancelled, or the row holds an unknown enum name): wipe it here.
+            plaintext?.fill(0)
+            throw t
         }
     }
 

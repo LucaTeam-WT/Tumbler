@@ -57,7 +57,9 @@ internal class BackupService(
      * account is read and decrypted, checked against the backup's limits, and encrypted.
      * One account the backup cannot hold blocks the whole export, by design.
      *
-     * Writes to [output] only on [ExportResult.Success] and [ExportResult.WriteFailed].
+     * Writes to [output] only on [ExportResult.Success] and [ExportResult.WriteFailed]. The
+     * decrypted secrets are wiped as soon as the backup is encrypted, before anything is
+     * written to [output]; on every other exit they are wiped before this returns.
      */
     suspend fun exportAccounts(password: CharArray, output: OutputStream): ExportResult =
         withContext(dispatcher) {
@@ -162,6 +164,9 @@ internal class BackupService(
             } catch (e: BackupNotEnoughMemoryException) {
                 return ExportResult.NotEnoughMemory
             }
+            // The encrypted backup no longer needs them: wipe before the stream (and so the
+            // document provider) is touched, which may block or be slow.
+            wipeSecrets(stored)
             try {
                 output.write(file)
                 output.flush()
@@ -177,9 +182,14 @@ internal class BackupService(
             // Outside scrypt (which exportBackup maps itself); docs/backup-format.md item 2.
             return ExportResult.NotEnoughMemory
         } finally {
-            // The backup entries share these arrays.
-            stored.forEach { it.account.secret.fill(0) }
+            // Every other exit; wiping twice is harmless.
+            wipeSecrets(stored)
         }
+    }
+
+    /** Wipes the decrypted secrets read for an export; the backup entries share these arrays. */
+    private fun wipeSecrets(stored: List<StoredAccount>) {
+        stored.forEach { it.account.secret.fill(0) }
     }
 
     private suspend fun read(input: InputStream, password: CharArray): ImportReadResult {

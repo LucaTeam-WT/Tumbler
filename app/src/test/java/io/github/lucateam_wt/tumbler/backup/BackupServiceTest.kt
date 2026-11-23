@@ -81,8 +81,12 @@ class BackupServiceTest {
         }
     }
 
-    /** Records what was written; can fail on write or flush. */
-    private class TestOutput(private val failWrite: Boolean = false, private val failFlush: Boolean = false) : OutputStream() {
+    /** Records what was written; can fail on write or flush. [onWrite] runs at every write, first. */
+    private class TestOutput(
+        private val failWrite: Boolean = false,
+        private val failFlush: Boolean = false,
+        private val onWrite: () -> Unit = {},
+    ) : OutputStream() {
         val bytes = ByteArrayOutputStream()
         var flushed = false
         var closed = false
@@ -90,6 +94,7 @@ class BackupServiceTest {
         override fun write(b: Int) = write(byteArrayOf(b.toByte()), 0, 1)
 
         override fun write(b: ByteArray, off: Int, len: Int) {
+            onWrite()
             if (failWrite) throw IOException("disk full")
             bytes.write(b, off, len)
         }
@@ -213,6 +218,21 @@ class BackupServiceTest {
         assertEquals(2, store.handedOut.size)
         assertTrue(store.handedOut.all { it.isWiped() })
         assertArrayEquals(secretA(), store.account(store.ids[0]).secret)
+    }
+
+    /** The stream may be a document provider that blocks: the secrets are gone before it is touched. */
+    @Test
+    fun export_wipesTheDecryptedSecretsBeforeTheFirstWrite() {
+        store.add(githubAccount)
+        store.add(bankAccount())
+        val wipedAtWrite = mutableListOf<Boolean>()
+        val output = TestOutput(onWrite = { wipedAtWrite += store.handedOut.all { it.isWiped() } })
+
+        export(output).cast<ExportResult.Success>()
+
+        assertEquals(2, store.handedOut.size)
+        assertEquals(listOf(true), wipedAtWrite)
+        assertTrue(readBackup(output.bytes.toByteArray(), password()) is BackupReadResult.Success)
     }
 
     @Test

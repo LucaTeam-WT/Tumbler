@@ -281,6 +281,22 @@ class RoomAccountRepositoryTest {
         assertSame(invalid, dao.stored(hotpId))
     }
 
+    /** The list's load can be cancelled by a reload (collectLatest) while it decrypts. */
+    @Test
+    fun getAccount_cancelledDuringDecrypt_wipesTheSecret() = runBlocking {
+        val totpId = repository.add(totp)
+        var result: OtpAccount? = null
+        val job = launch(Dispatchers.Default, start = CoroutineStart.LAZY) { result = repository.getAccount(totpId) }
+        cipher.onDecrypt = { job.cancel() }
+
+        job.start()
+        job.join()
+
+        assertTrue(job.isCancelled)
+        assertNull(result)
+        assertTrue(cipher.decrypted.single().isWiped())
+    }
+
     @Test
     fun nextHotpCode_cancelledDuringDecrypt_wipesTheSecretAndWritesNothing() = runBlocking {
         val hotpId = repository.add(hotp)

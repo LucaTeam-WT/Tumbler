@@ -23,6 +23,10 @@ interface AccountRepository {
     /**
      * Loads and decrypts the account with [id].
      *
+     * The caller owns the returned secret array and should wipe it once used. If this throws
+     * (including a cancellation of the caller while the secret is decrypted), no secret is
+     * handed over, and a secret array it had already decrypted is wiped first.
+     *
      * @return the account, or `null` if there is no account with [id].
      * @throws KeyUnavailableException if the encryption key is gone (for example after
      *   app data was cleared); the secret cannot be recovered.
