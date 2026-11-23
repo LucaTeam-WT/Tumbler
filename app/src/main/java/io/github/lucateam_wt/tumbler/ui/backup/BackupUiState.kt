@@ -28,6 +28,9 @@ internal sealed interface BackupUiState {
     /** Encrypting and writing the file (scrypt takes a few seconds). */
     data object Exporting : BackupUiState
 
+    /** The system picker is choosing the backup to import; a second tap on Import opens no second picker. */
+    data object ImportChoosingFile : BackupUiState
+
     /**
      * The import password dialog ([BackupViewModel.importPassword]) for the chosen file.
      * [wrongPasswordOrDamaged] after an attempt that failed that way: one message for both,

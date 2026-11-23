@@ -104,6 +104,13 @@ internal class BackupViewModel(
     private var decisions: List<ConflictDecision> = emptyList()
     private var readJob: Job? = null
 
+    /**
+     * Counts the reads started. A read acts on its outcome only while it is the latest one and
+     * the state is still [BackupUiState.ImportReading] ([isCurrentRead]). A number rather than
+     * [readJob]: a read can finish before `launch` returns its job.
+     */
+    private var readGeneration = 0
+
     fun messageShown() {
         _message.value = null
     }
@@ -314,9 +321,29 @@ internal class BackupViewModel(
 
     // ---- import ----
 
-    /** The picker's result: the backup to read, or null if the user cancelled. */
+    /**
+     * Before the UI opens the import picker: returns true, and the picker may open, only from
+     * [BackupUiState.Idle]. A second tap gets false, so only one picker opens.
+     */
+    fun startImport(): Boolean {
+        if (_state.value != BackupUiState.Idle) return false
+        _state.value = BackupUiState.ImportChoosingFile
+        return true
+    }
+
+    /**
+     * The picker's result: the backup to read, or null if the user cancelled. Taken while the
+     * picker is open, and from [BackupUiState.Idle] (the app was restarted while the picker
+     * was open). Ignored in any other state, such as a second result while a file is already
+     * being imported: nothing is opened, and a [BackupFile] holds only the document's uri.
+     */
     fun importFileChosen(file: BackupFile?) {
-        if (file == null || _state.value != BackupUiState.Idle) return
+        val state = _state.value
+        if (state != BackupUiState.ImportChoosingFile && state != BackupUiState.Idle) return
+        if (file == null) {
+            _state.value = BackupUiState.Idle
+            return
+        }
         importFile = file
         importPassword.clear()
         _state.value = BackupUiState.ImportPassword(wrongPasswordOrDamaged = false)
@@ -324,7 +351,8 @@ internal class BackupViewModel(
 
     /** The system picker could not be opened. */
     fun importPickerUnavailable() {
-        if (_state.value != BackupUiState.Idle) return
+        if (_state.value != BackupUiState.ImportChoosingFile) return
+        _state.value = BackupUiState.Idle
         _message.value = BackupMessage.ImportFailed(ImportFailure.NO_FILE_PICKER)
     }
 
@@ -335,16 +363,21 @@ internal class BackupViewModel(
         val password = chars(importPassword.state.text)
         importPassword.clear()
         _state.value = BackupUiState.ImportReading
+        val generation = ++readGeneration
         readJob = viewModelScope.launch {
             try {
-                read(file, password)
+                read(file, password, generation)
             } finally {
                 password.fill(WIPED_CHAR)
             }
         }
     }
 
-    private suspend fun read(file: BackupFile, password: CharArray) {
+    /** True while read [generation] is the latest and the dialog still waits for it (not cancelled). */
+    private fun isCurrentRead(generation: Int): Boolean =
+        generation == readGeneration && _state.value == BackupUiState.ImportReading
+
+    private suspend fun read(file: BackupFile, password: CharArray, generation: Int) {
         var made: ImportReadResult? = null
         val result = try {
             withContext(ioDispatcher) {
@@ -362,25 +395,26 @@ internal class BackupViewModel(
         } catch (t: Throwable) {
             // A plan made but dropped here (by a cancellation after the service returned) is wiped.
             (made as? ImportReadResult.Ready)?.prepared?.close()
-            when (t) {
+            val failure = when (t) {
                 is CancellationException -> throw t
-                is IOException, is SecurityException -> {
-                    endImport(BackupMessage.ImportFailed(ImportFailure.FILE_NOT_OPENED))
-                    return
-                }
-                is Exception -> {
-                    endImport(BackupMessage.ImportFailed(ImportFailure.UNEXPECTED))
-                    return
-                }
+                is IOException, is SecurityException -> ImportFailure.FILE_NOT_OPENED
+                is Exception -> ImportFailure.UNEXPECTED
                 else -> throw t
             }
+            // A read cancelled, or replaced by a newer one, can still fail late (an exception wins
+            // over the cancellation): it must not end the flow that runs now.
+            if (isCurrentRead(generation)) {
+                readJob = null
+                endImport(BackupMessage.ImportFailed(failure))
+            }
+            return
         }
-        readJob = null
-        if (_state.value != BackupUiState.ImportReading) {
+        if (!isCurrentRead(generation)) {
             // Cancelled while the result was on its way back: drop it, wiping a plan it holds.
             (result as? ImportReadResult.Ready)?.prepared?.close()
             return
         }
+        readJob = null
         when (result) {
             is ImportReadResult.Ready -> {
                 importFile = null

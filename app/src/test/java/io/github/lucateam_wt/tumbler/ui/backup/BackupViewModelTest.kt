@@ -235,6 +235,7 @@ class BackupViewModelTest {
     }
 
     private fun BackupViewModel.openBackup(file: FakeBackupFile, password: String = PASSWORD) {
+        startImport()
         importFileChosen(file)
         importPassword.type(password)
         submitImportPassword()
@@ -627,7 +628,113 @@ class BackupViewModelTest {
         assertCopiesWiped()
     }
 
+    // ---- import: choosing the file ----
+
+    @Test
+    fun import_secondTapOpensNoSecondPickerAndALateSecondFileIsIgnored() {
+        val viewModel = viewModel()
+        val first = backupFile(entry("GitHub", "alice"))
+        val second = backupFile(entry("Bank", "bob"), entry("Mail", "carol", secret = longSecret(30)))
+
+        assertTrue(viewModel.startImport())
+        assertFalse("a second tap opens no second picker", viewModel.startImport())
+        viewModel.startExport()
+        assertSame(BackupUiState.ImportChoosingFile, viewModel.state.value)
+
+        viewModel.importFileChosen(first)
+        viewModel.importFileChosen(second) // a second result arriving late: ignored
+        assertEquals(BackupUiState.ImportPassword(wrongPasswordOrDamaged = false), viewModel.state.value)
+        assertFalse(viewModel.startImport())
+
+        viewModel.importPassword.type(PASSWORD)
+        viewModel.submitImportPassword()
+        assertEquals("the first file was read", 1, viewModel.review().newAccounts)
+        viewModel.importFileChosen(second) // during the review too
+        assertEquals(1, viewModel.review().newAccounts)
+
+        assertEquals("the second file was never opened", 0, second.openInputCalls)
+        viewModel.cancelImport()
+        assertTrue(codec.imported.all { it.isWiped() })
+        assertCopiesWiped()
+    }
+
+    @Test
+    fun import_pickerCancelledOrMissing_endsTheChoice() {
+        val viewModel = viewModel()
+
+        assertTrue(viewModel.startImport())
+        viewModel.importFileChosen(null)
+        assertSame(BackupUiState.Idle, viewModel.state.value)
+        assertNull(viewModel.message.value)
+
+        assertTrue(viewModel.startImport())
+        viewModel.importPickerUnavailable()
+        assertSame(BackupUiState.Idle, viewModel.state.value)
+        assertEquals(BackupMessage.ImportFailed(ImportFailure.NO_FILE_PICKER), viewModel.message.value)
+        assertTrue(viewModel.startImport())
+    }
+
+    @Test
+    fun import_fileArrivingAfterTheAppRestarted_isTaken() {
+        // A new view model (as after process death) receives the picker's result while Idle.
+        val viewModel = viewModel()
+
+        viewModel.importFileChosen(backupFile(entry()))
+
+        assertEquals(BackupUiState.ImportPassword(wrongPasswordOrDamaged = false), viewModel.state.value)
+    }
+
     // ---- import: reading ----
+
+    /**
+     * A read whose block throws after Cancel ends with that exception, not a cancellation,
+     * once it resumes on a dispatching main thread (as `Dispatchers.Main` does when the read
+     * comes back from the IO thread). It must not show "nothing was imported".
+     */
+    @Test
+    fun import_readFailingAfterCancel_isIgnored() {
+        Dispatchers.setMain(StandardTestDispatcher(main.scheduler))
+        val viewModel = viewModel(io = StandardTestDispatcher(main.scheduler))
+        val file = backupFile(entry()).apply {
+            onOpenInput = { viewModel.cancelImport() }
+            openFailure = IOException("the provider went away")
+        }
+        viewModel.openBackup(file)
+        assertSame(BackupUiState.ImportReading, viewModel.state.value)
+
+        main.scheduler.advanceUntilIdle()
+
+        assertEquals(1, file.openInputCalls)
+        assertSame(BackupUiState.Idle, viewModel.state.value)
+        assertNull("no failure message after Cancel", viewModel.message.value)
+        assertCopiesWiped()
+    }
+
+    @Test
+    fun import_lateFailureOfAnEarlierRead_leavesTheNewerImportAlone() {
+        Dispatchers.setMain(StandardTestDispatcher(main.scheduler))
+        val viewModel = viewModel(io = StandardTestDispatcher(main.scheduler))
+        val second = backupFile(entry("GitHub", "alice"), entry("Bank", "bob"))
+        val first = backupFile(entry()).apply {
+            // While the first read is still in its block: Cancel, then a second import starts.
+            onOpenInput = {
+                viewModel.cancelImport()
+                viewModel.openBackup(second)
+            }
+            openFailure = IOException("the provider went away")
+        }
+        viewModel.openBackup(first)
+
+        main.scheduler.advanceUntilIdle()
+
+        assertNull(viewModel.message.value)
+        assertEquals("the second import reached its review", 2, viewModel.review().newAccounts)
+        // Cancel still reaches the second import.
+        viewModel.cancelImport()
+        assertSame(BackupUiState.Idle, viewModel.state.value)
+        assertTrue(codec.imported.all { it.isWiped() })
+        assertCopiesWiped()
+    }
 
     @Test
     fun import_intoAnEmptyDevice_showsNewAccountsThenWritesThemAfterConfirmation() {

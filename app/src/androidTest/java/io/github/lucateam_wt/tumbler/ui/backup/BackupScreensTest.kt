@@ -20,6 +20,7 @@ import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertHasClickAction
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsEnabled
+import androidx.compose.ui.test.assertIsNotDisplayed
 import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.assertIsNotSelected
 import androidx.compose.ui.test.assertIsSelected
@@ -559,6 +560,52 @@ class BackupScreensTest {
         show { ImportReviewScreen(review, ReviewNotice.PLAN_CHANGED, onDecision = { _, _ -> }, onContinue = {}, onCancel = {}) }
 
         composeRule.onNodeWithText(string(R.string.backup_notice_plan_changed)).assertIsDisplayed()
+    }
+
+    private fun noticeText(notice: ReviewNotice) = string(
+        when (notice) {
+            ReviewNotice.PLAN_CHANGED -> R.string.backup_notice_plan_changed
+            ReviewNotice.DECISIONS_REJECTED -> R.string.backup_notice_rejected
+            ReviewNotice.STORAGE_FAILED -> R.string.backup_notice_storage
+            ReviewNotice.NOT_ENOUGH_MEMORY -> R.string.backup_notice_memory
+        },
+    )
+
+    /**
+     * The notice comes back with the review after PlanChanged, StorageFailed or
+     * NotEnoughMemory, while the user may have scrolled far down: it must be on screen, between
+     * the two bars, without scrolling back.
+     */
+    @Test
+    fun reviewNoticeIsOnScreenAfterTheListWasScrolled() {
+        val many = PlanReview(
+            newAccounts = 1,
+            identical = 0,
+            conflicts = List(15) { i ->
+                labelConflict.copy(index = i, imported = AccountLabel("Issuer $i", "name $i"), existing = AccountLabel("Issuer $i", "name $i"))
+            },
+        )
+        var notice by mutableStateOf<ReviewNotice?>(null)
+        show { ImportReviewScreen(many, notice, onDecision = { _, _ -> }, onContinue = {}, onCancel = {}) }
+
+        composeRule.onNode(hasScrollToKeyAction()).performScrollToKey(14)
+        // The top of the list (the summary) is out of view.
+        composeRule.onNodeWithText(string(R.string.backup_review_new)).assertIsNotDisplayed()
+
+        for (shown in ReviewNotice.entries) {
+            notice = shown
+            composeRule.waitForIdle()
+
+            val card = tag(BackupTags.REVIEW_NOTICE).assertIsDisplayed()
+            composeRule.onNodeWithText(noticeText(shown)).assertIsDisplayed()
+            val bounds = card.getUnclippedBoundsInRoot()
+            assertTrue("$shown is under the top bar", bounds.top >= tag(BackupTags.REVIEW_TOP_BAR).getUnclippedBoundsInRoot().bottom)
+            assertTrue("$shown is behind the bottom bar", bounds.bottom <= tag(BackupTags.REVIEW_BAR).getUnclippedBoundsInRoot().top)
+
+            notice = null
+            composeRule.waitForIdle()
+            tag(BackupTags.REVIEW_NOTICE).assertDoesNotExist()
+        }
     }
 
     @Test

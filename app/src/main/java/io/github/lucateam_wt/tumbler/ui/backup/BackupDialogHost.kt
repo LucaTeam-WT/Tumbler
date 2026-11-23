@@ -19,6 +19,7 @@ internal fun BackupDialogHost(
     when (state) {
         BackupUiState.Idle,
         BackupUiState.ExportChoosingFile,
+        BackupUiState.ImportChoosingFile,
         is BackupUiState.Reviewing,
         -> Unit
         BackupUiState.ExportPassword -> ExportPasswordDialog(

@@ -532,11 +532,18 @@ document was tried.
 
 **Import.**
 
-1. The system "open document" picker opens (`OpenDocument`, any type).
+1. The system "open document" picker opens (`OpenDocument`, any type). The view model
+   moves to `ImportChoosingFile` before it opens, so a second tap on Import opens no
+   second picker. A picker result that arrives while another file is already being
+   imported is ignored; nothing is opened for it. A result that arrives after the app was
+   restarted is taken.
 2. A password dialog asks for the backup's password.
 3. `readBackup` reads the document's stream (closed afterwards). A progress dialog with
    Cancel runs meanwhile. A plan made for a read that was cancelled is closed, by the
-   service or by the view model.
+   service or by the view model. A read acts on its outcome only while it is the latest
+   read and the dialog still waits for it: an exception that arrives after Cancel, or
+   after a newer import started, is ignored instead of ending the flow that runs now with
+   "Nothing was imported".
 4. `WrongPasswordOrDamaged` shows the same dialog again for the same file with "Wrong
    password or damaged file." Nothing tells the two apart. The failures that are found
    without the password, or after a successful decryption, keep their own messages: not
@@ -567,6 +574,8 @@ document was tried.
    - `DecisionsRejected` shows the review again with the default decisions.
    - `StorageFailed` and `NotEnoughMemory` with an open plan show the review again with a
      notice and the same decisions, for a retry.
+   - Each notice is pinned above the list, outside it, so it is on screen however far the
+     list was scrolled.
    - The same results with a closed plan, `PlanClosed`, and an unexpected exception say
      that the import may have been saved and the user should check the list. The list
      reloads, and no retry is offered.

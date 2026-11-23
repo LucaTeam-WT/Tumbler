@@ -79,6 +79,7 @@ private fun BackupUiState.shownReview(): ShownScreen? = when (this) {
     BackupUiState.ExportPassword,
     BackupUiState.ExportChoosingFile,
     BackupUiState.Exporting,
+    BackupUiState.ImportChoosingFile,
     is BackupUiState.ImportPassword,
     BackupUiState.ImportReading,
     -> null
@@ -163,10 +164,13 @@ internal fun TumblerApp(viewModel: AccountListViewModel, backupViewModel: Backup
                         onActionFailureShown = viewModel::actionFailureShown,
                         onExportBackup = backupViewModel::startExport,
                         onImportBackup = {
-                            try {
-                                openBackupFile.launch(arrayOf("*/*"))
-                            } catch (e: ActivityNotFoundException) {
-                                backupViewModel.importPickerUnavailable()
+                            // A second tap while the picker opens gets false: one picker only.
+                            if (backupViewModel.startImport()) {
+                                try {
+                                    openBackupFile.launch(arrayOf("*/*"))
+                                } catch (e: ActivityNotFoundException) {
+                                    backupViewModel.importPickerUnavailable()
+                                }
                             }
                         },
                     )

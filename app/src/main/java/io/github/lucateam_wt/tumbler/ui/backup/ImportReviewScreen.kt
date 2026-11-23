@@ -51,7 +51,8 @@ private const val LABEL_MAX_LINES = 3
  * and one card per conflict with exactly the decisions the plan allows. Skip is selected
  * until the user picks something else; Replace is never preselected. Accounts appear by
  * label only. [onCancel] (the close icon and the Cancel button) ends the import without
- * writing anything; [onContinue] goes to the final confirmation.
+ * writing anything; [onContinue] goes to the final confirmation. A [notice] (why the review
+ * came back) is pinned above the list, so it is on screen however far the list was scrolled.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -68,6 +69,7 @@ internal fun ImportReviewScreen(
         modifier = modifier,
         topBar = {
             TopAppBar(
+                modifier = Modifier.testTag(BackupTags.REVIEW_TOP_BAR),
                 title = { Text(stringResource(R.string.backup_import_title)) },
                 navigationIcon = {
                     IconButton(onClick = onCancel) {
@@ -101,42 +103,59 @@ internal fun ImportReviewScreen(
             }
         },
     ) { innerPadding ->
-        LazyColumn(
-            modifier = Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(
-                start = 16.dp,
-                end = 16.dp,
-                top = innerPadding.calculateTopPadding() + 8.dp,
-                bottom = innerPadding.calculateBottomPadding() + 16.dp,
-            ),
-            verticalArrangement = Arrangement.spacedBy(12.dp),
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(top = innerPadding.calculateTopPadding()),
         ) {
-            if (notice != null) item(key = "notice") { NoticeCard(notice) }
-            item(key = "summary") { SummaryCard(review, nothingToImport) }
-            if (review.conflicts.isNotEmpty()) {
-                item(key = "conflicts-header") {
-                    Text(
-                        text = stringResource(R.string.backup_review_conflicts_header),
-                        style = MaterialTheme.typography.titleMedium,
-                        modifier = Modifier
-                            .padding(top = 8.dp)
-                            .semantics { heading() },
-                    )
-                }
+            // Outside the list: an item at its top would sit above the viewport if the user had scrolled.
+            if (notice != null) {
+                NoticeCard(
+                    notice,
+                    modifier = Modifier
+                        .padding(start = 16.dp, end = 16.dp, top = 8.dp)
+                        .testTag(BackupTags.REVIEW_NOTICE),
+                )
             }
-            items(review.conflicts, key = { it.index }) { row -> ConflictCard(row, onDecision) }
+            LazyColumn(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .weight(1f),
+                contentPadding = PaddingValues(
+                    start = 16.dp,
+                    end = 16.dp,
+                    top = 8.dp,
+                    // The list runs under the bottom bar, as before.
+                    bottom = innerPadding.calculateBottomPadding() + 16.dp,
+                ),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                item(key = "summary") { SummaryCard(review, nothingToImport) }
+                if (review.conflicts.isNotEmpty()) {
+                    item(key = "conflicts-header") {
+                        Text(
+                            text = stringResource(R.string.backup_review_conflicts_header),
+                            style = MaterialTheme.typography.titleMedium,
+                            modifier = Modifier
+                                .padding(top = 8.dp)
+                                .semantics { heading() },
+                        )
+                    }
+                }
+                items(review.conflicts, key = { it.index }) { row -> ConflictCard(row, onDecision) }
+            }
         }
     }
 }
 
 @Composable
-private fun NoticeCard(notice: ReviewNotice) {
+private fun NoticeCard(notice: ReviewNotice, modifier: Modifier = Modifier) {
     Card(
         colors = CardDefaults.cardColors(
             containerColor = MaterialTheme.colorScheme.errorContainer,
             contentColor = MaterialTheme.colorScheme.onErrorContainer,
         ),
-        modifier = Modifier.fillMaxWidth(),
+        modifier = modifier.fillMaxWidth(),
     ) {
         Text(
             text = stringResource(

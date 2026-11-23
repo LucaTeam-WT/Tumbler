@@ -66,6 +66,12 @@ internal object BackupTags {
 
     /** The review's bottom bar (Cancel, Continue), which covers the end of the list. */
     const val REVIEW_BAR = "backup-review-bar"
+
+    /** The review's top app bar. */
+    const val REVIEW_TOP_BAR = "backup-review-top-bar"
+
+    /** Why the review came back, pinned above the list. */
+    const val REVIEW_NOTICE = "backup-review-notice"
     const val CONFIRM_IMPORT = "backup-confirm-import"
     const val CONFIRM_BACK = "backup-confirm-back"
 
