@@ -3,6 +3,8 @@ package io.github.lucateam_wt.tumbler.ui.backup
 import android.content.Context
 import android.os.Build
 import android.os.SystemClock
+import android.security.keystore.KeyInfo
+import android.security.keystore.KeyProperties
 import android.util.Log
 import androidx.compose.foundation.text.input.setTextAndPlaceCursorAtEnd
 import androidx.room.Room
@@ -17,13 +19,17 @@ import io.github.lucateam_wt.tumbler.backup.BackupService
 import io.github.lucateam_wt.tumbler.backup.ConflictDecision
 import io.github.lucateam_wt.tumbler.backup.DefaultBackupCodec
 import io.github.lucateam_wt.tumbler.backup.ScryptParams
+import io.github.lucateam_wt.tumbler.backup.exportBackup
 import io.github.lucateam_wt.tumbler.backup.readBackup
 import io.github.lucateam_wt.tumbler.backup.sealBackup
 import io.github.lucateam_wt.tumbler.data.crypto.AesGcmSecretCipher
 import io.github.lucateam_wt.tumbler.data.crypto.AndroidKeystoreKeyProvider
+import io.github.lucateam_wt.tumbler.data.crypto.KeyProvider
+import io.github.lucateam_wt.tumbler.data.db.AccountEntity
 import io.github.lucateam_wt.tumbler.data.db.TumblerDatabase
 import io.github.lucateam_wt.tumbler.data.repository.RoomAccountBackupStore
 import io.github.lucateam_wt.tumbler.data.repository.RoomAccountRepository
+import io.github.lucateam_wt.tumbler.data.repository.accountAssociatedData
 import io.github.lucateam_wt.tumbler.domain.model.OtpAccount
 import io.github.lucateam_wt.tumbler.domain.model.OtpType
 import io.github.lucateam_wt.tumbler.domain.otp.Base32
@@ -46,6 +52,9 @@ import java.io.InputStream
 import java.io.OutputStream
 import java.security.KeyStore
 import java.security.SecureRandom
+import java.util.Locale
+import javax.crypto.SecretKey
+import javax.crypto.SecretKeyFactory
 
 /**
  * Export and import end to end through [BackupViewModel], the way the screens drive it, on a
@@ -138,11 +147,20 @@ class BackupFlowInstrumentedTest {
         return checkNotNull(result).getOrThrow()
     }
 
-    private fun BackupViewModel.await(what: String, done: (BackupUiState) -> Boolean): BackupUiState = runBlocking {
-        withTimeout(TIMEOUT_MILLIS) { state.first(done) }
+    /** Waits for [done]; a timeout fails with the name of the phase ([what]) instead of a bare cancellation. */
+    private fun BackupViewModel.await(
+        what: String,
+        timeoutMillis: Long = TIMEOUT_MILLIS,
+        done: (BackupUiState) -> Boolean,
+    ): BackupUiState = runBlocking {
+        withTimeoutOrNull(timeoutMillis) { state.first(done) }
+            ?: throw AssertionError("$what did not finish within $timeoutMillis ms")
     }.also { assertTrue("waiting for $what", done(it)) }
 
-    private fun BackupViewModel.export(password: String = this@BackupFlowInstrumentedTest.password): MemoryFile {
+    private fun BackupViewModel.export(
+        password: String = this@BackupFlowInstrumentedTest.password,
+        timeoutMillis: Long = TIMEOUT_MILLIS,
+    ): MemoryFile {
         val file = MemoryFile()
         onMain {
             startExport()
@@ -151,28 +169,32 @@ class BackupFlowInstrumentedTest {
             assertTrue(submitExportPassword())
             exportFileChosen(file)
         }
-        await("the export") { it == BackupUiState.Idle }
+        await("the export", timeoutMillis) { it == BackupUiState.Idle }
         return file
     }
 
     /** Opens [file] with [password] and returns the state the read ends in. */
-    private fun BackupViewModel.open(file: MemoryFile, password: String = this@BackupFlowInstrumentedTest.password): BackupUiState {
+    private fun BackupViewModel.open(
+        file: MemoryFile,
+        password: String = this@BackupFlowInstrumentedTest.password,
+        timeoutMillis: Long = TIMEOUT_MILLIS,
+    ): BackupUiState {
         onMain {
             importFileChosen(file)
             importPassword.state.setTextAndPlaceCursorAtEnd(password)
             submitImportPassword()
         }
-        return await("the read") { it != BackupUiState.ImportReading }
+        return await("the read", timeoutMillis) { it != BackupUiState.ImportReading }
     }
 
     private fun BackupViewModel.review(): PlanReview = (state.value as BackupUiState.Reviewing).review
 
-    private fun BackupViewModel.confirm(): BackupMessage? {
+    private fun BackupViewModel.confirm(timeoutMillis: Long = TIMEOUT_MILLIS): BackupMessage? {
         onMain {
             continueImport()
             confirmImport()
         }
-        await("the import") { it !is BackupUiState.Importing }
+        await("the import", timeoutMillis) { it !is BackupUiState.Importing }
         return onMain { message.value }
     }
 
@@ -322,37 +344,166 @@ class BackupFlowInstrumentedTest {
         onMain { target.viewModel.cancelImport() }
     }
 
-    /** The largest backup there can be, by account count, at the default parameters. */
+    /** Account [i] of the 1000-account test: public test secret with the index appended, so no two match. */
+    private fun bulkAccount(i: Int) = OtpAccount(
+        issuer = "Issuer $i ".padEnd(200, 'x'),
+        accountName = "user$i@example.com".padEnd(200, 'y'),
+        type = OtpType.TOTP,
+        secret = rfcSecret + byteArrayOf((i shr 8).toByte(), i.toByte()),
+    )
+
+    /** One line under [PERF_TAG]. Only counts, sizes, parameters and times: never a label, secret or password. */
+    private fun perf(line: String) = Log.i(PERF_TAG, line)
+
+    private fun since(startedMillis: Long) = SystemClock.elapsedRealtime() - startedMillis
+
+    private fun millis(value: Double) = String.format(Locale.ROOT, "%.1f", value)
+
+    /** Where the Keystore keeps [alias]'s key: StrongBox, the TEE or software. Not secret. */
+    private fun keySecurityLevel(alias: String): String {
+        val key = keyStore().getKey(alias, null) as? SecretKey ?: return "no key"
+        val info = SecretKeyFactory.getInstance(key.algorithm, "AndroidKeyStore").getKeySpec(key, KeyInfo::class.java) as KeyInfo
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            when (val level = info.securityLevel) {
+                KeyProperties.SECURITY_LEVEL_STRONGBOX -> "StrongBox"
+                KeyProperties.SECURITY_LEVEL_TRUSTED_ENVIRONMENT -> "TEE"
+                KeyProperties.SECURITY_LEVEL_SOFTWARE -> "software"
+                else -> "other ($level)"
+            }
+        } else {
+            @Suppress("DEPRECATION")
+            if (info.isInsideSecureHardware) "secure hardware" else "software"
+        }
+    }
+
+    /**
+     * Splits the per-row cost: the average of [KEYSTORE_SAMPLE] calls each of a key lookup
+     * alone, a decrypt of one stored row as the app does it (lookup included), the same decrypt
+     * with the key already looked up, and an encrypt (lookup included) of zeros. Every
+     * decrypted array is wiped.
+     */
+    private fun keystoreSample(device: Device, alias: String): String = runBlocking {
+        val row = device.database.accountDao().getAll().first()
+        val associatedData = accountAssociatedData(row.id)
+        val provider = AndroidKeystoreKeyProvider(alias)
+        val key = checkNotNull(provider.getExistingKey())
+        val loaded = object : KeyProvider {
+            override fun getOrCreateKey(): SecretKey = key
+            override fun getExistingKey(): SecretKey = key
+        }
+        val zeros = ByteArray(rfcSecret.size + 2)
+        fun perCall(block: () -> Unit): String {
+            val started = SystemClock.elapsedRealtimeNanos()
+            repeat(KEYSTORE_SAMPLE) { block() }
+            return millis((SystemClock.elapsedRealtimeNanos() - started) / 1e6 / KEYSTORE_SAMPLE)
+        }
+        val lookup = perCall { checkNotNull(provider.getExistingKey()) }
+        val decrypt = perCall { AesGcmSecretCipher(provider).decrypt(row.secretBlob, associatedData).fill(0) }
+        val decryptLoaded = perCall { AesGcmSecretCipher(loaded).decrypt(row.secretBlob, associatedData).fill(0) }
+        val encrypt = perCall { AesGcmSecretCipher(provider).encrypt(zeros, associatedData) }
+        "key lookup $lookup ms, decrypt $decrypt ms, decrypt with the key already looked up $decryptLoaded ms, " +
+            "encrypt $encrypt ms (average of $KEYSTORE_SAMPLE each)"
+    }
+
+    /**
+     * The largest backup there can be, by account count, at the default parameters: 1000
+     * accounts exported, read and imported into an empty device. It checks correctness (the
+     * counts and the round trip), not speed, within one budget of [PERF_TIMEOUT_MILLIS] for
+     * the whole test. Each phase logs its time under [PERF_TAG] as soon as it ends, so a slow
+     * device shows where the time goes even if a later phase fails. Run it alone with the
+     * command in docs/backup-format.md (item 11), then `adb logcat -d -s TumblerBackupPerf:I`.
+     */
     @Test
     fun memory_thousandAccountsExportAndImportWithoutRunningOutOfMemory() {
+        val testStarted = SystemClock.elapsedRealtime()
+        val deadline = testStarted + PERF_TIMEOUT_MILLIS
+        fun remaining() = (deadline - SystemClock.elapsedRealtime()).coerceAtLeast(1)
         val source = device(0)
         val target = device(1)
         val count = BackupPayload.MAX_ACCOUNTS
+        val defaults = ScryptParams.DEFAULT
+        val runtime = Runtime.getRuntime()
+        perf(
+            "start: $count accounts, API ${Build.VERSION.SDK_INT}, default scrypt N=2^${defaults.log2N} r=${defaults.r} " +
+                "p=${defaults.p}, heap limit ${runtime.maxMemory() / MIB} MiB, budget ${PERF_TIMEOUT_MILLIS / 60_000} min",
+        )
+
+        // Setup: each account is one Keystore encryption and one insert.
+        val setupStarted = SystemClock.elapsedRealtime()
         runBlocking {
-            for (i in 0 until count) {
-                // Public test secrets with the index appended, so no two accounts match.
-                val secret = rfcSecret + byteArrayOf((i shr 8).toByte(), i.toByte())
-                source.repository.add(OtpAccount("Issuer $i ".padEnd(200, 'x'), "user$i@example.com".padEnd(200, 'y'), OtpType.TOTP, secret))
+            withTimeoutOrNull(remaining()) {
+                for (i in 0 until count) {
+                    source.repository.add(bulkAccount(i))
+                    if ((i + 1) % PERF_PROGRESS_EVERY == 0) perf("setup: ${i + 1} of $count accounts added after ${since(setupStarted)} ms")
+                }
+            } ?: throw AssertionError("the setup did not finish within the budget")
+        }
+        val setup = since(setupStarted)
+        perf("setup: $count accounts in $setup ms (${millis(setup.toDouble() / count)} ms each)")
+        perf("key: ${keySecurityLevel(aliases[0])}")
+        perf("keystore: ${keystoreSample(source, aliases[0])}")
+
+        // One scrypt with the default parameters, the cost every export and every read pays once.
+        val scryptStarted = SystemClock.elapsedRealtime()
+        val scryptPassword = password.toCharArray()
+        try {
+            exportBackup(emptyList(), scryptPassword)
+        } finally {
+            scryptPassword.fill(WIPED_CHAR)
+        }
+        val scrypt = since(scryptStarted)
+        perf("scrypt: $scrypt ms (an empty backup at the default parameters)")
+
+        // Export: reads and decrypts every account (one Keystore decryption each), one scrypt.
+        val exportStarted = SystemClock.elapsedRealtime()
+        val file = source.viewModel.export(timeoutMillis = remaining())
+        val exportTime = since(exportStarted)
+        assertEquals(BackupMessage.Exported(count), onMain { source.viewModel.message.value })
+        val header = file.bytes
+        perf(
+            "export: $exportTime ms, file ${header.size} bytes, written with N=2^${header[BackupFormat.LOG2_N_OFFSET]} " +
+                "r=${header[BackupFormat.R_OFFSET]} p=${header[BackupFormat.P_OFFSET]}",
+        )
+        assertEquals(defaults.log2N, header[BackupFormat.LOG2_N_OFFSET].toInt())
+        assertEquals(defaults.r, header[BackupFormat.R_OFFSET].toInt())
+        assertEquals(defaults.p, header[BackupFormat.P_OFFSET].toInt())
+
+        // Read: one scrypt, decryption of the file, and a plan against the empty device.
+        val readStarted = SystemClock.elapsedRealtime()
+        val read = target.viewModel.open(file, timeoutMillis = remaining())
+        val readTime = since(readStarted)
+        perf("read: $readTime ms")
+        assertEquals(PlanReview(newAccounts = count, identical = 0, conflicts = emptyList()), (read as BackupUiState.Reviewing).review)
+
+        // Import: one transaction that reads the device again (empty), then encrypts and inserts every account.
+        val importStarted = SystemClock.elapsedRealtime()
+        val message = target.viewModel.confirm(timeoutMillis = remaining())
+        val importTime = since(importStarted)
+        perf("import: $importTime ms")
+        assertEquals(BackupMessage.Imported(added = count, replaced = 0, skipped = 0), message)
+
+        // The round trip, checked without decrypting every row again: every field but the secret
+        // on all rows, and the secret (with its binding to the row's id) on a sample.
+        val sourceRows = runBlocking { source.database.accountDao().getAll() }
+        val targetRows = runBlocking { target.database.accountDao().getAll() }
+        assertEquals(count, targetRows.size)
+        fun fields(row: AccountEntity) = listOf(row.issuer, row.accountName, row.type, row.algorithm, row.digits, row.period, row.counter, row.createdAt)
+        assertEquals(sourceRows.map(::fields).toSet(), targetRows.map(::fields).toSet())
+        val expected = (0 until count).map(::bulkAccount)
+        assertEquals(expected.map { it.issuer to it.accountName }.toSet(), targetRows.map { it.issuer to it.accountName }.toSet())
+        val targetCipher = AesGcmSecretCipher(AndroidKeystoreKeyProvider(aliases[1]))
+        for (i in listOf(0, 1, count / 2, count - 2, count - 1)) {
+            val row = targetRows.single { it.issuer == expected[i].issuer }
+            val secret = targetCipher.decrypt(row.secretBlob, accountAssociatedData(row.id))
+            try {
+                assertTrue("secret of account $i", secret.contentEquals(expected[i].secret))
+            } finally {
+                secret.fill(0)
             }
         }
-        val runtime = Runtime.getRuntime()
-
-        val started = SystemClock.elapsedRealtime()
-        val file = source.viewModel.export()
-        val exported = SystemClock.elapsedRealtime()
-        assertEquals(BackupMessage.Exported(count), onMain { source.viewModel.message.value })
-
-        val read = target.viewModel.open(file)
-        assertEquals(count, (read as BackupUiState.Reviewing).review.newAccounts)
-        val reviewed = SystemClock.elapsedRealtime()
-        assertEquals(BackupMessage.Imported(added = count, replaced = 0, skipped = 0), target.viewModel.confirm())
-        val imported = SystemClock.elapsedRealtime()
-
-        assertEquals(count, target.accounts().size)
-        Log.i(
-            TAG,
-            "$count accounts on API ${Build.VERSION.SDK_INT}: file ${file.bytes.size} bytes, export ${exported - started} ms, " +
-                "read ${reviewed - exported} ms, import ${imported - reviewed} ms, heap limit ${runtime.maxMemory() / (1024 * 1024)} MiB",
+        perf(
+            "done: total ${since(testStarted)} ms (setup $setup, export $exportTime, read $readTime, import $importTime), " +
+                "heap in use ${(runtime.totalMemory() - runtime.freeMemory()) / MIB} MiB",
         )
     }
 
@@ -389,5 +540,14 @@ class BackupFlowInstrumentedTest {
     private companion object {
         const val TAG = "BackupFlowTest"
         const val TIMEOUT_MILLIS = 5 * 60 * 1000L
+
+        /** The 1000-account test's own tag, so `adb logcat -s TumblerBackupPerf:I` shows only its timings. */
+        const val PERF_TAG = "TumblerBackupPerf"
+
+        /** One budget for the whole 1000-account test, so a slow device finishes and reports. */
+        const val PERF_TIMEOUT_MILLIS = 30 * 60 * 1000L
+        const val PERF_PROGRESS_EVERY = 250
+        const val KEYSTORE_SAMPLE = 20
+        const val MIB = 1024 * 1024
     }
 }
