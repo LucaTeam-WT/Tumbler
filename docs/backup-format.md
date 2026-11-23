@@ -463,11 +463,13 @@ it, which wipes them too. A close during an apply takes effect when that apply e
 never wipes secrets that are being written. Results and `PreparedImport` print only
 counts and reasons, never an id, a label or a secret.
 
-**Stale list cache (fixed, see item 12 below):** the accounts screen keeps a cached,
-decrypted copy of each account. That cache is replaced only after an import has committed
-and the list has decrypted every account again, so in between it still holds the account
-as it was before the import. "Next code" no longer reads it: the code and the counter come
-from one repository transaction on the stored row. After a Replace that changed the secret
+**Stale list cache (fixed, see item 12 below):** the accounts screen keeps a cached list of
+the accounts: for a TOTP account its code generator (holding a copy of the secret), for a
+HOTP account only that its secret decrypts (no secret is kept; the decrypted array is
+wiped at once). That cache is replaced only after an import has committed and the list has
+decrypted every account again, so in between it still describes the account as it was
+before the import. "Next code" no longer reads it: the code and the counter come from one
+repository transaction on the stored row. After a Replace that changed the secret
 and set the counter to 50, a tap in that window shows the new secret's code for counter 50
 and stores 51. Before this fix it wrote the absolute counter "cached counter + 1" (3 + 1
 over 50) and showed a code of the old secret; after a Replace with the same HOTP secret it
@@ -562,9 +564,11 @@ document was tried.
      the larger counter, and both values are shown; Replace with a new secret takes the
      backup's counter; Keep both adds the account with its own counter.
    - A second Replace of the same device account is disabled, with a note.
-6. Continue opens a confirmation with the totals (to add, to replace, to skip). Import
-   writes; Back returns to the review. Cancel (the button, the close icon or Back) works
-   until Import is pressed.
+6. Continue opens a confirmation with the totals (to add, to replace, to skip). When
+   something is to be replaced, it also says that Replace overwrites the current contents
+   of that many accounts with the ones from the backup, and that this cannot be undone.
+   Import writes; Back returns to the review. Cancel (the button, the close icon or Back)
+   works until Import is pressed.
 7. `applyImport` runs in `viewModelScope` and is never joined, so leaving the screen does
    not abandon it. A progress dialog that Back cannot close runs meanwhile. Every result
    is mapped by `importStep` (exhaustive):

@@ -155,6 +155,10 @@
     <string name="backup_total_add">To add: %1$d</string>
     <string name="backup_total_replace">To replace: %1$d</string>
     <string name="backup_total_skip">To skip: %1$d</string>
+    <plurals name="backup_confirm_replace_warning">
+        <item quantity="one">Replace overwrites the current contents of %1$d account on this device with the account from the backup. This cannot be undone.</item>
+        <item quantity="other">Replace overwrites the current contents of %1$d accounts on this device with the accounts from the backup. This cannot be undone.</item>
+    </plurals>
     <string name="backup_confirm_body">Nothing else on this device changes.</string>
     <string name="backup_import_confirm">Import</string>
 </resources>

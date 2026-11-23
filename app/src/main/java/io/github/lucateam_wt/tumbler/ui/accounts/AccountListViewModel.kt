@@ -10,7 +10,6 @@ import io.github.lucateam_wt.tumbler.TumblerApplication
 import io.github.lucateam_wt.tumbler.domain.crypto.SecretCipherException
 import io.github.lucateam_wt.tumbler.domain.model.AccountLimitException
 import io.github.lucateam_wt.tumbler.domain.model.AccountSummary
-import io.github.lucateam_wt.tumbler.domain.model.OtpAccount
 import io.github.lucateam_wt.tumbler.domain.model.OtpType
 import io.github.lucateam_wt.tumbler.domain.otp.OtpAuthUri
 import io.github.lucateam_wt.tumbler.domain.otp.Totp
@@ -43,8 +42,13 @@ internal fun nextCodeWindowSeconds(period: Int): Int =
     if (period <= 2 * NEXT_CODE_SECONDS) period / 2 else NEXT_CODE_SECONDS
 
 /**
- * Holds the decrypted accounts in memory only (never in saved state, never logged) and
- * turns them into [AccountListUiState], recomputed every second.
+ * Turns the stored accounts into [AccountListUiState], recomputed every second. Each
+ * account's secret is decrypted when the list loads: a TOTP account keeps it, inside its
+ * [Totp] generator (which copies it), in memory only (never in saved state, never logged),
+ * for the codes every second; a HOTP account keeps none, because "next code" decrypts the
+ * stored row again ([AccountRepository.nextHotpCode]). Either way the decrypted array is
+ * wiped as soon as it was used. Generators of an earlier load are dropped, not wiped, when
+ * the list loads again.
  *
  * Storage failures ([SecretCipherException], [SQLException]) never crash the app: they
  * become [AddError.STORAGE_FAILED], [AccountListUiState.loadFailed] or
@@ -61,13 +65,11 @@ class AccountListViewModel(
     private sealed interface Entry {
         val summary: AccountSummary
 
-        class Ready(override val summary: AccountSummary, val account: OtpAccount) : Entry {
-            val totp: Totp? = if (account.type == OtpType.TOTP) {
-                Totp(account.secret, account.algorithm, account.digits, account.period)
-            } else {
-                null
-            }
-        }
+        /** A TOTP account; [totp] holds its own copy of the secret. */
+        class TotpReady(override val summary: AccountSummary, val totp: Totp) : Entry
+
+        /** A HOTP account whose secret decrypts. No secret is kept: "next code" reads the stored row. */
+        class HotpReady(override val summary: AccountSummary) : Entry
 
         class Unavailable(override val summary: AccountSummary) : Entry
     }
@@ -207,7 +209,7 @@ class AccountListViewModel(
         viewModelScope.launch {
             hotpMutex.withLock {
                 // The list only decides whether the row offers "next code".
-                val entry = entries.value?.firstOrNull { it.summary.id == id } as? Entry.Ready ?: return@withLock
+                val entry = entries.value?.firstOrNull { it.summary.id == id } as? Entry.HotpReady ?: return@withLock
                 if (entry.summary.type != OtpType.HOTP) return@withLock
                 val result = try {
                     repository.nextHotpCode(id)
@@ -229,20 +231,37 @@ class AccountListViewModel(
         }
     }
 
-    private suspend fun load(summary: AccountSummary): Entry? =
-        try {
-            repository.getAccount(summary.id)?.let { Entry.Ready(summary, it) }
+    /**
+     * Decrypts the account to tell whether its row is usable. For TOTP the generator copies
+     * the secret; for HOTP nothing is kept. The decrypted array is wiped either way.
+     */
+    private suspend fun load(summary: AccountSummary): Entry? {
+        val account = try {
+            repository.getAccount(summary.id) ?: return null
         } catch (_: SecretCipherException) {
-            Entry.Unavailable(summary)
+            return Entry.Unavailable(summary)
+        } catch (_: IllegalArgumentException) {
+            return Entry.Unavailable(summary)
+        }
+        return try {
+            if (account.type == OtpType.TOTP) {
+                Entry.TotpReady(summary, Totp(account.secret, account.algorithm, account.digits, account.period))
+            } else {
+                Entry.HotpReady(summary)
+            }
         } catch (_: IllegalArgumentException) {
             Entry.Unavailable(summary)
+        } finally {
+            account.secret.fill(0)
         }
+    }
 
     private fun Entry.toItem(results: Map<String, HotpResult>, now: Long): AccountItem {
         val id = summary.id
         return when (this) {
             is Entry.Unavailable -> AccountItem.UnavailableItem(id, summary.issuer, summary.accountName)
-            is Entry.Ready -> if (totp != null) {
+            is Entry.HotpReady -> AccountItem.HotpItem(id, summary.issuer, summary.accountName, results[id]?.code, results[id]?.error)
+            is Entry.TotpReady -> {
                 val secondsRemaining = totp.secondsRemaining(now)
                 AccountItem.TotpItem(
                     id = id,
@@ -258,8 +277,6 @@ class AccountListViewModel(
                         null
                     },
                 )
-            } else {
-                AccountItem.HotpItem(id, summary.issuer, summary.accountName, results[id]?.code, results[id]?.error)
             }
         }
     }

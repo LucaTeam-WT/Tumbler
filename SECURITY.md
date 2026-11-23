@@ -42,11 +42,14 @@ any code running inside the app's process can use it. Decryption never creates a
 missing key surfaces as an error, not as silent data loss.
 
 **Plaintext in memory.** The account list view model decrypts every account's secret
-when the list loads and keeps the `ByteArray` secrets in memory for as long as the
-screen's view model lives, to compute codes each second. Generated codes are held in UI
-state only. Secrets are not placed in saved instance state. Plaintext is not
-guaranteed to be wiped from memory (the JVM may copy it). When the list loads, the
-repository wipes the decrypted array on one error path only. "Next code" on a HOTP account
+when the list loads. A TOTP account's secret is copied into its code generator, which
+stays in memory for as long as the screen's view model lives, to compute codes each
+second. A HOTP account keeps no secret: the list decrypts it only to check that the row is
+readable. The view model wipes each decrypted array right after that (on its error path
+the repository wipes it). When the list loads again, the previous TOTP generators are
+dropped without being wiped, and left to the garbage collector. Generated codes are held
+in UI state only. Secrets are not placed in saved instance state. Plaintext is not
+guaranteed to be wiped from memory (the JVM may copy it). "Next code" on a HOTP account
 decrypts that account's secret again inside its database transaction and wipes that
 array on every path; the copies the HOTP generator and the JCA HMAC key make are left to
 the garbage collector.

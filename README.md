@@ -34,7 +34,7 @@ Current (in the build files today):
 - Kotlin, Jetpack Compose (BOM), Material 3
 - AndroidX `core-ktx`, `activity-compose`, `lifecycle-runtime-ktx`, `lifecycle-viewmodel-compose`
 - Manual dependency injection: `AppContainer`, created lazily by `TumblerApplication`, so the database and Keystore are not opened at app start (no Hilt yet).
-- MVVM: `AccountListViewModel` (`ViewModel` + `StateFlow`, obtained with `lifecycle-viewmodel-compose`) holds the decrypted accounts in memory and produces live TOTP/HOTP codes. `BackupViewModel` runs export and import as a sealed state machine and keeps the backup passwords in memory only (never in saved state). Screens are switched with simple saved state in `TumblerApp`; there is no navigation library.
+- MVVM: `AccountListViewModel` (`ViewModel` + `StateFlow`, obtained with `lifecycle-viewmodel-compose`) keeps each TOTP account's code generator (with its copy of the secret) in memory and produces live TOTP codes; HOTP rows keep no secret, and their codes come from the repository's "next code" transaction. `BackupViewModel` runs export and import as a sealed state machine and keeps the backup passwords in memory only (never in saved state). Screens are switched with simple saved state in `TumblerApp`; there is no navigation library.
 - System file pickers through `activity-compose`'s `ActivityResultContracts.CreateDocument` and `OpenDocument` (Storage Access Framework, no storage permission)
 - Icons are twelve small vector drawables in `res/drawable` (`ic_*.xml`, from Material Icons, Apache-2.0); there is no `material-icons` dependency
 - `collectAsStateWithLifecycle` comes from `lifecycle-runtime-compose`, which is already on the classpath through the Compose and activity libraries (not declared directly)

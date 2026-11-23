@@ -388,6 +388,31 @@ class AccountListViewModelTest {
         assertEquals(2L, repository.counterOf(id))
     }
 
+    /**
+     * The list decrypts every secret to tell whether its row is usable, and keeps none of the
+     * decrypted arrays: a HOTP row keeps no secret at all ("next code" decrypts the stored
+     * row again), and a TOTP row's generator keeps its own copy. That holds again for every
+     * reload after the table changed.
+     */
+    @Test
+    fun `the list wipes every decrypted secret it read, also after the table changed`() = runTest {
+        val hotpId = repository.add(hotpAccount())
+        repository.add(totpAccount())
+        val viewModel = createViewModel()
+        assertEquals(2, repository.handedOutSecrets.size)
+
+        viewModel.nextHotpCode(hotpId) // stores counter 1, so the list loads again
+        repository.add(totpAccount(name = "carol"))
+
+        assertTrue("the list loaded again", repository.handedOutSecrets.size > 2)
+        repository.handedOutSecrets.forEach { (id, secret) -> assertTrue("secret read for $id not wiped", secret.all { it == 0.toByte() }) }
+        // Still working: the TOTP codes come from the generators' own copies (RFC 6238
+        // vector), the HOTP code from the stored row (RFC 4226 vector for counter 0).
+        val items = viewModel.items()
+        assertEquals(listOf("94287082", "94287082"), items.filterIsInstance<TotpItem>().map { it.code })
+        assertEquals("755224", items.filterIsInstance<HotpItem>().single().code)
+    }
+
     /** Public RFC 6238 example secret, distinct from [rfcSecret]. */
     private val otherSecret = "JBSWY3DPEHPK3PXP"
 

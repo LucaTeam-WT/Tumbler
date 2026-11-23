@@ -78,9 +78,16 @@ class FakeAccountRepository : AccountRepository {
         return id
     }
 
+    /** Every secret array [getAccount] handed out, with the id it was read for. */
+    val handedOutSecrets = mutableListOf<Pair<String, ByteArray>>()
+
+    /** Like the real repository, a new "decrypted" secret array on every call, owned by the caller. */
     override suspend fun getAccount(id: String): OtpAccount? {
         getAccountFailures[id]?.let { throw it }
-        return accounts[id]
+        val account = accounts[id] ?: return null
+        val secret = account.secret.copyOf()
+        handedOutSecrets += id to secret
+        return account.copy(secret = secret)
     }
 
     /** Same contract as the real repository: reads the stored account, not a cached copy. */

@@ -309,7 +309,10 @@ internal fun BackupProgressDialog(text: String, onCancel: (() -> Unit)? = null) 
     }
 }
 
-/** The last confirmation before an import writes anything: the totals, Import or Back. */
+/**
+ * The last confirmation before an import writes anything: the totals, Import or Back. With
+ * accounts to replace, it says that Replace overwrites what those accounts hold now.
+ */
 @Composable
 internal fun ImportConfirmDialog(review: PlanReview, onConfirm: () -> Unit, onBack: () -> Unit) {
     AlertDialog(
@@ -323,6 +326,9 @@ internal fun ImportConfirmDialog(review: PlanReview, onConfirm: () -> Unit, onBa
                 Text(stringResource(R.string.backup_total_add, review.toAdd))
                 Text(stringResource(R.string.backup_total_replace, review.toReplace))
                 Text(stringResource(R.string.backup_total_skip, review.toSkip))
+                if (review.toReplace > 0) {
+                    Text(pluralStringResource(R.plurals.backup_confirm_replace_warning, review.toReplace, review.toReplace))
+                }
                 Text(stringResource(R.string.backup_confirm_body))
             }
         },

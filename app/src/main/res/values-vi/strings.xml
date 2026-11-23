@@ -148,6 +148,9 @@
     <string name="backup_total_add">Thêm: %1$d</string>
     <string name="backup_total_replace">Thay thế: %1$d</string>
     <string name="backup_total_skip">Bỏ qua: %1$d</string>
+    <plurals name="backup_confirm_replace_warning">
+        <item quantity="other">Thay thế sẽ ghi đè nội dung hiện tại của %1$d tài khoản trên thiết bị này bằng tài khoản từ bản sao lưu. Không thể hoàn tác.</item>
+    </plurals>
     <string name="backup_confirm_body">Không có gì khác trên thiết bị thay đổi.</string>
     <string name="backup_import_confirm">Nhập</string>
 </resources>

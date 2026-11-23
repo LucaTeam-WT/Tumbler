@@ -638,6 +638,8 @@ class BackupScreensTest {
         inDialog(string(R.string.backup_total_add, 3)).assertIsDisplayed()
         inDialog(string(R.string.backup_total_replace, 1)).assertIsDisplayed()
         inDialog(string(R.string.backup_total_skip, 2)).assertIsDisplayed()
+        // Replace overwrites what the account holds now, and the dialog says so.
+        inDialog(plural(R.plurals.backup_confirm_replace_warning, 1)).performScrollTo().assertIsDisplayed()
         tag(BackupTags.CONFIRM_BACK).performClick()
         tag(BackupTags.CONFIRM_IMPORT).performClick()
 
@@ -646,11 +648,27 @@ class BackupScreensTest {
     }
 
     @Test
+    fun confirmDialogWarnsAboutReplaceOnlyWhenSomethingIsReplaced() {
+        var chosen by mutableStateOf(review)
+        show { ImportConfirmDialog(chosen, onConfirm = {}, onBack = {}) }
+
+        inDialog(string(R.string.backup_total_replace, 0)).assertIsDisplayed()
+        composeRule.onNodeWithText(plural(R.plurals.backup_confirm_replace_warning, 0)).assertDoesNotExist()
+        composeRule.onNodeWithText(plural(R.plurals.backup_confirm_replace_warning, 1)).assertDoesNotExist()
+
+        chosen = review.copy(conflicts = listOf(labelConflict.copy(decision = REPLACE), hotpConflict.copy(decision = REPLACE), takenConflict))
+        composeRule.waitForIdle()
+
+        inDialog(plural(R.plurals.backup_confirm_replace_warning, 2)).performScrollTo().assertIsDisplayed()
+    }
+
+    @Test
     fun exportedMessageWarnsThatThePasswordCannotBeRecovered() {
         show(1.3f) { BackupMessageDialog(BackupMessage.Exported(3), onDismiss = {}) }
 
         inDialog(string(R.string.backup_export_done_title)).assertIsDisplayed()
-        composeRule.onNode(hasText("cannot be recovered", substring = true) and hasAnyAncestor(isDialog())).assertExists()
+        // The whole body from the resources (it holds the warning), so the test does not depend on the language.
+        inDialog(plural(R.plurals.backup_export_done_body, 3)).assertExists()
         tag(BackupTags.MESSAGE_OK).assertIsDisplayed()
     }
 
