@@ -80,7 +80,7 @@ internal fun ImportReviewScreen(
             )
         },
         bottomBar = {
-            Surface(color = MaterialTheme.colorScheme.surfaceContainer) {
+            Surface(color = MaterialTheme.colorScheme.surfaceContainer, modifier = Modifier.testTag(BackupTags.REVIEW_BAR)) {
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -188,7 +188,7 @@ private fun SummaryLine(label: String, count: Int) {
 
 @Composable
 private fun ConflictCard(row: ConflictRow, onDecision: (Int, ConflictDecision) -> Unit) {
-    OutlinedCard(modifier = Modifier.fillMaxWidth()) {
+    OutlinedCard(modifier = Modifier.fillMaxWidth().testTag(BackupTags.conflict(row.index))) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
             Text(
                 text = stringResource(R.string.backup_review_imported, row.imported.displayName()),

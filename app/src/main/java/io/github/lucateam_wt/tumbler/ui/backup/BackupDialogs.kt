@@ -63,8 +63,16 @@ internal object BackupTags {
     const val MESSAGE_OK = "backup-message-ok"
     const val REVIEW_CONTINUE = "backup-review-continue"
     const val REVIEW_CANCEL = "backup-review-cancel"
+
+    /** The review's bottom bar (Cancel, Continue), which covers the end of the list. */
+    const val REVIEW_BAR = "backup-review-bar"
     const val CONFIRM_IMPORT = "backup-confirm-import"
     const val CONFIRM_BACK = "backup-confirm-back"
+
+    /** The card of conflict [conflictIndex] (a [ConflictRow.index]). */
+    fun conflict(conflictIndex: Int) = "backup-conflict-$conflictIndex"
+
+    /** One choice of conflict [conflictIndex] (a [ConflictRow.index]). */
     fun choice(conflictIndex: Int, decision: ConflictDecision) =
         "backup-choice-$conflictIndex-${decision.name}"
 }

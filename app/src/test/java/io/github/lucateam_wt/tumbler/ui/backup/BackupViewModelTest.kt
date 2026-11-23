@@ -702,6 +702,60 @@ class BackupViewModelTest {
         assertTrue(after[1].replaceTaken)
     }
 
+    /**
+     * A row's index is its position in the plan, not on the screen: the identical conflict is
+     * only counted, so from the second row on the two differ. Each decision must reach the
+     * conflict it was made for, and only that one.
+     */
+    @Test
+    fun import_eachDecisionAppliesToItsOwnConflict() {
+        val githubId = store.add(github.copy(secret = longSecret(25)), createdAtMillis = 11) // same label
+        val mailId = store.add(OtpAccount("Mail", "carol", OtpType.TOTP, longSecret(30))) // identical
+        val bankId = store.add(bank(counter = 3), createdAtMillis = 33) // same HOTP secret and label
+        val shopId = store.add(OtpAccount("Shop", "eve", OtpType.TOTP, longSecret(40))) // same label
+        val viewModel = viewModel()
+        viewModel.openBackup(
+            backupFile(
+                entry("GitHub", "alice"),
+                entry("Mail", "carol", secret = longSecret(30)),
+                entry("Bank", "bob", OtpType.HOTP, secretB(), counter = 9),
+                entry("Shop", "eve", secret = longSecret(45)),
+                entry("New", "dave", secret = longSecret(35)),
+            ),
+        )
+        val rows = viewModel.review().conflicts
+        assertEquals(listOf(0, 2, 3), rows.map { it.index })
+        assertEquals(listOf("GitHub", "Bank", "Shop"), rows.map { it.imported.issuer })
+        assertEquals(listOf(listOf(SKIP, KEEP_BOTH, REPLACE), listOf(SKIP, REPLACE), listOf(SKIP, KEEP_BOTH, REPLACE)), rows.map { it.choices })
+
+        viewModel.setDecision(rows[1].index, REPLACE)
+        viewModel.setDecision(rows[2].index, KEEP_BOTH)
+        viewModel.setDecision(rows[0].index, REPLACE)
+        // By screen position, "Bank" would be 1: the identical conflict, which takes no decision.
+        viewModel.setDecision(1, REPLACE)
+        viewModel.setDecision(1, KEEP_BOTH)
+
+        val decided = viewModel.review()
+        assertEquals(listOf(0 to REPLACE, 2 to REPLACE, 3 to KEEP_BOTH), decided.conflicts.map { it.index to it.decision })
+        assertEquals(1, decided.identical)
+        viewModel.confirm()
+
+        assertEquals(BackupMessage.Imported(added = 2, replaced = 2, skipped = 1), viewModel.message.value)
+        assertEquals(6, store.ids.size)
+        // GitHub: replaced by the backup's account, keeping its id and creation time.
+        assertArrayEquals(secretA(), store.account(githubId).secret)
+        assertEquals(11L, store.createdAt(githubId))
+        // Mail (identical) and Shop (Keep both) are untouched; Bank is replaced with the larger counter.
+        assertArrayEquals(longSecret(30), store.account(mailId).secret)
+        assertArrayEquals(longSecret(40), store.account(shopId).secret)
+        assertEquals(9L, store.account(bankId).counter)
+        assertEquals(33L, store.createdAt(bankId))
+        // Keep both added the backup's Shop next to the device's; New was added.
+        assertEquals(1, store.accounts().count { it.issuer == "Shop" && it.secret.contentEquals(longSecret(45)) })
+        assertEquals(1, store.accounts().count { it.issuer == "New" })
+        assertEquals(1, store.accounts().count { it.issuer == "GitHub" })
+    }
+
     @Test
     fun import_backFromTheConfirmation_keepsTheDecisions() {
         store.add(github.copy(secret = secretB()))

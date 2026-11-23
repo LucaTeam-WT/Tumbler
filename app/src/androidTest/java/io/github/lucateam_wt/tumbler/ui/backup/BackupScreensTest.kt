@@ -9,19 +9,24 @@ import androidx.compose.runtime.saveable.LocalSaveableStateRegistry
 import androidx.compose.runtime.saveable.SaveableStateRegistry
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.SemanticsMatcher
+import androidx.compose.ui.test.SemanticsNodeInteraction
 import androidx.compose.ui.test.assert
+import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertHasClickAction
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.assertIsNotSelected
 import androidx.compose.ui.test.assertIsSelected
+import androidx.compose.ui.test.getUnclippedBoundsInRoot
 import androidx.compose.ui.test.hasAnyAncestor
 import androidx.compose.ui.test.hasClickAction
 import androidx.compose.ui.test.hasContentDescription
-import androidx.compose.ui.test.hasScrollAction
+import androidx.compose.ui.test.hasScrollToKeyAction
 import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.isDialog
@@ -30,9 +35,11 @@ import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
-import androidx.compose.ui.test.performScrollToNode
+import androidx.compose.ui.test.performScrollToKey
+import androidx.compose.ui.test.performSemanticsAction
 import androidx.compose.ui.test.performTextInput
 import androidx.compose.ui.unit.Density
+import androidx.compose.ui.unit.dp
 import io.github.lucateam_wt.tumbler.R
 import io.github.lucateam_wt.tumbler.backup.ConflictDecision
 import io.github.lucateam_wt.tumbler.backup.ConflictDecision.KEEP_BOTH
@@ -341,33 +348,96 @@ class BackupScreensTest {
 
     private val review = PlanReview(newAccounts = 2, identical = 1, conflicts = listOf(labelConflict, hotpConflict, takenConflict))
 
+    /** The choices (radio rows) inside the card of conflict [index]. */
+    private fun choicesOf(index: Int) = composeRule.onAllNodes(
+        SemanticsMatcher.expectValue(SemanticsProperties.Role, Role.RadioButton) and
+            hasAnyAncestor(hasTestTag(BackupTags.conflict(index))),
+    )
+
+    /** A node with [text] inside the card of conflict [index]. */
+    private fun inConflict(index: Int, text: String) =
+        composeRule.onNode(hasText(text) and hasAnyAncestor(hasTestTag(BackupTags.conflict(index))))
+
+    /**
+     * Brings the [decision] row of conflict [index] into view and checks that it is not behind
+     * the bottom bar. The list fills the screen and runs under the bar, and `performScrollTo`
+     * or `performScrollToNode` only keep a node inside the list's bounds, so they can leave a
+     * row behind the bar, where a tap lands on the bar instead. This scrolls the card to the
+     * top of the list (as far as the list goes), then on by the rest if the row is still
+     * covered, as a user would.
+     */
+    private fun choiceInView(index: Int, decision: ConflictDecision): SemanticsNodeInteraction {
+        val list = composeRule.onNode(hasScrollToKeyAction())
+        list.performScrollToKey(index)
+        val row = tag(BackupTags.choice(index, decision))
+        val barTop = tag(BackupTags.REVIEW_BAR).getUnclippedBoundsInRoot().top
+        val covered = row.getUnclippedBoundsInRoot().bottom - barTop
+        if (covered > 0.dp) {
+            val pixels = with(composeRule.density) { covered.toPx() }
+            list.performSemanticsAction(SemanticsActions.ScrollBy) { it(0f, pixels) }
+        }
+        assertTrue("choice $index $decision is behind the bottom bar", row.getUnclippedBoundsInRoot().bottom <= barTop)
+        return row
+    }
+
     private fun assertReviewShowsCountsAndOnlyTheOfferedChoices(fontScale: Float) {
         val decisions = mutableListOf<Pair<Int, ConflictDecision>>()
+        var shown by mutableStateOf(review)
         var continues = 0
         show(fontScale) {
-            ImportReviewScreen(review, notice = null, onDecision = { i, d -> decisions += i to d }, onContinue = { continues++ }, onCancel = {})
+            ImportReviewScreen(
+                review = shown,
+                notice = null,
+                // Records every tap and shows it as the view model would, so each card's selection can be checked.
+                onDecision = { index, decision ->
+                    decisions += index to decision
+                    shown = shown.copy(conflicts = shown.conflicts.map { if (it.index == index) it.copy(decision = decision) else it })
+                },
+                onContinue = { continues++ },
+                onCancel = {},
+            )
         }
 
         composeRule.onNodeWithText(string(R.string.backup_review_new)).assertIsDisplayed()
         composeRule.onNode(hasText(string(R.string.backup_review_conflicts)) and hasText("3")).assertIsDisplayed()
         composeRule.onNode(hasText(string(R.string.backup_review_identical)) and hasText("1")).assertIsDisplayed()
 
+        // Conflict 0, same label: all three choices, Skip selected, Replace not.
+        val keepBoth0 = choiceInView(0, KEEP_BOTH)
+        choicesOf(0).assertCountEquals(3)
         tag(BackupTags.choice(0, SKIP)).assertIsSelected()
         tag(BackupTags.choice(0, REPLACE)).assertIsNotSelected()
-        tag(BackupTags.choice(0, KEEP_BOTH)).performClick()
+        keepBoth0.performClick()
         assertEquals(listOf(0 to KEEP_BOTH), decisions)
+        keepBoth0.assertIsSelected()
+        tag(BackupTags.choice(0, SKIP)).assertIsNotSelected()
 
-        val list = composeRule.onNode(hasScrollAction())
-        list.performScrollToNode(hasTestTag(BackupTags.choice(1, REPLACE)))
+        // Conflict 1, same HOTP secret: Skip and Replace only, with both counters.
+        val replace1 = choiceInView(1, REPLACE)
+        choicesOf(1).assertCountEquals(2)
         tag(BackupTags.choice(1, KEEP_BOTH)).assertDoesNotExist()
-        composeRule.onNodeWithText(string(R.string.backup_decision_replace_desc_larger, 3, 9)).assertIsDisplayed()
-        tag(BackupTags.choice(1, REPLACE)).performClick()
-        assertEquals(1 to REPLACE, decisions.last())
+        tag(BackupTags.choice(1, SKIP)).assertIsSelected()
+        replace1.assertIsNotSelected()
+        inConflict(1, string(R.string.backup_decision_replace_desc_larger, 3, 9)).assertIsDisplayed()
+        replace1.performClick()
+        assertEquals(listOf(0 to KEEP_BOTH, 1 to REPLACE), decisions)
+        replace1.assertIsSelected()
+        tag(BackupTags.choice(1, SKIP)).assertIsNotSelected()
 
-        list.performScrollToNode(hasTestTag(BackupTags.choice(3, REPLACE)))
-        tag(BackupTags.choice(3, REPLACE)).assertIsNotEnabled()
-        composeRule.onNodeWithText(string(R.string.backup_decision_replace_taken)).assertIsDisplayed()
-        composeRule.onNodeWithText(string(R.string.backup_review_shared)).assertIsDisplayed()
+        // Conflict 3 (index 2 is identical, so not shown): its device account is already being
+        // replaced by another conflict, so Replace is disabled and says why.
+        val replace3 = choiceInView(3, REPLACE)
+        choicesOf(3).assertCountEquals(3)
+        replace3.assertIsNotEnabled()
+        tag(BackupTags.choice(3, SKIP)).assertIsSelected()
+        inConflict(3, string(R.string.backup_decision_replace_taken)).assertIsDisplayed()
+        inConflict(3, string(R.string.backup_review_shared)).assertIsDisplayed()
+        replace3.performClick()
+        assertEquals("a disabled choice records nothing", 2, decisions.size)
+
+        // Back at the top, conflict 0 still shows its own choice.
+        choiceInView(0, KEEP_BOTH).assertIsSelected()
+        tag(BackupTags.choice(0, REPLACE)).assertIsNotSelected()
 
         tag(BackupTags.REVIEW_CANCEL).assertIsDisplayed()
         tag(BackupTags.REVIEW_CONTINUE).assertIsDisplayed().assertIsEnabled().performClick()
@@ -427,7 +497,8 @@ class BackupScreensTest {
             )
         }
 
-        tag(BackupTags.choice(0, REPLACE)).performScrollTo().assertIsDisplayed()
+        // The last choice can still be brought clear of the bottom bar.
+        choiceInView(0, REPLACE).assertIsDisplayed()
         tag(BackupTags.REVIEW_CONTINUE).assertIsDisplayed()
     }
 
