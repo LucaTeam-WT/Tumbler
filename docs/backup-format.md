@@ -669,8 +669,17 @@ does what, and what is left:
     them after `Success` and on every failure. *Done in B2:* the view model closes the
     `PreparedImport` on cancel, Back, every result that ends the import, a replaced plan
     and `ViewModel.onCleared`.
-11. **Run instrumented tests on a real device.** None of these has been run on a device
-    yet (`connectedDebugAndroidTest`):
+11. **Run instrumented tests on a real device.** All the instrumented tests
+    (`connectedDebugAndroidTest`, 107 at the time) ran once, on one Android 17 phone. All
+    passed except three of B2's. Two were mistakes in `BackupScreensTest`, now fixed:
+    - the review test tapped a choice that `performScrollToNode` had left behind the
+      bottom bar, so the bar took the tap and no choice was recorded (the app never
+      recorded a wrong one);
+    - the password test expected the typed text in no node at all, but a text field always
+      holds it as its editable text and has it masked through the Password property.
+    The third was the 1000-account test: one of its phases ran past the 5-minute wait. It is
+    rewritten to measure (below). Those three tests, and the import dialog's new password
+    test, have not been run again yet.
     - *B1:* `BackupServiceInstrumentedTest` (a round trip with the default parameters into
       an empty database and into one with conflicts, the abort path, a cancellation inside
       the import's last insert, and the Conscrypt damage matrix: a modified file maps to
@@ -684,11 +693,34 @@ does what, and what is left:
       import); a round trip with conflicts and each decision; wrong password and damaged
       file in the same state; Android's `java.text.Normalizer` on passwords (NFC and NFD
       Vietnamese, Hangul syllables and jamo, compatibility forms that must not match,
-      surrounding spaces and tabs, characters outside the BMP); 1000 accounts exported
-      and imported, with the timings and the heap limit in a log line; and a Replace that
-      lands while "next code" is being used, which never shows a code twice.
+      surrounding spaces and tabs, characters outside the BMP); 1000 accounts exported,
+      read and imported, compared field by field and, for a sample, secret by secret; and
+      a Replace that lands while "next code" is being used, which never shows a code twice.
       `BackupScreensTest` covers the menu, the dialogs and the review at font scale 1 and
       1.3.
+    - *The 1000-account measurement.*
+      `BackupFlowInstrumentedTest.memory_thousandAccountsExportAndImportWithoutRunningOutOfMemory`
+      checks correctness, not speed, within one 30-minute budget. As soon as each phase
+      ends it logs, under the tag `TumblerBackupPerf`:
+      - the setup (1000 accounts added, one Keystore encryption each);
+      - where the Keystore keeps the key (StrongBox, TEE or software);
+      - the average time of a key lookup, a decrypt and an encrypt;
+      - one scrypt at the default parameters;
+      - the export, the read and the import, with the file size and the scrypt parameters
+        read from its header.
+      The lines hold counts, sizes, parameters and times only. Run the test alone, then
+      read its lines:
+
+      ```
+      ./gradlew connectedDebugAndroidTest "-Pandroid.testInstrumentationRunnerArguments.class=io.github.lucateam_wt.tumbler.ui.backup.BackupFlowInstrumentedTest#memory_thousandAccountsExportAndImportWithoutRunningOutOfMemory"
+      adb logcat -d -s TumblerBackupPerf:I
+      ```
+
+      Each secret is encrypted on its own under the Keystore key. An export therefore runs
+      one Keystore decryption per account. An import runs one Keystore encryption per new
+      or replaced account, and decrypts the device's accounts twice: once for the plan and
+      once inside the write transaction. scrypt runs once per file. No device numbers are
+      recorded here yet.
     - *Still to do:* `BackupPayloadTest.decode_rejectsMalformedUtf8` and the golden
       password's NFD and longest-decomposition cases as instrumented tests; the
       `Character` whitespace tables across API levels (26 to current), for item 7; the
@@ -698,7 +730,7 @@ does what, and what is left:
       file bytes (at most 4 MiB) stay in memory besides it. The larger peak outside scrypt
       comes after it, during decryption: the file, the cipher's internal buffer and the
       decrypted plaintext, so about 12 MiB for a 4 MiB file. The 1000-account test logs
-      timings but does not measure that peak. An export then import round trip on a
+      timings and the heap in use at its end, but does not measure that peak. An export then import round trip on a
       release (R8-minified) build is a manual check: release builds now keep the backup
       code and Bouncy Castle without keep rules.
 12. **Make "next code" atomic before import is reachable (mandatory).** *Done in B2a:*
@@ -719,7 +751,7 @@ does what, and what is left:
     into `Failed` (no code, nothing written) instead of an overwrite; a unit test shows it
     holding without any transaction isolation. `NextHotpCodeInstrumentedTest` (real Room
     and Keystore: a replace between the list load and the tap, 20 concurrent calls, the
-    counter limit) needs a device run.
+    counter limit) passed on one Android 17 phone.
 13. **Delete a partial export.** *Done in B2:* once the picker has created the document,
     every outcome but `Success` deletes it (`DocumentsContract.deleteDocument`, under
     `NonCancellable`), including `WriteFailed`, a `close()` that throws (treated as a

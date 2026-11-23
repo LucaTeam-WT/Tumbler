@@ -135,9 +135,10 @@ it in the system preview. It is not cleared automatically.
 - **No screen-capture protection yet.** `FLAG_SECURE` is not set; screenshots and
   recents thumbnails can show codes, the import review (account labels) and a password
   that the user chose to show.
-- **Backup device tests not run yet.** The export/import device and Compose UI tests are
-  written and compile, but have not been run on a device, and no round trip has been done
-  on a release build.
+- **Backup device tests run once, on one phone.** On one Android 17 phone, all but three
+  of the instrumented tests passed. Those three are fixed or rewritten, but not run again
+  yet: two Compose UI test mistakes, and the 1000-account export and import, which ran
+  past its time limit. No round trip has been done on a release build.
 - **No clipboard auto-clear yet.**
 - **Labels are not encrypted** (see above): someone who can read the app's private
   storage can see which accounts exist.
