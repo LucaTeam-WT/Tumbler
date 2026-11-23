@@ -8,6 +8,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.LocalSaveableStateRegistry
 import androidx.compose.runtime.saveable.SaveableStateRegistry
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.autofill.ContentDataType
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.SemanticsActions
@@ -200,11 +201,12 @@ class BackupScreensTest {
         tag(BackupTags.EXPORT_SUBMIT).assertIsNotEnabled()
     }
 
-    // A text field keeps what was typed in its EditableText (and InputText) semantics, whether
-    // it is masked or not, and marks itself with Password so that accessibility services mask
-    // it; `onNodeWithText` matches EditableText too, so it always finds a filled-in field. What
+    // A text field keeps what was typed, unmasked, in its EditableText (and InputText)
+    // semantics, whether it is drawn masked or not, and marks itself with Password.
+    // `onNodeWithText` matches EditableText too, so it always finds a filled-in field. What
     // is checked instead: the Password property, what the field draws, the toggles' names, and
-    // that no node carries the text as a label.
+    // that no node carries the text as a label. Whether the platform hands EditableText to
+    // accessibility services is not checked here (see SECURITY.md).
 
     /** A node whose Text (its visible label) or content description holds [secret]: something TalkBack reads out. */
     private fun labelHolds(secret: String) = SemanticsMatcher("Text or ContentDescription holds the password") { node ->
@@ -289,6 +291,38 @@ class BackupScreensTest {
         field.performTextInput(password)
 
         assertHiddenWithANamedToggle(field, R.string.backup_password_show, R.string.backup_password_hide)
+    }
+
+    /**
+     * Each password field opts out of Compose's autofill: its node carries ContentDataType
+     * None (set outside the text field, so it must win over the field's own Text), and
+     * Compose then reports neither focus nor value changes to the autofill framework.
+     * Whether a password manager then stays quiet is not checked: no autofill service runs here.
+     */
+    @Test
+    fun passwordFieldsAreNotAutofillable() {
+        var importDialog by mutableStateOf(false)
+        show {
+            if (importDialog) {
+                ImportPasswordDialog(PasswordInput(), wrongPasswordOrDamaged = true, onSubmit = {}, onCancel = {})
+            } else {
+                ExportPasswordDialog(PasswordInput(), PasswordInput(), onSubmit = {}, onCancel = {})
+            }
+        }
+        val fieldsByDialog = listOf(
+            false to listOf(BackupTags.EXPORT_PASSWORD, BackupTags.EXPORT_CONFIRMATION),
+            true to listOf(BackupTags.IMPORT_PASSWORD),
+        )
+        for ((import, fields) in fieldsByDialog) {
+            importDialog = import
+            composeRule.waitForIdle()
+            for (field in fields) {
+                tag(field).performTextInput(password)
+                tag(field)
+                    .assert(SemanticsMatcher.keyIsDefined(SemanticsProperties.Password))
+                    .assert(SemanticsMatcher.expectValue(SemanticsProperties.ContentDataType, ContentDataType.None))
+            }
+        }
     }
 
     @Test

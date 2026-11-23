@@ -80,7 +80,9 @@ The accounts screen's menu exports every account into one file and imports such 
   cannot be restored. The app keeps it in memory only for the export or import: the
   password fields are not in saved instance state or a `SavedStateHandle`, so they do not
   survive process death. The text reaches the backup code as a `CharArray` copy, which is
-  wiped after use, on cancel and when the screen's view model is cleared.
+  wiped after use, on cancel and when the screen's view model is cleared. The password
+  fields opt out of autofill, so a password manager should not offer to save the backup
+  password (not verified on a device).
 - **Wrong password and damaged file look the same**, by design: AES-GCM cannot tell them
   apart, and the app shows one message ("Wrong password or damaged file") for both.
 - **The file is the user's responsibility.** It is written through the system file picker
@@ -93,8 +95,8 @@ The accounts screen's menu exports every account into one file and imports such 
   replace a file atomically, so if the chosen file already held something, that content
   is lost in this case. A file that cannot be opened, or that arrives after the app was
   restarted, is deleted only if it is empty.
-- **Import never writes without confirmation.** It shows the new accounts and each
-  conflict by label (never a secret), offers only the choices that are safe for it with
+- **Import never writes without confirmation.** It shows how many new accounts there
+  are and each conflict by label (never a secret), offers only the choices that are safe for it with
   "skip" preselected, and writes everything in one database transaction after a final
   confirmation. If the accounts changed in a way that changes the plan, it writes nothing
   and asks again.
@@ -143,10 +145,17 @@ it in the system preview. It is not cleared automatically.
 - **No screen-capture protection yet.** `FLAG_SECURE` is not set; screenshots and
   recents thumbnails can show codes, the import review (account labels) and a password
   that the user chose to show.
-- **Backup device tests run once, on one phone.** On one Android 17 phone, all but three
-  of the instrumented tests passed. Those three are fixed or rewritten, but not run again
-  yet: two Compose UI test mistakes, and the 1000-account export and import, which ran
-  past its time limit. No round trip has been done on a release build.
+- **Backup device tests ran on one phone only** (Android 17). A first run of all
+  instrumented tests had three failures: two Compose UI test mistakes, and the
+  1000-account export and import, which ran past its time limit. After the fixes, the two
+  backup UI and flow test classes ran again there: 31 tests, no failures. The device tests
+  added with the latest review fixes have not run yet. No round trip has been done on a
+  release build.
+- **Password text in the accessibility tree.** The backup password fields are marked as
+  password fields (`Password` semantics) and draw only mask characters, but the Compose
+  test tree showed that their editable text holds the real password. Whether Android
+  passes that text to accessibility services was not verified on a device; an
+  accessibility service the user has enabled may be able to read it.
 - **No clipboard auto-clear yet.**
 - **Labels are not encrypted** (see above): someone who can read the app's private
   storage can see which accounts exist.

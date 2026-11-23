@@ -604,6 +604,17 @@ picker is open. The show/hide state is not saved either. No `toString()` of an i
 state or message prints a password or a label. Compose itself keeps the typed text in
 `String`s and buffers that cannot be wiped (see below).
 
+The fields carry the `Password` semantics property, which marks them as password fields,
+and draw only mask characters. The Compose test tree showed that their editable text
+(`EditableText`) still holds the real text; whether the platform passes it on to
+accessibility services was not verified on a device. They also opt out of autofill:
+`contentDataType = ContentDataType.None`, set outside the text field so that it replaces
+the field's own `Text` data type. With it, Compose (1.12) reports neither focus nor value
+changes of the field to the autofill framework, so a password manager should not offer to
+save or fill a backup password. A device test checks that the property reaches each
+field; whether a password manager then stays quiet was not verified on a device, and a
+password manager that reads the screen through accessibility is not affected.
+
 **Add path (item 5).** A link whose issuer or account name is over 1024 UTF-8 bytes, or
 whose secret is over 1024 bytes, gets its own message with the limit ("too long to fit in
 a backup", `AccountLimitException`). Every other bad link keeps "invalid link". The labels
@@ -674,10 +685,14 @@ does what, and what is left:
 4. **Write Replace counters at write time, and plan again before writing.** *Done in B1:*
    see `applyImport` above. *Done in B2:* on `PlanChanged` the review shows the new plan
    with a notice and asks again; it is never applied by itself.
-5. **Match the export limits on the add path.** *Done in B1:* `OtpAuthUri.parse`, today
-   the only way to create an account, rejects an issuer or account name above 1024 UTF-8
-   bytes (counted after trimming) or with an unpaired surrogate, and a secret above 1024
-   bytes (`AccountLimits`, equal to the backup's limits; a unit test checks that). *Done in
+5. **Match the export limits on the add path.** Accounts are created in two ways: adding
+   an `otpauth://` link, and importing a backup (Keep both and new accounts). Both use the
+   same limits. An import can only bring in what `BackupPayload.decode` accepted: labels
+   of at most 1024 UTF-8 bytes, valid UTF-8 (so no unpaired surrogate) and already
+   trimmed, and secrets of 1 to 1024 bytes. *Done in B1:* `OtpAuthUri.parse` rejects an
+   issuer or account name above 1024 UTF-8 bytes (counted after trimming) or with an
+   unpaired surrogate, and a secret above 1024 bytes (`AccountLimits`, equal to the
+   backup's limits; a unit test checks that). *Done in
    B2:* a label or secret over the limits throws `AccountLimitException`, and the add
    screen shows its own message for it in English and Vietnamese; every other bad link
    keeps "invalid link". The labels are checked before the secret is decoded, and a
@@ -705,16 +720,29 @@ does what, and what is left:
     `PreparedImport` on cancel, Back, every result that ends the import, a replaced plan
     and `ViewModel.onCleared`.
 11. **Run instrumented tests on a real device.** All the instrumented tests
-    (`connectedDebugAndroidTest`, 107 at the time) ran once, on one Android 17 phone. All
-    passed except three of B2's. Two were mistakes in `BackupScreensTest`, now fixed:
+    (`connectedDebugAndroidTest`, 107 at the time) ran once, on one Android 17 phone (model
+    PKG110). All passed except three of B2's. Two were mistakes in
+    `BackupScreensTest`, since fixed:
     - the review test tapped a choice that `performScrollToNode` had left behind the
       bottom bar, so the bar took the tap and no choice was recorded (the app never
       recorded a wrong one);
-    - the password test expected the typed text in no node at all, but a text field always
-      holds it as its editable text and has it masked through the Password property.
-    The third was the 1000-account test: one of its phases ran past the 5-minute wait. It is
-    rewritten to measure (below). Those three tests, and the import dialog's new password
-    test, have not been run again yet.
+    - the password test expected the typed text in no node at all. The `Password`
+      property only marks the field as a password field; the Compose test tree showed
+      that the field's editable text (`EditableText`) holds the real, unmasked text.
+      Whether the platform passes that text on to accessibility services was not verified
+      on a device (see `SECURITY.md`).
+    The third was the 1000-account test: one of its phases ran past the 5-minute wait. It
+    now runs within one 30-minute budget and logs each phase (below).
+    After those fixes, `BackupScreensTest` and `BackupFlowInstrumentedTest` ran again on
+    the same phone: 31 tests, 0 failures, 0 skipped.
+    `memory_thousandAccountsExportAndImportWithoutRunningOutOfMemory` passed and took
+    1049 s (about 17.5 minutes) in all. The other instrumented tests passed in the first
+    run and were not run again. Not run on a device yet: the tests added or changed with
+    the review fixes (`reviewNoticeIsOnScreenAfterTheListWasScrolled`,
+    `confirmDialogWarnsAboutReplaceOnlyWhenSomethingIsReplaced`,
+    `passwordFieldsAreNotAutofillable`, and the changed
+    `confirmDialogShowsTheTotalsBeforeWriting` and
+    `exportedMessageWarnsThatThePasswordCannotBeRecovered`).
     - *B1:* `BackupServiceInstrumentedTest` (a round trip with the default parameters into
       an empty database and into one with conflicts, the abort path, a cancellation inside
       the import's last insert, and the Conscrypt damage matrix: a modified file maps to
@@ -754,8 +782,11 @@ does what, and what is left:
       Each secret is encrypted on its own under the Keystore key. An export therefore runs
       one Keystore decryption per account. An import runs one Keystore encryption per new
       or replaced account, and decrypts the device's accounts twice: once for the plan and
-      once inside the write transaction. scrypt runs once per file. No device numbers are
-      recorded here yet.
+      once inside the write transaction. scrypt runs once per file. On the PKG110 the
+      whole test took 1049 s. Its phase lines were not captured (the logcat buffer was
+      overwritten before they were read), so the time of each phase and where the
+      Keystore keeps the key on that phone are not known; run the test alone and read
+      the lines right after it to get them.
     - *Still to do:* `BackupPayloadTest.decode_rejectsMalformedUtf8` and the golden
       password's NFD and longest-decomposition cases as instrumented tests; the
       `Character` whitespace tables across API levels (26 to current), for item 7; the
@@ -786,7 +817,12 @@ does what, and what is left:
     into `Failed` (no code, nothing written) instead of an overwrite; a unit test shows it
     holding without any transaction isolation. `NextHotpCodeInstrumentedTest` (real Room
     and Keystore: a replace between the list load and the tap, 20 concurrent calls, the
-    counter limit) passed on one Android 17 phone.
+    counter limit) passed on one Android 17 phone. *Known and accepted:* a "next code" that
+    is cancelled (its view model is cleared, for example when the activity finishes) after
+    the transaction has committed has stored the next counter, but its code is never
+    shown. That is harmless for HOTP: a code that is generated and never used is the normal
+    case the server's look-ahead window allows for (RFC 4226, section 7.4), and the skipped
+    code is never shown or reused.
 13. **Delete a partial export, and leave the document alone until the backup is ready.**
     *Done in B2:* the view model opens the document ("wt") only at the service's one write
     of the finished file (`OpenOnFirstWriteOutput`), so a failure or a cancellation before
@@ -820,6 +856,16 @@ does what, and what is left:
       old plan open (`isOpen` stays true: nothing was written) and wipes the rows just
       read.
     What stays best-effort is listed in [Sensitive data in memory](#sensitive-data-in-memory).
+15. **Known limit: the 1000-account cap is checked only on export.**
+    `BackupPayload.MAX_ACCOUNTS` (1000) is enforced when a backup is written
+    (`ExportResult.AccountRejected` with `TOO_MANY_ACCOUNTS`) and when one is read (a file
+    cannot hold more). Neither adding an account nor an import checks how many accounts the
+    device will hold afterwards. An import into a device that already has accounts can
+    therefore take it above 1000, and from then on every export fails with "A backup can
+    hold at most 1000 accounts, and this device has more." No data is lost: the accounts
+    stay on the device, and the export fails before it touches the chosen file. *Still to
+    do (deferred):* the real fix (for example refusing an import that would go over the
+    cap, or a format that can hold more) is not designed yet.
 
 ## What the format does not hide
 

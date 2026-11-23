@@ -29,6 +29,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.autofill.ContentDataType
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.platform.testTag
@@ -36,6 +37,7 @@ import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.contentDataType
 import androidx.compose.ui.semantics.error
 import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.paneTitle
@@ -101,6 +103,11 @@ internal fun ellipsize(text: String, max: Int): String {
  * A password field: secure (no copy, cut or drag), password keyboard (no suggestions or
  * learning), no autocorrect, a visibility toggle, and the backup format's input cap. Its
  * text is [input], which the view model owns: nothing here is saved.
+ *
+ * Not autofillable: `ContentDataType.None` overrides the text field's own `Text` (this
+ * modifier is outermost, so its semantics are applied last), and Compose's autofill then
+ * reports neither focus nor value changes of the field to the platform, so a password
+ * manager is not asked to save or fill a backup password. Not verified on a device.
  */
 @Composable
 private fun PasswordField(
@@ -122,7 +129,10 @@ private fun PasswordField(
         modifier = modifier
             .fillMaxWidth()
             .testTag(tag)
-            .semantics { if (isError && supportingText != null) error(supportingText) },
+            .semantics {
+                contentDataType = ContentDataType.None
+                if (isError && supportingText != null) error(supportingText)
+            },
         label = { Text(label) },
         trailingIcon = {
             IconButton(onClick = { revealed = !revealed }) {
