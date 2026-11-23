@@ -59,9 +59,13 @@ import java.io.IOException
  * applied by itself, and a result that may have written the import ([PreparedImport.isOpen]
  * false) reloads the list and says so instead of offering a retry.
  *
- * **Export.** If the export fails in any way after the picker created the file (including
- * a failed close and a cancellation), the file is deleted, or emptied if the provider
- * refuses, so no broken file is left looking like a backup.
+ * **Export.** The file from the picker is opened (which truncates it) only when the service
+ * writes the finished backup ([OpenOnFirstWriteOutput]), so a failure or a cancellation
+ * before that leaves it as it was, even if the picker returned a file that already held
+ * something. Once the file was opened, every outcome but success (including a failed close
+ * and a cancellation) deletes it, or empties it if the provider refuses, so no broken file
+ * is left looking like a backup. A file that could not be opened, and one that arrives after
+ * the app was restarted, is deleted only if it is empty.
  *
  * @param accountSummaries the accounts on the device, to name an account the backup cannot hold.
  * @param chars copies a field's text into a new array; a seam so tests can check the wiping.
@@ -172,11 +176,12 @@ internal class BackupViewModel(
             return
         }
         if (password == null || !choosing) {
-            // The app was restarted while the picker was open, so the password is gone: remove
-            // the empty file the picker created instead of leaving it looking like a backup.
+            // The app was restarted while the picker was open, so the password is gone. Remove
+            // the empty file the picker created, but never a file that holds something: the
+            // picker may have returned an existing file.
             password?.fill(WIPED_CHAR)
             viewModelScope.launch {
-                val partial = deletePartial(file)
+                val partial = deleteIfEmpty(file)
                 _message.value = BackupMessage.ExportFailed(ExportFailure.INTERRUPTED, partial)
             }
             return
@@ -193,45 +198,59 @@ internal class BackupViewModel(
         }
     }
 
+    /**
+     * Exports into [file], which is opened only when the finished backup is written. A failed
+     * close is a failed write. What happens to the file on a failure:
+     * - not opened (the failure came first): left as it was, [PartialFile.UNTOUCHED];
+     * - the open failed: deleted only if it is empty ([deleteIfEmpty]);
+     * - opened (so truncated, maybe partly written): deleted, whatever it held before.
+     */
     private suspend fun export(file: BackupFile, password: CharArray): BackupMessage {
+        val output = OpenOnFirstWriteOutput(file)
         var result: ExportResult? = null
         var unexpected = false
-        var partial = PartialFile.NONE
+        var partial = PartialFile.UNTOUCHED
         try {
-            result = writeBackup(file, password)
+            result = service.exportAccounts(password, output)
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
             unexpected = true
         } finally {
-            // Every outcome but success (a cancellation too) leaves a file that is not a backup.
-            if (result !is ExportResult.Success) partial = deletePartial(file)
+            val (finished, fileOutcome) = finishFile(output, file, result)
+            result = finished
+            partial = fileOutcome
         }
         return when {
             unexpected -> BackupMessage.ExportFailed(ExportFailure.UNEXPECTED, partial)
-            else -> result?.let { exportMessage(it, partial) }
-                ?: BackupMessage.ExportFailed(ExportFailure.FILE_NOT_OPENED, partial)
+            output.openFailed -> BackupMessage.ExportFailed(ExportFailure.FILE_NOT_OPENED, partial)
+            else -> exportMessage(checkNotNull(result), partial)
         }
     }
 
-    /** Opens [file], exports into it and closes it; null if it cannot be opened. A failed close is a failed write. */
-    private suspend fun writeBackup(file: BackupFile, password: CharArray): ExportResult? {
-        val output = try {
-            withContext(ioDispatcher) { file.openOutput() }
-        } catch (e: IOException) {
-            return null
-        } catch (e: SecurityException) {
-            return null
-        }
-        val result = try {
-            service.exportAccounts(password, output)
-        } catch (t: Throwable) {
-            closeQuietly(output)
-            throw t
-        }
+    /**
+     * Closes [output] if the file was opened, then deletes the file or leaves it, and returns
+     * [result] (a [ExportResult.WriteFailed] if a successful export's close failed) and what
+     * happened to the file. All in one `NonCancellable` block: a cancelled caller that returns
+     * from such a block gets a `CancellationException` (the block itself has run), so a second
+     * step after it would be skipped.
+     */
+    private suspend fun finishFile(
+        output: OpenOnFirstWriteOutput,
+        file: BackupFile,
+        result: ExportResult?,
+    ): Pair<ExportResult?, PartialFile> = withContext(NonCancellable + ioDispatcher) {
+        var finished = result
         // A provider may only commit the file on close, so a close that fails loses the backup.
-        val closed = closeQuietly(output)
-        return if (result is ExportResult.Success && !closed) ExportResult.WriteFailed else result
+        if (output.isOpen && !closeQuietly(output) && finished is ExportResult.Success) finished = ExportResult.WriteFailed
+        val partial = when {
+            output.openFailed -> deleteNowIfEmpty(file)
+            !output.isOpen -> PartialFile.UNTOUCHED
+            // Every outcome but success (a cancellation too) leaves a file that is not a backup.
+            finished !is ExportResult.Success -> deleteNow(file)
+            else -> PartialFile.NONE
+        }
+        finished to partial
     }
 
     private suspend fun exportMessage(result: ExportResult, partial: PartialFile): BackupMessage = when (result) {
@@ -262,19 +281,25 @@ internal class BackupViewModel(
             null
         }
 
-    private suspend fun deletePartial(file: BackupFile): PartialFile =
-        withContext(NonCancellable + ioDispatcher) {
-            if (file.delete()) PartialFile.DELETED else PartialFile.NOT_DELETED
-        }
+    /** [deleteNowIfEmpty] off the main thread, finished even if the caller is cancelled. */
+    private suspend fun deleteIfEmpty(file: BackupFile): PartialFile =
+        withContext(NonCancellable + ioDispatcher) { deleteNowIfEmpty(file) }
 
-    private suspend fun closeQuietly(closeable: Closeable): Boolean =
-        withContext(NonCancellable + ioDispatcher) {
-            try {
-                closeable.close()
-                true
-            } catch (e: Exception) {
-                false
-            }
+    // Blocking: call these on ioDispatcher.
+
+    private fun deleteNow(file: BackupFile): PartialFile =
+        if (file.delete()) PartialFile.DELETED else PartialFile.NOT_DELETED
+
+    /** Deletes [file] only if it is known to be empty, as one the picker just created; never one that holds bytes. */
+    private fun deleteNowIfEmpty(file: BackupFile): PartialFile =
+        if (file.isKnownEmpty()) deleteNow(file) else PartialFile.UNTOUCHED
+
+    private fun closeQuietly(closeable: Closeable): Boolean =
+        try {
+            closeable.close()
+            true
+        } catch (e: Exception) {
+            false
         }
 
     private fun wipePendingExportPassword() {

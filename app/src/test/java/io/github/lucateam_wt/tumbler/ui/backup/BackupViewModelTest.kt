@@ -82,7 +82,12 @@ class BackupViewModelTest {
             }
     }
 
-    /** A document from the picker whose streams can fail; [onClose] runs when a stream is closed. */
+    /**
+     * A document from the picker whose streams can fail; [onClose] runs when a stream is
+     * closed. [content] is what it holds before anything is written: empty for a file the
+     * picker created, a backup for an existing file the picker returned. Records every open
+     * for writing (each one truncates, like "wt"), every look into it and every delete.
+     */
     private class FakeBackupFile(val content: ByteArray = ByteArray(0)) : BackupFile {
         var openFailure: Exception? = null
 
@@ -91,13 +96,29 @@ class BackupViewModelTest {
         var closeFails = false
         var deleteRefused = false
         var deleteCalls = 0
+
+        /** Calls of [openOutput], including ones that failed. */
+        var openOutputCalls = 0
+
+        /** True once [openOutput] succeeded: [content] is gone. */
+        var truncated = false
+        var openInputCalls = 0
+        var emptyChecks = 0
         var closed = false
         var onClose: (() -> Unit)? = null
         var onWrite: (() -> Unit)? = null
+
+        /** Runs when [openInput] is called, before [openFailure] is thrown. */
+        var onOpenInput: (() -> Unit)? = null
         val written = ByteArrayOutputStream()
 
+        /** Neither opened for writing nor looked into nor deleted. */
+        val untouched: Boolean get() = openOutputCalls == 0 && emptyChecks == 0 && deleteCalls == 0
+
         override fun openOutput(): OutputStream {
+            openOutputCalls++
             openFailure?.let { throw it }
+            truncated = true
             return object : OutputStream() {
                 override fun write(b: Int) = write(byteArrayOf(b.toByte()), 0, 1)
 
@@ -119,6 +140,8 @@ class BackupViewModelTest {
         }
 
         override fun openInput(): InputStream {
+            openInputCalls++
+            onOpenInput?.invoke()
             openFailure?.let { throw it }
             return object : ByteArrayInputStream(content) {
                 override fun close() {
@@ -131,6 +154,11 @@ class BackupViewModelTest {
         override fun delete(): Boolean {
             deleteCalls++
             return !deleteRefused
+        }
+
+        override fun isKnownEmpty(): Boolean {
+            emptyChecks++
+            return if (truncated) written.size() == 0 else content.isEmpty()
         }
     }
 
@@ -370,6 +398,7 @@ class BackupViewModelTest {
 
         assertEquals(BackupMessage.Exported(2), message)
         assertSame(BackupUiState.Idle, viewModel.state.value)
+        assertEquals(1, file.openOutputCalls)
         assertTrue(file.closed)
         assertEquals(0, file.deleteCalls)
         val read = BackupFixtures.read(file.written.toByteArray()).cast<BackupReadResult.Success>()
@@ -419,21 +448,53 @@ class BackupViewModelTest {
         assertEquals(BackupMessage.ExportFailed(ExportFailure.WRITE_FAILED, PartialFile.NOT_DELETED), message)
     }
 
+    /**
+     * SAF cannot replace a file atomically: once an existing file the picker returned is
+     * opened for writing, its earlier content is gone, and a write that fails halfway leaves
+     * a broken file, which is deleted.
+     */
     @Test
-    fun export_fileCannotBeOpened_wipesThePasswordAndDeletesTheFile() {
+    fun export_failureAfterTheFirstWrite_deletesTheFileEvenIfItHeldSomethingBefore() {
         store.add(github)
         val viewModel = viewModel()
-        val file = FakeBackupFile().apply { openFailure = FileNotFoundException("gone") }
+        val file = backupFile(entry("Old", "backup")).apply { writeFailsAfter = 40 }
 
         val message = viewModel.export(file)
 
-        assertEquals(BackupMessage.ExportFailed(ExportFailure.FILE_NOT_OPENED, PartialFile.DELETED), message)
-        // The service never ran, so only the view model can have wiped it.
+        assertTrue(file.truncated)
+        assertEquals(BackupMessage.ExportFailed(ExportFailure.WRITE_FAILED, PartialFile.DELETED), message)
+        assertEquals(1, file.deleteCalls)
+        assertEquals("never asks whether a file it wrote is empty", 0, file.emptyChecks)
+    }
+
+    @Test
+    fun export_fileCannotBeOpened_isDeletedOnlyIfEmpty() {
+        val failures = listOf(
+            FileNotFoundException("gone"),
+            SecurityException("permission revoked"),
+            IllegalArgumentException("unknown document"),
+            UnsupportedOperationException("read-only provider"),
+        )
+        store.add(github)
+        for (failure in failures) {
+            val created = FakeBackupFile().apply { openFailure = failure }
+            val existing = backupFile(entry("Old", "backup")).apply { openFailure = failure }
+
+            val deleted = viewModel().export(created)
+            val kept = viewModel().export(existing)
+
+            assertEquals("$failure", BackupMessage.ExportFailed(ExportFailure.FILE_NOT_OPENED, PartialFile.DELETED), deleted)
+            assertEquals(1, created.deleteCalls)
+            assertEquals("$failure", BackupMessage.ExportFailed(ExportFailure.FILE_NOT_OPENED, PartialFile.UNTOUCHED), kept)
+            assertEquals("$failure: a file that holds something is never deleted", 0, existing.deleteCalls)
+            assertEquals(1, existing.openOutputCalls)
+            assertFalse(existing.truncated)
+        }
         assertCopiesWiped()
     }
 
     @Test
-    fun export_unreadableAccount_isNotNamedAndDeletesTheFile() {
+    fun export_unreadableAccount_isNotNamedAndLeavesTheFileUntouched() {
         store.add(github)
         store.readFailure = UnreadableAccountException("row-0", SecretCipherException("Decryption failed"))
         summaries = listOf(AccountSummary("row-0", "GitHub", "alice", OtpType.TOTP, OtpAlgorithm.SHA1, 6, 30, 0))
@@ -442,8 +503,8 @@ class BackupViewModelTest {
 
         val message = viewModel.export(file)
 
-        assertEquals(BackupMessage.ExportFailed(ExportFailure.ACCOUNT_UNREADABLE, PartialFile.DELETED, account = null), message)
-        assertEquals(1, file.deleteCalls)
+        assertEquals(BackupMessage.ExportFailed(ExportFailure.ACCOUNT_UNREADABLE, PartialFile.UNTOUCHED, account = null), message)
+        assertTrue(file.untouched)
     }
 
     @Test
@@ -456,35 +517,58 @@ class BackupViewModelTest {
         val message = viewModel.export(FakeBackupFile())
 
         assertEquals(
-            BackupMessage.ExportFailed(ExportFailure.ACCOUNT_LABEL_TOO_LONG, PartialFile.DELETED, AccountLabel(long.issuer, "alice")),
+            BackupMessage.ExportFailed(ExportFailure.ACCOUNT_LABEL_TOO_LONG, PartialFile.UNTOUCHED, AccountLabel(long.issuer, "alice")),
             message,
         )
         assertFalse(message.toString().contains("alice"))
     }
 
     @Test
-    fun export_storageFailure_isReportedAndDeletesTheFile() {
+    fun export_storageFailure_isReportedAndLeavesTheFileUntouched() {
         store.readFailure = SQLException("locked")
         val viewModel = viewModel()
         val file = FakeBackupFile()
 
-        assertEquals(BackupMessage.ExportFailed(ExportFailure.STORAGE_FAILED, PartialFile.DELETED), viewModel.export(file))
-        assertEquals(1, file.deleteCalls)
+        assertEquals(BackupMessage.ExportFailed(ExportFailure.STORAGE_FAILED, PartialFile.UNTOUCHED), viewModel.export(file))
+        assertTrue(file.untouched)
     }
 
     @Test
-    fun export_unexpectedFailure_deletesTheFileAndWipesThePassword() {
+    fun export_unexpectedFailure_leavesTheFileUntouchedAndWipesThePassword() {
         store.readFailure = IllegalStateException("unexpected")
         val viewModel = viewModel()
         val file = FakeBackupFile()
 
-        assertEquals(BackupMessage.ExportFailed(ExportFailure.UNEXPECTED, PartialFile.DELETED), viewModel.export(file))
-        assertEquals(1, file.deleteCalls)
+        assertEquals(BackupMessage.ExportFailed(ExportFailure.UNEXPECTED, PartialFile.UNTOUCHED), viewModel.export(file))
+        assertTrue(file.untouched)
         assertCopiesWiped()
     }
 
+    /** The picker may return a file that already holds a backup: no failure before the write may touch it. */
     @Test
-    fun export_fileArrivingAfterTheAppRestarted_isDeleted() {
+    fun export_failureBeforeTheFirstWrite_leavesAnExistingFileUntouched() {
+        val failures = listOf<Pair<Throwable, ExportFailure>>(
+            SQLException("locked") to ExportFailure.STORAGE_FAILED,
+            UnreadableAccountException("row-0", SecretCipherException("Decryption failed")) to ExportFailure.ACCOUNT_UNREADABLE,
+            OutOfMemoryError("test") to ExportFailure.NOT_ENOUGH_MEMORY,
+            IllegalStateException("unexpected") to ExportFailure.UNEXPECTED,
+        )
+        for ((failure, reason) in failures) {
+            val store = FakeAccountBackupStore().apply {
+                add(github)
+                readFailure = failure
+            }
+            val viewModel = BackupViewModel(BackupService(store, main, codec), { emptyList() }, main)
+            val file = backupFile(entry("Old", "backup"))
+
+            assertEquals("$failure", BackupMessage.ExportFailed(reason, PartialFile.UNTOUCHED), viewModel.export(file))
+            assertTrue("$failure", file.untouched)
+            assertFalse(file.truncated)
+        }
+    }
+
+    @Test
+    fun export_fileArrivingAfterTheAppRestarted_isDeletedIfEmpty() {
         // A new view model (as after process death) receives the picker's result: the password is gone.
         val viewModel = viewModel()
         val file = FakeBackupFile()
@@ -492,24 +576,38 @@ class BackupViewModelTest {
         viewModel.exportFileChosen(file)
 
         assertEquals(1, file.deleteCalls)
+        assertEquals(0, file.openOutputCalls)
         assertEquals(BackupMessage.ExportFailed(ExportFailure.INTERRUPTED, PartialFile.DELETED), viewModel.message.value)
         assertSame(BackupUiState.Idle, viewModel.state.value)
     }
 
     @Test
-    fun export_clearedWhileWriting_stillDeletesTheFileAndWipesThePassword() {
+    fun export_fileWithContentArrivingAfterTheAppRestarted_isNeverDeleted() {
+        val viewModel = viewModel()
+        val file = backupFile(entry("Old", "backup"))
+
+        viewModel.exportFileChosen(file)
+
+        assertEquals(0, file.deleteCalls)
+        assertEquals(0, file.openOutputCalls)
+        assertFalse(file.truncated)
+        assertEquals(BackupMessage.ExportFailed(ExportFailure.INTERRUPTED, PartialFile.UNTOUCHED), viewModel.message.value)
+    }
+
+    @Test
+    fun export_clearedBeforeTheBackupIsWritten_leavesTheFileUntouchedAndWipesThePassword() {
         store.add(github)
-        val io = StandardTestDispatcher(main.scheduler)
-        val viewModel = viewModel(io = io)
-        val file = FakeBackupFile()
+        val service = StandardTestDispatcher(main.scheduler)
+        val viewModel = viewModel(serviceDispatcher = service)
+        val file = backupFile(entry("Old", "backup"))
         viewModel.enterExportPassword()
         viewModel.exportFileChosen(file)
         assertSame(BackupUiState.Exporting, viewModel.state.value)
 
-        clear() // the activity finished: viewModelScope is cancelled while the file is being opened
+        clear() // the activity finished: viewModelScope is cancelled before the service ran
         main.scheduler.advanceUntilIdle()
 
-        assertEquals(1, file.deleteCalls)
+        assertTrue(file.untouched)
         assertCopiesWiped()
     }
 

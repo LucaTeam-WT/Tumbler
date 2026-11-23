@@ -83,6 +83,8 @@ class BackupFlowInstrumentedTest {
             deleted = true
             return true
         }
+
+        override fun isKnownEmpty(): Boolean = bytes.isEmpty()
     }
 
     /** The real format with the smallest parameters the reader accepts, for the password matrix. */

@@ -357,6 +357,7 @@ private fun messageText(message: BackupMessage): Pair<String, String> = when (me
         val reason = exportFailureText(message.reason, message.account)
         val file = when (message.partialFile) {
             PartialFile.NONE -> null
+            PartialFile.UNTOUCHED -> stringResource(R.string.backup_export_file_untouched)
             PartialFile.DELETED -> stringResource(R.string.backup_export_partial_deleted)
             PartialFile.NOT_DELETED -> stringResource(R.string.backup_export_partial_not_deleted)
         }

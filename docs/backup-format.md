@@ -491,22 +491,44 @@ dialog. Otherwise:
 2. The system "create document" picker opens (`ActivityResultContracts.CreateDocument`,
    MIME type `application/octet-stream`, suggested name
    `tumbler-backup-YYYY-MM-DD.lucabkup`).
-3. `exportAccounts` writes to the document's stream. An indeterminate progress dialog
-   runs meanwhile, and Back does nothing.
+3. `exportAccounts` encrypts the whole backup in memory, then writes it to the document's
+   stream with one call. The document is opened for writing ("wt", which truncates it)
+   only at that write (`OpenOnFirstWriteOutput`), so nothing before it changes the
+   document. An indeterminate progress dialog runs meanwhile, and Back does nothing.
 4. A message gives the outcome. On success it says that the file is only as safe as its
    password, and that the password is not stored anywhere and cannot be recovered. Every
    `ExportResult` has its own message (an exhaustive `when`). An account that blocks the
    export is named from the app's list by its id (cut to 80 characters); an unreadable
    account is never named.
 
-**Partial export (item 13).** Once the picker has created the document, every outcome but
-`Success` deletes it under `NonCancellable`, with `DocumentsContract.deleteDocument`.
-That covers `WriteFailed`, a `close()` that throws (also `WriteFailed`, since a provider
-may commit the file on close), a stream that cannot be opened, every other result, an
-unexpected exception, and a cancellation (the view model cleared). If the provider
-refuses the delete, the document is truncated to zero bytes and the message asks the user
-to delete it. If the picker's result arrives after the app was restarted, the password is
-gone: the new, empty document is deleted and the user is told to start again.
+**Partial export (item 13).** The document from the picker is opened for writing only when
+the service writes the finished file. Every failure before that point leaves the document
+as it was: a refused password, an account the backup cannot hold, an unreadable account,
+a database error, not enough memory, an unexpected exception, and a cancellation (the view
+model cleared). The message then says that the chosen file was not changed, and that if it
+was created for this backup it is empty and can be deleted.
+
+Once the document was opened, every outcome but `Success` deletes it under
+`NonCancellable`, with `DocumentsContract.deleteDocument`. That covers `WriteFailed`, a
+`close()` that throws (also `WriteFailed`, since a provider may commit the file on close),
+an unexpected exception and a cancellation. If the provider refuses the delete, the
+document is truncated to zero bytes and the message asks the user to delete it.
+
+A document that cannot be opened (the provider throws `IOException`, `SecurityException`,
+`IllegalArgumentException` or `UnsupportedOperationException`) gives "could not be opened
+for writing". It is deleted only if it is empty: the view model reads at most one byte to
+find out, and leaves it alone if it holds bytes or that cannot be told. The same rule
+applies when the picker's result arrives after the app was restarted: the password is
+gone, the document is deleted only if it is empty, and the user is told to start again.
+
+**What a failed write loses.** The Storage Access Framework cannot replace a document
+atomically: opening it with "wt" empties it at once. The app asks the picker to create a
+new document and does not check whether a provider returns an existing one instead. If one
+does, its earlier content is gone as soon as the write starts, and a write that then fails
+halfway (storage full, a provider error, a failed close) leaves neither that content nor a
+usable new backup; the broken document is deleted. Saving each backup under a new name
+keeps the earlier one. Not verified on a device: no picker that returns an existing
+document was tried.
 
 **Import.**
 
@@ -752,13 +774,23 @@ does what, and what is left:
     holding without any transaction isolation. `NextHotpCodeInstrumentedTest` (real Room
     and Keystore: a replace between the list load and the tap, 20 concurrent calls, the
     counter limit) passed on one Android 17 phone.
-13. **Delete a partial export.** *Done in B2:* once the picker has created the document,
-    every outcome but `Success` deletes it (`DocumentsContract.deleteDocument`, under
+13. **Delete a partial export, and leave the document alone until the backup is ready.**
+    *Done in B2:* the view model opens the document ("wt") only at the service's one write
+    of the finished file (`OpenOnFirstWriteOutput`), so a failure or a cancellation before
+    it leaves the document unchanged, whatever it held. Once the document is open, every
+    outcome but `Success` deletes it (`DocumentsContract.deleteDocument`, under
     `NonCancellable`), including `WriteFailed`, a `close()` that throws (treated as a
-    failed write, since a provider may write its last bytes on close), a stream that
-    cannot be opened, an unexpected exception and a cancellation. If the provider refuses,
-    the document is truncated to zero bytes and the message asks the user to delete it.
-    Unit tests use a stream that fails midway and one whose close fails.
+    failed write, since a provider may write its last bytes on close), an unexpected
+    exception and a cancellation; if the provider refuses, the document is truncated to
+    zero bytes and the message asks the user to delete it. A document that cannot be
+    opened, or that arrives after the app was restarted, is deleted only if it is empty.
+    A write that fails halfway still loses what the document held before (see "What a
+    failed write loses" above). Unit tests use a fake document that records every open for
+    writing, every look into it and every delete: failures before the write leave a
+    document holding a backup untouched; a write that fails midway, a failed close and a
+    cancellation during the write delete it; each open failure deletes an empty document
+    and keeps one with content; a result after a restart deletes an empty document and
+    never one with content.
 14. **Close the remaining best-effort wiping gaps.** *Done in B2:*
     - *Cancellation during a decrypt.* `RoomAccountBackupStore.decrypt` keeps the
       decrypted array in a local set inside the `withContext` block and wipes it on any

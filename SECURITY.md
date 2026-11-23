@@ -83,8 +83,13 @@ The accounts screen's menu exports every account into one file and imports such 
 - **The file is the user's responsibility.** It is written through the system file picker
   (Storage Access Framework, no storage permission) to wherever the user chooses, which
   may be a folder that another app or a cloud service syncs. The app does not keep track
-  of it or delete it later. An export that fails after the file was created deletes it;
-  if the storage provider refuses, the app empties it and asks the user to delete it.
+  of it or delete it later. It opens the chosen file for writing only once the encrypted
+  backup is complete in memory, so an export that fails before then leaves the file as it
+  was. If the write then fails halfway, the app deletes the incomplete file (if the
+  storage provider refuses, it empties it and asks the user to delete it). Android cannot
+  replace a file atomically, so if the chosen file already held something, that content
+  is lost in this case. A file that cannot be opened, or that arrives after the app was
+  restarted, is deleted only if it is empty.
 - **Import never writes without confirmation.** It shows the new accounts and each
   conflict by label (never a secret), offers only the choices that are safe for it with
   "skip" preselected, and writes everything in one database transaction after a final

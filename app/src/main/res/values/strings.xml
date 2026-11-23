@@ -86,6 +86,7 @@
         <item quantity="other">The backup holds %1$d accounts.\n\nIt is only as safe as its password: anyone who has the file and the password can read your accounts. The password is not stored anywhere and cannot be recovered. Without it, this backup cannot be restored.</item>
     </plurals>
     <string name="backup_export_failed_title">Backup not saved</string>
+    <string name="backup_export_file_untouched">The file you chose was not changed. If it was created for this backup, it is empty and you can delete it.</string>
     <string name="backup_export_partial_deleted">The incomplete file was deleted.</string>
     <string name="backup_export_partial_not_deleted">The incomplete file could not be deleted. Delete it yourself: it is not a usable backup.</string>
     <string name="backup_export_error_password">The password does not meet the requirements.</string>

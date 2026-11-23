@@ -80,6 +80,7 @@
         <item quantity="other">Bản sao lưu chứa %1$d tài khoản.\n\nBản sao lưu chỉ an toàn ngang với mật khẩu của nó: bất kỳ ai có tệp và mật khẩu đều có thể đọc tài khoản của bạn. Mật khẩu không được lưu ở bất kỳ đâu và không thể khôi phục. Nếu không có mật khẩu, không thể khôi phục bản sao lưu này.</item>
     </plurals>
     <string name="backup_export_failed_title">Chưa lưu được bản sao lưu</string>
+    <string name="backup_export_file_untouched">Tệp bạn đã chọn không bị thay đổi. Nếu tệp được tạo cho bản sao lưu này thì tệp đang trống và bạn có thể xóa nó.</string>
     <string name="backup_export_partial_deleted">Tệp chưa hoàn chỉnh đã được xóa.</string>
     <string name="backup_export_partial_not_deleted">Không thể xóa tệp chưa hoàn chỉnh. Hãy tự xóa tệp đó: đây không phải là bản sao lưu dùng được.</string>
     <string name="backup_export_error_password">Mật khẩu không đáp ứng yêu cầu.</string>

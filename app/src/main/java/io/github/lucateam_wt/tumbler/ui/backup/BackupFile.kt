@@ -4,6 +4,7 @@ import android.content.ContentResolver
 import android.net.Uri
 import android.provider.DocumentsContract
 import java.io.FileNotFoundException
+import java.io.IOException
 import java.io.InputStream
 import java.io.OutputStream
 import java.time.LocalDate
@@ -27,7 +28,11 @@ internal fun suggestedBackupFileName(date: LocalDate): String = "tumbler-backup-
  */
 internal interface BackupFile {
 
-    /** Opens the file for writing, truncating it. */
+    /**
+     * Opens the file for writing, truncating it: whatever it held is gone from here on. An
+     * export calls it only through [OpenOnFirstWriteOutput], once the encrypted backup is
+     * complete in memory.
+     */
     fun openOutput(): OutputStream
 
     fun openInput(): InputStream
@@ -37,12 +42,84 @@ internal interface BackupFile {
      * so no partial backup is left. Returns true only if the file was deleted. Never throws.
      */
     fun delete(): Boolean
+
+    /**
+     * True only if the file is known to hold no bytes (as one the picker has just created);
+     * false if it holds bytes or that cannot be found out. Reads at most one byte, writes
+     * nothing. Never throws.
+     */
+    fun isKnownEmpty(): Boolean
+}
+
+/**
+ * The output an export writes to: [file] is opened (which truncates it) only when the first
+ * byte is written. [io.github.lucateam_wt.tumbler.backup.BackupService.exportAccounts]
+ * encrypts the whole backup in memory and then writes it with one call, so the file is not
+ * opened, truncated or written by any failure before that point, and a file the picker
+ * returned with content keeps it. The open runs on the thread that writes (the service's
+ * dispatcher).
+ *
+ * If the open fails ([IOException], [SecurityException], [IllegalArgumentException] or
+ * [UnsupportedOperationException], which providers throw), [openFailed] is set and the write
+ * throws an [IOException], which the service reports as a failed write. [flush] and [close]
+ * do nothing until the file is open.
+ */
+internal class OpenOnFirstWriteOutput(private val file: BackupFile) : OutputStream() {
+
+    @Volatile
+    private var stream: OutputStream? = null
+
+    /** True once the file was opened, so it may have been truncated and partly written. */
+    val isOpen: Boolean get() = stream != null
+
+    /** True if opening the file failed: nothing was written. */
+    @Volatile
+    var openFailed: Boolean = false
+        private set
+
+    private fun opened(): OutputStream {
+        stream?.let { return it }
+        if (openFailed) throw FileNotOpenedException()
+        val opened = try {
+            file.openOutput()
+        } catch (e: IOException) {
+            null
+        } catch (e: SecurityException) {
+            null
+        } catch (e: IllegalArgumentException) {
+            null
+        } catch (e: UnsupportedOperationException) {
+            null
+        }
+        if (opened == null) {
+            openFailed = true
+            throw FileNotOpenedException()
+        }
+        stream = opened
+        return opened
+    }
+
+    override fun write(b: Int) = opened().write(b)
+
+    override fun write(b: ByteArray, off: Int, len: Int) = opened().write(b, off, len)
+
+    override fun flush() {
+        stream?.flush()
+    }
+
+    override fun close() {
+        stream?.close()
+    }
+
+    /** No message and no cause: a provider's message could name the document. */
+    private class FileNotOpenedException : IOException()
 }
 
 /** A [BackupFile] behind a document [uri] from `CreateDocument` or `OpenDocument`. [toString] hides the uri. */
 internal class DocumentBackupFile(private val resolver: ContentResolver, private val uri: Uri) : BackupFile {
 
     // "wt": some providers do not truncate on "w", which could leave old bytes after the backup.
+    // SAF has no atomic replace, so from here on the file's earlier content is gone.
     override fun openOutput(): OutputStream =
         resolver.openOutputStream(uri, "wt") ?: throw FileNotFoundException("The document cannot be opened")
 
@@ -65,6 +142,13 @@ internal class DocumentBackupFile(private val resolver: ContentResolver, private
         }
         return false
     }
+
+    override fun isKnownEmpty(): Boolean =
+        try {
+            resolver.openInputStream(uri)?.use { it.read() == -1 } ?: false
+        } catch (e: Exception) {
+            false
+        }
 
     override fun toString(): String = "DocumentBackupFile(<redacted>)"
 }

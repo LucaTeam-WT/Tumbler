@@ -189,11 +189,18 @@ internal sealed interface BackupMessage {
     data object ImportMayHaveBeenApplied : BackupMessage
 }
 
-/** What happened to the file created for a failed export. */
+/** What happened to the file chosen for a failed export. */
 internal enum class PartialFile {
-    /** No file was created. */
+    /** No file was chosen. */
     NONE,
 
+    /**
+     * The file was not opened for writing, so it is as it was: empty if the picker created
+     * it for this export, or its earlier content if the picker returned an existing file.
+     */
+    UNTOUCHED,
+
+    /** Deleted: it was opened for writing (so truncated) and the export failed, or it was empty. */
     DELETED,
 
     /** The provider refused to delete it (it was emptied if possible); the user must delete it. */
