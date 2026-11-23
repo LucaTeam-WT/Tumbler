@@ -87,8 +87,12 @@ The accounts screen's menu exports every account into one file and imports such 
   password fields are not in saved instance state or a `SavedStateHandle`, so they do not
   survive process death. The text reaches the backup code as a `CharArray` copy, which is
   wiped after use, on cancel and when the screen's view model is cleared. The password
-  fields opt out of autofill, so a password manager should not offer to save the backup
-  password (not verified on a device).
+  fields are not reported to autofill (`ContentDataType.None`): Compose does not tell the
+  autofill framework when they gain focus or change. Each field is still in the view
+  structure Compose gives the platform, with the autofill type None, the hint "password",
+  the sensitive flag and its current text as its value (checked in the Compose 1.12.1
+  sources). Whether the platform includes that value in a save request, and so whether a
+  password manager stays quiet, is not verified on a device.
 - **Wrong password and damaged file look the same**, by design: AES-GCM cannot tell them
   apart, and the app shows one message ("Wrong password or damaged file") for both.
 - **The file is the user's responsibility.** It is written through the system file picker
@@ -157,15 +161,28 @@ it in the system preview. It is not cleared automatically.
   that the user chose to show.
 - **Backup device tests ran on one phone only** (Android 17). A first run of all
   instrumented tests had three failures: two Compose UI test mistakes, and the
-  1000-account export and import, which ran past its time limit. After the fixes, the two
-  backup UI and flow test classes ran again there: 31 tests, no failures. The device tests
-  added with the latest review fixes have not run yet. No round trip has been done on a
-  release build.
-- **Password text in the accessibility tree.** The backup password fields are marked as
-  password fields (`Password` semantics) and draw only mask characters, but the Compose
-  test tree showed that their editable text holds the real password. Whether Android
-  passes that text to accessibility services was not verified on a device; an
-  accessibility service the user has enabled may be able to read it.
+  1000-account export and import, which ran past its time limit. After the fixes and the
+  following review fixes, the whole suite ran again there: 111 tests, no failures, none
+  skipped. On that phone the Keystore key is in StrongBox and each Keystore operation
+  takes about 0.33 s per account, so export and import take seconds per ten accounts
+  (about 5.5 minutes each for 1000; figures in
+  [docs/backup-format.md](docs/backup-format.md), item 11). The time to show the account
+  list was not measured. The device test changed with the latest review fixes has not run
+  yet. No round trip has been done on a release build.
+- **Accessibility services receive the backup password.** The backup password fields are
+  marked as password fields (`Password` semantics) and draw only mask characters, but
+  their editable text holds the real password, and an enabled accessibility service
+  receives the password as it is typed: Compose's text-changed events carry the old and
+  the new text (checked in the Compose 1.12.1 sources; not verified on a device).
+- **Overlapping scrypt runs.** Cancel does not stop a running scrypt (it blocks): after
+  Cancel while a backup is being read, that scrypt keeps running to its end, and a new
+  import or export can start meanwhile, so two can overlap (at the default parameters a
+  peak of about 2 × 64 MiB plus buffers).
+- **An empty file the user picked can be deleted.** When the chosen file cannot be opened
+  for writing, or the picker's result arrives after the app was restarted, the app deletes
+  the file if it is empty, because it cannot tell it from the empty file the picker just
+  created. An existing empty file the user picked is deleted too, with the message "The
+  incomplete file was deleted."
 - **No clipboard auto-clear yet.**
 - **Labels are not encrypted** (see above): someone who can read the app's private
   storage can see which accounts exist.

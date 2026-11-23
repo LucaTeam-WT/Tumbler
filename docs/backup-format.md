@@ -533,6 +533,9 @@ for writing". It is deleted only if it is empty: the view model reads at most on
 find out, and leaves it alone if it holds bytes or that cannot be told. The same rule
 applies when the picker's result arrives after the app was restarted: the password is
 gone, the document is deleted only if it is empty, and the user is told to start again.
+*Known limit:* an empty document cannot be told apart from one the picker has just
+created, so an existing empty file the user picked is deleted in these two cases too, and
+the message says "The incomplete file was deleted."
 
 **What a failed write loses.** The Storage Access Framework cannot replace a document
 atomically: opening it with "wt" empties it at once. The app asks the picker to create a
@@ -556,7 +559,10 @@ document was tried.
    service or by the view model. A read acts on its outcome only while it is the latest
    read and the dialog still waits for it: an exception that arrives after Cancel, or
    after a newer import started, is ignored instead of ending the flow that runs now with
-   "Nothing was imported".
+   "Nothing was imported". *Known limit:* Cancel does not stop scrypt, which blocks: the
+   cancelled read's scrypt keeps running to its end while the user may already start
+   another import or an export, so two scrypt runs can overlap (at the default parameters
+   a peak of about 2 × 64 MiB plus buffers).
 4. `WrongPasswordOrDamaged` shows the same dialog again for the same file with "Wrong
    password or damaged file." Nothing tells the two apart. The failures that are found
    without the password, or after a successful decryption, keep their own messages: not
@@ -617,14 +623,21 @@ state or message prints a password or a label. Compose itself keeps the typed te
 
 The fields carry the `Password` semantics property, which marks them as password fields,
 and draw only mask characters. The Compose test tree showed that their editable text
-(`EditableText`) still holds the real text; whether the platform passes it on to
-accessibility services was not verified on a device. They also opt out of autofill:
-`contentDataType = ContentDataType.None`, set outside the text field so that it replaces
-the field's own `Text` data type. With it, Compose (1.12) reports neither focus nor value
-changes of the field to the autofill framework, so a password manager should not offer to
-save or fill a backup password. A device test checks that the property reaches each
-field; whether a password manager then stays quiet was not verified on a device, and a
-password manager that reads the screen through accessibility is not affected.
+(`EditableText`) still holds the real text. An enabled accessibility service receives the
+password as it is typed: for each change Compose sends a `TYPE_VIEW_TEXT_CHANGED` event
+that carries the old text (`beforeText`) and the new text, marked as a password event but
+not stripped (checked in the Compose UI 1.12.1 sources, not verified on a device).
+
+The fields are not reported to autofill: `contentDataType = ContentDataType.None`, set
+outside the text field so that it replaces the field's own `Text` data type. With it,
+Compose (1.12.1) does not tell the autofill framework when the field gains focus or its
+value changes, so nothing in the app starts an autofill session for it. The field is still
+in the view structure that Compose gives the platform: with the autofill type None, the
+hint "password" (from the secure text field's content type), the sensitive flag, and its
+current text as its autofill value (checked in the Compose UI 1.12.1 sources). A device
+test checks that the property reaches each field. Whether the platform puts that value in
+a save request, and whether a password manager stays quiet, was not verified on a device;
+a password manager that reads the screen through accessibility is not affected.
 
 **Add path (item 5).** A link whose issuer or account name is over 1024 UTF-8 bytes, or
 whose secret is over 1024 bytes, gets its own message with the limit ("too long to fit in
@@ -740,20 +753,16 @@ does what, and what is left:
     - the password test expected the typed text in no node at all. The `Password`
       property only marks the field as a password field; the Compose test tree showed
       that the field's editable text (`EditableText`) holds the real, unmasked text.
-      Whether the platform passes that text on to accessibility services was not verified
-      on a device (see `SECURITY.md`).
+      Compose sends that text to enabled accessibility services in its text-changed
+      events (see [Export and import screens](#export-and-import-screens) and
+      `SECURITY.md`; not verified on a device).
     The third was the 1000-account test: one of its phases ran past the 5-minute wait. It
     now runs within one 30-minute budget and logs each phase (below).
-    After those fixes, `BackupScreensTest` and `BackupFlowInstrumentedTest` ran again on
-    the same phone: 31 tests, 0 failures, 0 skipped.
-    `memory_thousandAccountsExportAndImportWithoutRunningOutOfMemory` passed and took
-    1049 s (about 17.5 minutes) in all. The other instrumented tests passed in the first
-    run and were not run again. Not run on a device yet: the tests added or changed with
-    the review fixes (`reviewNoticeIsOnScreenAfterTheListWasScrolled`,
-    `confirmDialogWarnsAboutReplaceOnlyWhenSomethingIsReplaced`,
-    `passwordFieldsAreNotAutofillable`, and the changed
-    `confirmDialogShowsTheTotalsBeforeWriting` and
-    `exportedMessageWarnsThatThePasswordCannotBeRecovered`).
+    After those fixes and the following review fixes, the whole suite ran again on the
+    same phone: 111 tests, 0 failures, 0 skipped (the 1000-account measurement is below).
+    Not run on a device yet: the tests added or changed with the latest review fixes
+    (`BackupScreensTest.exportedMessageWarnsThatThePasswordCannotBeRecovered`, which now
+    checks the warning as its own string in English and Vietnamese).
     - *B1:* `BackupServiceInstrumentedTest` (a round trip with the default parameters into
       an empty database and into one with conflicts, the abort path, a cancellation inside
       the import's last insert, and the Conscrypt damage matrix: a modified file maps to
@@ -793,11 +802,31 @@ does what, and what is left:
       Each secret is encrypted on its own under the Keystore key. An export therefore runs
       one Keystore decryption per account. An import runs one Keystore encryption per new
       or replaced account, and decrypts the device's accounts twice: once for the plan and
-      once inside the write transaction. scrypt runs once per file. On the PKG110 the
-      whole test took 1049 s. Its phase lines were not captured (the logcat buffer was
-      overwritten before they were read), so the time of each phase and where the
-      Keystore keeps the key on that phone are not known; run the test alone and read
-      the lines right after it to get them.
+      once inside the write transaction. scrypt runs once per file.
+
+      Measured in the full run on the PKG110 (Android 17, API 37, heap limit 256 MiB,
+      default scrypt N = 2^16, r = 8, p = 2), from the test's `TumblerBackupPerf` lines:
+
+      | Measurement | Result |
+      |---|---|
+      | Where the Keystore keeps the key | StrongBox |
+      | Key lookup, average of 20 | 1.5 ms |
+      | Decrypt one account's secret, average of 20 | 324.1 ms |
+      | Encrypt one account's secret, average of 20 | 331.2 ms |
+      | One scrypt (export of an empty backup) | 4154 ms |
+      | Setup: 1000 accounts added | 340072 ms |
+      | Export of 1000 accounts | 328706 ms (file 451079 bytes) |
+      | Read of that file, planned against an empty device | 4123 ms |
+      | Import of 1000 accounts into that empty device | 338622 ms |
+      | Whole test | 1037142 ms |
+      | Heap in use at the end | 11 MiB |
+
+      The cost is the Keystore operation per account (about 0.33 s with StrongBox on this
+      phone), not scrypt or the file: export and import take seconds per ten accounts, and
+      several minutes for 1000. The read took about one scrypt because the device it was
+      planned against was empty; on a device with accounts, the read and the import each
+      add one Keystore decryption per account already there. The time to show the account
+      list (one Keystore decryption per account as well) was not measured.
     - *Still to do:* `BackupPayloadTest.decode_rejectsMalformedUtf8` and the golden
       password's NFD and longest-decomposition cases as instrumented tests; the
       `Character` whitespace tables across API levels (26 to current), for item 7; the

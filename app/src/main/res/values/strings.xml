@@ -82,9 +82,11 @@
 
     <string name="backup_export_done_title">Backup saved</string>
     <plurals name="backup_export_done_body">
-        <item quantity="one">The backup holds %1$d account.\n\nIt is only as safe as its password: anyone who has the file and the password can read your accounts. The password is not stored anywhere and cannot be recovered. Without it, this backup cannot be restored.</item>
-        <item quantity="other">The backup holds %1$d accounts.\n\nIt is only as safe as its password: anyone who has the file and the password can read your accounts. The password is not stored anywhere and cannot be recovered. Without it, this backup cannot be restored.</item>
+        <item quantity="one">The backup holds %1$d account.</item>
+        <item quantity="other">The backup holds %1$d accounts.</item>
     </plurals>
+    <!-- Shown under backup_export_done_body; its own string so a test can check that the dialog shows it. -->
+    <string name="backup_export_password_warning">It is only as safe as its password: anyone who has the file and the password can read your accounts. The password is not stored anywhere and cannot be recovered. Without it, this backup cannot be restored.</string>
     <string name="backup_export_failed_title">Backup not saved</string>
     <string name="backup_export_file_untouched">The file you chose was not changed. If it was created for this backup, it is empty and you can delete it.</string>
     <string name="backup_export_partial_deleted">The incomplete file was deleted.</string>

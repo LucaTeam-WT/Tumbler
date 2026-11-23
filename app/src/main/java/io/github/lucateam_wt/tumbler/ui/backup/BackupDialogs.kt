@@ -104,10 +104,17 @@ internal fun ellipsize(text: String, max: Int): String {
  * learning), no autocorrect, a visibility toggle, and the backup format's input cap. Its
  * text is [input], which the view model owns: nothing here is saved.
  *
- * Not autofillable: `ContentDataType.None` overrides the text field's own `Text` (this
- * modifier is outermost, so its semantics are applied last), and Compose's autofill then
- * reports neither focus nor value changes of the field to the platform, so a password
- * manager is not asked to save or fill a backup password. Not verified on a device.
+ * Not reported to autofill: `ContentDataType.None` overrides the text field's own `Text`
+ * (this modifier is outermost, so its semantics are applied last), and Compose's autofill
+ * then reports neither focus nor value changes of the field to the platform. The field is
+ * still in the view structure Compose gives the platform, with the autofill type None, the
+ * hint "password", the sensitive flag and its current text as its value (Compose 1.12.1
+ * sources). Whether the platform includes that value in a save request is not verified on
+ * a device.
+ *
+ * Accessibility: an enabled accessibility service receives the password as it is typed
+ * (Compose's text-changed events carry the old and the new text; Compose 1.12.1 sources,
+ * not verified on a device). See SECURITY.md.
  */
 @Composable
 private fun PasswordField(
@@ -373,8 +380,11 @@ internal fun BackupMessageDialog(message: BackupMessage, onDismiss: () -> Unit) 
 
 @Composable
 private fun messageText(message: BackupMessage): Pair<String, String> = when (message) {
-    is BackupMessage.Exported -> stringResource(R.string.backup_export_done_title) to
-        pluralStringResource(R.plurals.backup_export_done_body, message.accountCount, message.accountCount)
+    // The warning is its own string, so a test can check that this dialog shows it.
+    is BackupMessage.Exported -> stringResource(R.string.backup_export_done_title) to listOf(
+        pluralStringResource(R.plurals.backup_export_done_body, message.accountCount, message.accountCount),
+        stringResource(R.string.backup_export_password_warning),
+    ).joinToString("\n\n")
     is BackupMessage.ExportFailed -> {
         val reason = exportFailureText(message.reason, message.account)
         val file = when (message.partialFile) {

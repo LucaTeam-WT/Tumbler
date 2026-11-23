@@ -1,5 +1,6 @@
 package io.github.lucateam_wt.tumbler.ui.backup
 
+import android.content.res.Configuration
 import androidx.activity.ComponentActivity
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
@@ -60,6 +61,7 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
+import java.util.Locale
 
 /** The backup menu, dialogs and review screen, at the default font scale and at 130 %. */
 class BackupScreensTest {
@@ -701,9 +703,20 @@ class BackupScreensTest {
         show(1.3f) { BackupMessageDialog(BackupMessage.Exported(3), onDismiss = {}) }
 
         inDialog(string(R.string.backup_export_done_title)).assertIsDisplayed()
-        // The whole body from the resources (it holds the warning), so the test does not depend on the language.
-        inDialog(plural(R.plurals.backup_export_done_body, 3)).assertExists()
+        // The dialog shows the warning in the device's language...
+        composeRule.onNode(hasText(string(R.string.backup_export_password_warning), substring = true) and hasAnyAncestor(isDialog()))
+            .assertExists()
         tag(BackupTags.MESSAGE_OK).assertIsDisplayed()
+        // ...and the warning still says that the password cannot be recovered, in both languages.
+        val required = mapOf(
+            "en" to "The password is not stored anywhere and cannot be recovered.",
+            "vi" to "Mật khẩu không được lưu ở bất kỳ đâu và không thể khôi phục.",
+        )
+        for ((language, sentence) in required) {
+            val config = Configuration(composeRule.activity.resources.configuration).apply { setLocale(Locale.forLanguageTag(language)) }
+            val warning = composeRule.activity.createConfigurationContext(config).getString(R.string.backup_export_password_warning)
+            assertTrue("$language warning", warning.contains(sentence))
+        }
     }
 
     @Test
