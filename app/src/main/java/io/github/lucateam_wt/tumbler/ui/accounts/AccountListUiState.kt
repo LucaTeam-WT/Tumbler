@@ -13,6 +13,13 @@ data class AccountListUiState(
     val actionFailed: Boolean = false,
 )
 
+/**
+ * The list has loaded without a storage failure and holds no account, so an export would be
+ * empty: the menu shows a short message instead of the password dialog.
+ */
+internal val AccountListUiState.nothingToExport: Boolean
+    get() = !isLoading && !loadFailed && accounts.isEmpty()
+
 sealed interface AccountItem {
     val id: String
     val issuer: String
@@ -58,12 +65,25 @@ enum class HotpError {
     /** The counter is `Long.MAX_VALUE`, so it cannot be advanced and no more codes can be made. */
     LIMIT_REACHED,
 
-    /** The repository refused to advance the counter (an unexpected state; nothing was changed). */
+    /**
+     * The repository made no code (an unexpected state: the account is gone or no longer HOTP,
+     * or its secret cannot be read); nothing was changed.
+     */
     FAILED,
 }
 
 /** Why saving a pasted link failed. The UI maps each value to a fixed message. */
-enum class AddError { INVALID_LINK, STORAGE_FAILED }
+enum class AddError {
+    INVALID_LINK,
+
+    /** The issuer or account name is over the backup format's label limit. */
+    LABEL_TOO_LONG,
+
+    /** The secret is over the backup format's secret limit. */
+    SECRET_TOO_LONG,
+
+    STORAGE_FAILED,
+}
 
 /** Result of the last [AccountListViewModel.add] call. */
 data class AddState(

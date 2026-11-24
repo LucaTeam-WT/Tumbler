@@ -1,5 +1,6 @@
 package io.github.lucateam_wt.tumbler.domain.otp
 
+import io.github.lucateam_wt.tumbler.domain.model.AccountLimitException
 import io.github.lucateam_wt.tumbler.domain.model.AccountLimits
 import io.github.lucateam_wt.tumbler.domain.model.OtpAccount
 import io.github.lucateam_wt.tumbler.domain.model.OtpType
@@ -30,13 +31,21 @@ object OtpAuthUri {
      * otherwise from the label prefix before the first `:`. Unknown parameters are
      * ignored; for duplicated parameters the last value wins.
      *
-     * @throws IllegalArgumentException if [uri] is malformed or has invalid values,
-     *   including an issuer or account name above [AccountLimits.MAX_LABEL_UTF8_BYTES]
-     *   UTF-8 bytes or with an unpaired surrogate, and a secret above
-     *   [AccountLimits.MAX_SECRET_BYTES] bytes. The message never contains the secret,
-     *   a label or the URI.
+     * The labels are checked before the secret is decoded, and a decoded secret that is
+     * rejected (too long, or the account is otherwise invalid) is wiped before the error
+     * propagates.
+     *
+     * @throws AccountLimitException (an [IllegalArgumentException]) if the link is otherwise
+     *   valid enough to be read but its issuer or account name is above
+     *   [AccountLimits.MAX_LABEL_UTF8_BYTES] UTF-8 bytes, or its secret above
+     *   [AccountLimits.MAX_SECRET_BYTES] bytes: the backup format's limits.
+     * @throws IllegalArgumentException if [uri] is malformed or has invalid values, including
+     *   a label with an unpaired surrogate. No message contains the secret, a label or the URI.
      */
-    fun parse(uri: String): OtpAccount {
+    fun parse(uri: String): OtpAccount = parse(uri, Base32::decode)
+
+    /** [parse] with the Base32 decoder as a seam, so tests can see the array it returns. */
+    internal fun parse(uri: String, decodeSecret: (String) -> ByteArray): OtpAccount {
         val text = uri.trim()
         require(text.isNotEmpty()) { "URI is empty" }
 
@@ -63,7 +72,6 @@ object OtpAuthUri {
 
         val secretText = params["secret"]
         require(!secretText.isNullOrBlank()) { "Missing secret" }
-        val secret = Base32.decode(secretText)
 
         val algorithm = params["algorithm"]?.let { name ->
             OtpAlgorithm.entries.firstOrNull { it.name.equals(name, ignoreCase = true) }
@@ -86,22 +94,39 @@ object OtpAuthUri {
         }
 
         val issuer = params["issuer"]?.trim()?.takeIf { it.isNotEmpty() } ?: labelIssuer
-        // The backup format's limits, so every account added here can be exported.
-        require(AccountLimits.isLabelWithinLimits(issuer)) { "Issuer too long or not valid text" }
-        require(AccountLimits.isLabelWithinLimits(accountName)) { "Account name too long or not valid text" }
-        require(secret.size <= AccountLimits.MAX_SECRET_BYTES) { "Secret too long" }
+        // The backup format's limits, so every account added here can be exported. Checked
+        // before the secret is decoded, so a rejected link never holds a decoded secret.
+        checkLabel(issuer, AccountLimitException.Field.ISSUER)
+        checkLabel(accountName, AccountLimitException.Field.ACCOUNT_NAME)
 
-        // Ranges (digits, period, counter, non-empty secret) are validated by OtpAccount.
-        return OtpAccount(
-            issuer = issuer,
-            accountName = accountName,
-            type = type,
-            secret = secret,
-            algorithm = algorithm,
-            digits = digits,
-            period = period,
-            counter = counter,
-        )
+        val secret = decodeSecret(secretText)
+        try {
+            if (secret.size > AccountLimits.MAX_SECRET_BYTES) {
+                throw AccountLimitException(AccountLimitException.Field.SECRET)
+            }
+            // Ranges (digits, period, counter, non-empty secret) are validated by OtpAccount.
+            return OtpAccount(
+                issuer = issuer,
+                accountName = accountName,
+                type = type,
+                secret = secret,
+                algorithm = algorithm,
+                digits = digits,
+                period = period,
+                counter = counter,
+            )
+        } catch (t: Throwable) {
+            secret.fill(0)
+            throw t
+        }
+    }
+
+    private fun checkLabel(label: String, field: AccountLimitException.Field) {
+        when (AccountLimits.checkLabel(label)) {
+            AccountLimits.LabelCheck.OK -> Unit
+            AccountLimits.LabelCheck.TOO_LONG -> throw AccountLimitException(field)
+            AccountLimits.LabelCheck.NOT_VALID_TEXT -> throw IllegalArgumentException("${field.description} is not valid text")
+        }
     }
 
     /**

@@ -38,4 +38,120 @@
     <string name="add_cancel">Hủy</string>
     <string name="add_error_invalid_link">Đây không phải là liên kết otpauth:// hợp lệ.</string>
     <string name="add_error_storage">Không thể lưu tài khoản. Vui lòng thử lại.</string>
+    <plurals name="add_error_label_too_long">
+        <item quantity="other">Tên nhà cung cấp hoặc tên tài khoản trong liên kết này quá dài để lưu trong bản sao lưu (hơn %1$d byte).</item>
+    </plurals>
+    <plurals name="add_error_secret_too_long">
+        <item quantity="other">Khóa bí mật trong liên kết này quá dài để lưu trong bản sao lưu (hơn %1$d byte).</item>
+    </plurals>
+
+    <string name="accounts_more_options">Tùy chọn khác</string>
+    <string name="backup_export_menu">Xuất bản sao lưu</string>
+    <string name="backup_import_menu">Nhập bản sao lưu</string>
+    <string name="backup_export_no_accounts">Không có tài khoản nào để xuất.</string>
+
+    <string name="backup_export_title">Xuất bản sao lưu</string>
+    <string name="backup_export_body">Chọn mật khẩu cho tệp sao lưu. Bạn sẽ cần mật khẩu này để khôi phục bản sao lưu. Tumbler không lưu mật khẩu và không thể khôi phục nếu bạn quên.</string>
+    <string name="backup_password_label">Mật khẩu</string>
+    <string name="backup_password_confirm_label">Nhập lại mật khẩu</string>
+    <plurals name="backup_password_hint">
+        <item quantity="other">Ít nhất %1$d ký tự.</item>
+    </plurals>
+    <plurals name="backup_password_too_long">
+        <item quantity="other">Quá dài: tối đa %1$d ký tự.</item>
+    </plurals>
+    <string name="backup_password_invalid">Mật khẩu chứa ký tự không thể sử dụng.</string>
+    <string name="backup_password_mismatch">Hai mật khẩu không khớp.</string>
+    <string name="backup_password_show">Hiện mật khẩu</string>
+    <string name="backup_password_hide">Ẩn mật khẩu</string>
+    <string name="backup_password_confirm_show">Hiện mật khẩu nhập lại</string>
+    <string name="backup_password_confirm_hide">Ẩn mật khẩu nhập lại</string>
+    <string name="backup_export_choose_file">Chọn tệp</string>
+    <string name="backup_continue">Tiếp tục</string>
+    <string name="backup_ok">OK</string>
+
+    <string name="backup_exporting">Đang mã hóa bản sao lưu…</string>
+    <string name="backup_reading">Đang giải mã bản sao lưu…</string>
+    <string name="backup_importing">Đang nhập tài khoản…</string>
+    <string name="backup_progress_wait">Việc này có thể mất vài giây.</string>
+
+    <string name="backup_export_done_title">Đã lưu bản sao lưu</string>
+    <plurals name="backup_export_done_body">
+        <item quantity="other">Bản sao lưu chứa %1$d tài khoản.</item>
+    </plurals>
+    <string name="backup_export_password_warning">Bản sao lưu chỉ an toàn ngang với mật khẩu của nó: bất kỳ ai có tệp và mật khẩu đều có thể đọc tài khoản của bạn. Mật khẩu không được lưu ở bất kỳ đâu và không thể khôi phục. Nếu không có mật khẩu, không thể khôi phục bản sao lưu này.</string>
+    <string name="backup_export_failed_title">Chưa lưu được bản sao lưu</string>
+    <string name="backup_export_file_untouched">Tệp bạn đã chọn không bị thay đổi. Nếu tệp được tạo cho bản sao lưu này thì tệp đang trống và bạn có thể xóa nó.</string>
+    <string name="backup_export_partial_deleted">Tệp chưa hoàn chỉnh đã được xóa.</string>
+    <string name="backup_export_partial_not_deleted">Không thể xóa tệp chưa hoàn chỉnh. Hãy tự xóa tệp đó: đây không phải là bản sao lưu dùng được.</string>
+    <string name="backup_export_error_password">Mật khẩu không đáp ứng yêu cầu.</string>
+    <plurals name="backup_export_error_too_many">
+        <item quantity="other">Một bản sao lưu chứa tối đa %1$d tài khoản, nhưng thiết bị này có nhiều hơn.</item>
+    </plurals>
+    <string name="backup_export_error_label_too_long">Tên nhà cung cấp hoặc tên tài khoản của “%1$s” quá dài cho bản sao lưu. Hãy xóa tài khoản này hoặc thêm lại với tên ngắn hơn, rồi thử lại.</string>
+    <string name="backup_export_error_label_invalid">Không thể đưa tên nhà cung cấp hoặc tên tài khoản của “%1$s” vào bản sao lưu (tên bắt đầu hoặc kết thúc bằng dấu cách, hoặc chứa ký tự không hợp lệ). Hãy xóa tài khoản này hoặc thêm lại, rồi thử lại.</string>
+    <string name="backup_export_error_secret_too_long">Khóa bí mật của “%1$s” quá dài cho bản sao lưu.</string>
+    <string name="backup_export_error_account_unnamed">Một tài khoản trên thiết bị này không thể đưa vào bản sao lưu. Hãy kiểm tra các tài khoản và thử lại.</string>
+    <string name="backup_export_error_unreadable">Không thể giải mã một tài khoản trên thiết bị này (tài khoản đó hiển thị “Không có mã” trong danh sách), nên chưa tạo bản sao lưu. Hãy xóa tài khoản đó rồi thử lại.</string>
+    <string name="backup_export_error_memory">Không đủ bộ nhớ để mã hóa bản sao lưu. Hãy đóng các ứng dụng khác và thử lại.</string>
+    <string name="backup_export_error_write">Không thể ghi tệp.</string>
+    <string name="backup_export_error_open">Không thể mở tệp để ghi.</string>
+    <string name="backup_export_error_interrupted">Quá trình xuất bị gián đoạn vì ứng dụng đã bị đóng. Vui lòng xuất lại.</string>
+    <string name="backup_export_error_unexpected">Không thể tạo bản sao lưu.</string>
+    <string name="backup_error_storage">Không thể đọc tài khoản từ bộ nhớ. Vui lòng thử lại.</string>
+    <string name="backup_error_no_picker">Không có ứng dụng nào để chọn tệp.</string>
+
+    <string name="backup_import_title">Nhập bản sao lưu</string>
+    <string name="backup_import_password_body">Nhập mật khẩu đã chọn khi tạo bản sao lưu này.</string>
+    <string name="backup_import_wrong_password">Sai mật khẩu hoặc tệp bị hỏng.</string>
+    <string name="backup_import_failed_title">Chưa nhập gì</string>
+    <string name="backup_import_error_not_a_backup">Tệp này không phải là bản sao lưu Tumbler.</string>
+    <string name="backup_import_error_not_supported">Phiên bản Tumbler này không thể đọc bản sao lưu này. Tệp có thể bị hỏng hoặc được tạo bởi phiên bản mới hơn.</string>
+    <string name="backup_import_error_invalid">Bản sao lưu đã được giải mã nhưng nội dung không hợp lệ.</string>
+    <string name="backup_import_error_too_large">Tệp này quá lớn để là bản sao lưu Tumbler.</string>
+    <string name="backup_import_error_read">Không thể đọc tệp.</string>
+    <string name="backup_import_error_open">Không thể mở tệp.</string>
+    <string name="backup_import_error_memory">Không đủ bộ nhớ để giải mã bản sao lưu. Hãy đóng các ứng dụng khác và thử lại.</string>
+    <string name="backup_import_error_unreadable">Không thể giải mã một tài khoản trên thiết bị này (tài khoản đó hiển thị “Không có mã” trong danh sách), nên không thể so sánh an toàn bản sao lưu với các tài khoản của bạn. Hãy xóa tài khoản đó rồi thử lại.</string>
+    <string name="backup_import_error_unexpected">Không thể nhập bản sao lưu.</string>
+    <string name="backup_import_done_title">Đã nhập xong</string>
+    <string name="backup_import_done_body">Đã thêm: %1$d\nĐã thay thế: %2$d\nĐã bỏ qua: %3$d</string>
+    <string name="backup_import_maybe_title">Hãy kiểm tra tài khoản</string>
+    <string name="backup_import_maybe_body">Đã xảy ra lỗi khi lưu dữ liệu nhập, và dữ liệu có thể vẫn đã được lưu. Hãy kiểm tra danh sách tài khoản trước khi nhập lại bản sao lưu này.</string>
+
+    <string name="backup_review_close">Hủy nhập</string>
+    <string name="backup_review_new">Tài khoản mới sẽ được thêm</string>
+    <string name="backup_review_identical">Đã có trên thiết bị này (bỏ qua)</string>
+    <string name="backup_review_conflicts">Cần bạn quyết định</string>
+    <string name="backup_review_nothing">Không có gì để nhập.</string>
+    <string name="backup_review_conflicts_header">Tài khoản trùng với tài khoản trên thiết bị này</string>
+    <string name="backup_review_imported">Trong bản sao lưu: %1$s</string>
+    <string name="backup_review_existing">Trên thiết bị này: %1$s</string>
+    <string name="backup_review_reason_label">Trùng tên</string>
+    <string name="backup_review_reason_secret">Trùng khóa bí mật</string>
+    <string name="backup_review_reason_both">Trùng tên và khóa bí mật</string>
+    <string name="backup_review_shared">Một tài khoản khác trong bản sao lưu cũng trùng với tài khoản này trên thiết bị. Chỉ một trong số đó có thể thay thế nó.</string>
+    <string name="backup_decision_skip">Bỏ qua</string>
+    <string name="backup_decision_keep_both">Giữ cả hai</string>
+    <string name="backup_decision_replace">Thay thế</string>
+    <string name="backup_decision_skip_desc">Không nhập tài khoản này. Không có gì thay đổi trên thiết bị.</string>
+    <string name="backup_decision_keep_both_desc">Thêm thành một tài khoản riêng. Tài khoản trên thiết bị giữ nguyên.</string>
+    <string name="backup_decision_keep_both_desc_hotp">Thêm thành một tài khoản riêng với bộ đếm riêng (%1$d). Tài khoản trên thiết bị giữ nguyên.</string>
+    <string name="backup_decision_replace_desc">Ghi đè tài khoản trên thiết bị bằng tài khoản từ bản sao lưu.</string>
+    <string name="backup_decision_replace_desc_imported">Ghi đè tài khoản trên thiết bị bằng tài khoản từ bản sao lưu. Bộ đếm được đặt theo giá trị trong bản sao lưu (%1$d).</string>
+    <string name="backup_decision_replace_desc_larger">Ghi đè tài khoản trên thiết bị bằng tài khoản từ bản sao lưu. Hai tài khoản có cùng khóa bí mật, nên bộ đếm giữ giá trị lớn hơn (hiện là %1$d trên thiết bị, %2$d trong bản sao lưu) và không bao giờ lùi lại.</string>
+    <string name="backup_decision_replace_taken">Một tài khoản khác từ bản sao lưu đã được chọn để thay thế tài khoản này.</string>
+    <string name="backup_notice_plan_changed">Tài khoản của bạn đã thay đổi trong lúc này nên chưa có gì được nhập. Hãy kiểm tra lại các lựa chọn bên dưới và xác nhận lại.</string>
+    <string name="backup_notice_rejected">Một số lựa chọn không còn phù hợp nên chưa có gì được nhập. Các lựa chọn đã được đặt lại: hãy kiểm tra và xác nhận lại.</string>
+    <string name="backup_notice_storage">Lỗi lưu trữ, chưa có gì được nhập. Bạn có thể thử lại.</string>
+    <string name="backup_notice_memory">Không đủ bộ nhớ, chưa có gì được nhập. Hãy đóng các ứng dụng khác và thử lại.</string>
+    <string name="backup_confirm_title">Nhập các tài khoản này?</string>
+    <string name="backup_total_add">Thêm: %1$d</string>
+    <string name="backup_total_replace">Thay thế: %1$d</string>
+    <string name="backup_total_skip">Bỏ qua: %1$d</string>
+    <plurals name="backup_confirm_replace_warning">
+        <item quantity="other">Thay thế sẽ ghi đè nội dung hiện tại của %1$d tài khoản trên thiết bị này bằng tài khoản từ bản sao lưu. Không thể hoàn tác.</item>
+    </plurals>
+    <string name="backup_confirm_body">Không có gì khác trên thiết bị thay đổi.</string>
+    <string name="backup_import_confirm">Nhập</string>
 </resources>

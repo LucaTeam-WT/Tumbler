@@ -7,6 +7,7 @@ import androidx.activity.enableEdgeToEdge
 import androidx.lifecycle.viewmodel.compose.viewModel
 import io.github.lucateam_wt.tumbler.ui.TumblerApp
 import io.github.lucateam_wt.tumbler.ui.accounts.AccountListViewModel
+import io.github.lucateam_wt.tumbler.ui.backup.BackupViewModel
 import io.github.lucateam_wt.tumbler.ui.theme.TumblerTheme
 
 class MainActivity : ComponentActivity() {
@@ -15,7 +16,10 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
         setContent {
             TumblerTheme {
-                TumblerApp(viewModel(factory = AccountListViewModel.Factory))
+                TumblerApp(
+                    viewModel = viewModel(factory = AccountListViewModel.Factory),
+                    backupViewModel = viewModel(factory = BackupViewModel.Factory),
+                )
             }
         }
     }

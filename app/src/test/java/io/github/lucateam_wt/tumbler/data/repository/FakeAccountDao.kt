@@ -45,11 +45,17 @@ class FakeAccountDao : AccountDao {
         it + (entity.id to entity)
     }
 
-    override suspend fun updateCounter(id: String, counter: Long): Int {
-        val row = rows.value[id]
-        if (row == null || row.type != "HOTP") return 0
-        put(row.copyWith(counter = counter))
-        return 1
+    override suspend fun advanceCounter(id: String, expectedCounter: Long, expectedSecretBlob: ByteArray): Int {
+        var updated = 0
+        // One atomic compare-and-set on the whole map, like the single SQL UPDATE.
+        rows.update { map ->
+            val row = map[id]
+            val matches = row != null && row.type == "HOTP" && row.counter == expectedCounter &&
+                row.secretBlob.contentEquals(expectedSecretBlob) && row.counter < Long.MAX_VALUE
+            updated = if (matches) 1 else 0
+            if (row != null && matches) map + (id to row.copyWith(counter = row.counter + 1)) else map
+        }
+        return updated
     }
 
     override suspend fun replace(

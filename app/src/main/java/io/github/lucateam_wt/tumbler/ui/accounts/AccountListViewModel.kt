@@ -8,13 +8,15 @@ import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
 import io.github.lucateam_wt.tumbler.TumblerApplication
 import io.github.lucateam_wt.tumbler.domain.crypto.SecretCipherException
+import io.github.lucateam_wt.tumbler.domain.model.AccountLimitException
 import io.github.lucateam_wt.tumbler.domain.model.AccountSummary
 import io.github.lucateam_wt.tumbler.domain.model.OtpAccount
 import io.github.lucateam_wt.tumbler.domain.model.OtpType
-import io.github.lucateam_wt.tumbler.domain.otp.Hotp
 import io.github.lucateam_wt.tumbler.domain.otp.OtpAuthUri
 import io.github.lucateam_wt.tumbler.domain.otp.Totp
 import io.github.lucateam_wt.tumbler.domain.repository.AccountRepository
+import io.github.lucateam_wt.tumbler.domain.repository.NextHotpCodeResult
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -41,8 +43,18 @@ internal fun nextCodeWindowSeconds(period: Int): Int =
     if (period <= 2 * NEXT_CODE_SECONDS) period / 2 else NEXT_CODE_SECONDS
 
 /**
- * Holds the decrypted accounts in memory only (never in saved state, never logged) and
- * turns them into [AccountListUiState], recomputed every second.
+ * Turns the stored accounts into [AccountListUiState], recomputed every second. Each
+ * account's secret is decrypted when the list loads: a TOTP account keeps it, inside its
+ * [Totp] generator (which copies it), in memory only (never in saved state, never logged),
+ * for the codes every second; a HOTP account keeps none, because "next code" decrypts the
+ * stored row again ([AccountRepository.nextHotpCode]). The array the repository decrypts is
+ * wiped as soon as the row was checked (and, for TOTP, the generator made), also when that
+ * fails or a reload cancels the load ([load]); a cancellation while it is being decrypted
+ * never hands it over ([AccountRepository.getAccount] wipes it). Not wiped: the copy each
+ * TOTP generator keeps (held until the generator is dropped, also when a reload cancels a
+ * load that had made some generators already, then left to the garbage collector), and the
+ * copy the platform's `SecretKeySpec` makes each time a code is generated (every second
+ * for every TOTP account while the list is observed, twice while the next code shows).
  *
  * Storage failures ([SecretCipherException], [SQLException]) never crash the app: they
  * become [AddError.STORAGE_FAILED], [AccountListUiState.loadFailed] or
@@ -59,13 +71,11 @@ class AccountListViewModel(
     private sealed interface Entry {
         val summary: AccountSummary
 
-        class Ready(override val summary: AccountSummary, val account: OtpAccount) : Entry {
-            val totp: Totp? = if (account.type == OtpType.TOTP) {
-                Totp(account.secret, account.algorithm, account.digits, account.period)
-            } else {
-                null
-            }
-        }
+        /** A TOTP account; [totp] holds its own copy of the secret. */
+        class TotpReady(override val summary: AccountSummary, val totp: Totp) : Entry
+
+        /** A HOTP account whose secret decrypts. No secret is kept: "next code" reads the stored row. */
+        class HotpReady(override val summary: AccountSummary) : Entry
 
         class Unavailable(override val summary: AccountSummary) : Entry
     }
@@ -100,8 +110,25 @@ class AccountListViewModel(
     private val _addState = MutableStateFlow(AddState())
     val addState: StateFlow<AddState> = _addState
 
+    private var observation: Job? = null
+
     init {
-        viewModelScope.launch {
+        observe()
+    }
+
+    /**
+     * Reads the accounts again from storage, for example after an import that may have
+     * changed them. The list already follows every change through the repository's flow;
+     * this also restarts that flow if a storage failure had stopped it.
+     */
+    fun reload() {
+        observe()
+    }
+
+    private fun observe() {
+        observation?.cancel()
+        loadFailed.value = false
+        observation = viewModelScope.launch {
             try {
                 repository.observeAccounts().collectLatest { summaries ->
                     val loaded = summaries.mapNotNull { load(it) }
@@ -118,8 +145,10 @@ class AccountListViewModel(
     }
 
     /**
-     * Parses [uri] and stores the account; the outcome is published in [addState]. Ignored
-     * while a previous call is still saving, so a double tap stores one account.
+     * Parses [uri] and stores the account; the outcome is published in [addState]. A link
+     * over the backup format's size limits gets its own error, every other bad link
+     * [AddError.INVALID_LINK]. Ignored while a previous call is still saving, so a double tap
+     * stores one account.
      */
     fun add(uri: String) {
         if (_addState.value.saving) return
@@ -128,6 +157,15 @@ class AccountListViewModel(
             _addState.value = try {
                 repository.add(OtpAuthUri.parse(uri))
                 AddState(saved = true)
+            } catch (e: AccountLimitException) {
+                AddState(
+                    error = when (e.field) {
+                        AccountLimitException.Field.ISSUER,
+                        AccountLimitException.Field.ACCOUNT_NAME,
+                        -> AddError.LABEL_TOO_LONG
+                        AccountLimitException.Field.SECRET -> AddError.SECRET_TOO_LONG
+                    },
+                )
             } catch (_: IllegalArgumentException) {
                 AddState(error = AddError.INVALID_LINK)
             } catch (_: SecretCipherException) {
@@ -164,60 +202,73 @@ class AccountListViewModel(
 
     /**
      * Shows the code for the HOTP account's current counter and stores the next counter.
-     * The counter is saved first, so a code is never shown that could be generated again.
-     * Does nothing if the account is gone or is not a usable HOTP account. At the counter
-     * limit (`Long.MAX_VALUE`) the counter is not touched and the row shows
-     * [HotpError.LIMIT_REACHED]; if the repository rejects the counter the row shows
-     * [HotpError.FAILED]. If storage fails no code is shown and
-     * [AccountListUiState.actionFailed] is set.
+     * Both come from one repository call ([AccountRepository.nextHotpCode]) that reads the
+     * stored row, so the cached list never decides which code or counter is used. The
+     * counter is saved before the code is shown, so a code is never shown that could be
+     * generated again. Does nothing if the list has no usable HOTP row with [id]. At the
+     * counter limit (`Long.MAX_VALUE`) the counter is not touched and the row shows
+     * [HotpError.LIMIT_REACHED]; if the repository makes no code for another reason the row
+     * shows [HotpError.FAILED]. If storage fails no code is shown and
+     * [AccountListUiState.actionFailed] is set. Requests run one at a time.
      */
     fun nextHotpCode(id: String) {
         viewModelScope.launch {
             hotpMutex.withLock {
-                val entry = entries.value?.firstOrNull { it.summary.id == id } as? Entry.Ready ?: return@withLock
-                val account = entry.account
-                if (account.type != OtpType.HOTP) return@withLock
-                val counter = account.counter
-                if (counter == Long.MAX_VALUE) {
-                    // counter + 1 would overflow: do not touch the repository or the stored counter.
-                    hotpResults.update { it + (id to HotpResult(error = HotpError.LIMIT_REACHED)) }
-                    return@withLock
-                }
-                try {
-                    repository.updateCounter(id, counter + 1)
-                } catch (_: NoSuchElementException) {
-                    hotpResults.update { it + (id to HotpResult(error = HotpError.FAILED)) }
-                    return@withLock
-                } catch (_: IllegalArgumentException) {
-                    hotpResults.update { it + (id to HotpResult(error = HotpError.FAILED)) }
-                    return@withLock
+                // The list only decides whether the row offers "next code".
+                val entry = entries.value?.firstOrNull { it.summary.id == id } as? Entry.HotpReady ?: return@withLock
+                if (entry.summary.type != OtpType.HOTP) return@withLock
+                val result = try {
+                    repository.nextHotpCode(id)
                 } catch (_: SQLException) {
                     actionFailed.value = true
                     return@withLock
                 }
-                val code = Hotp(account.secret, account.algorithm, account.digits).generate(counter)
-                hotpResults.update { it + (id to HotpResult(code = code)) }
-                entries.update { list ->
-                    list?.map { if (it === entry) Entry.Ready(it.summary, account.copy(counter = counter + 1)) else it }
+                val shown = when (result) {
+                    is NextHotpCodeResult.Code -> HotpResult(code = result.code)
+                    NextHotpCodeResult.LimitReached -> HotpResult(error = HotpError.LIMIT_REACHED)
+                    NextHotpCodeResult.NotHotp,
+                    NextHotpCodeResult.NotFound,
+                    NextHotpCodeResult.Failed,
+                    -> HotpResult(error = HotpError.FAILED)
                 }
+                // The stored counter changed, so the repository's flow reloads the list.
+                hotpResults.update { it + (id to shown) }
             }
         }
     }
 
-    private suspend fun load(summary: AccountSummary): Entry? =
+    /**
+     * Decrypts the account to tell whether its row is usable. For TOTP the generator copies
+     * the secret; for HOTP nothing is kept. Decrypting and using the secret happen in one
+     * `try` whose `finally` wipes the array the repository returned, on every exit:
+     * the result, a failure and a cancellation. A cancellation while the repository decrypts
+     * never hands an array over ([AccountRepository.getAccount] wipes it itself).
+     */
+    private suspend fun load(summary: AccountSummary): Entry? {
+        var account: OtpAccount? = null
         try {
-            repository.getAccount(summary.id)?.let { Entry.Ready(summary, it) }
+            val read = repository.getAccount(summary.id) ?: return null
+            account = read
+            return if (read.type == OtpType.TOTP) {
+                Entry.TotpReady(summary, Totp(read.secret, read.algorithm, read.digits, read.period))
+            } else {
+                Entry.HotpReady(summary)
+            }
         } catch (_: SecretCipherException) {
-            Entry.Unavailable(summary)
+            return Entry.Unavailable(summary)
         } catch (_: IllegalArgumentException) {
-            Entry.Unavailable(summary)
+            return Entry.Unavailable(summary)
+        } finally {
+            account?.secret?.fill(0)
         }
+    }
 
     private fun Entry.toItem(results: Map<String, HotpResult>, now: Long): AccountItem {
         val id = summary.id
         return when (this) {
             is Entry.Unavailable -> AccountItem.UnavailableItem(id, summary.issuer, summary.accountName)
-            is Entry.Ready -> if (totp != null) {
+            is Entry.HotpReady -> AccountItem.HotpItem(id, summary.issuer, summary.accountName, results[id]?.code, results[id]?.error)
+            is Entry.TotpReady -> {
                 val secondsRemaining = totp.secondsRemaining(now)
                 AccountItem.TotpItem(
                     id = id,
@@ -233,8 +284,6 @@ class AccountListViewModel(
                         null
                     },
                 )
-            } else {
-                AccountItem.HotpItem(id, summary.issuer, summary.accountName, results[id]?.code, results[id]?.error)
             }
         }
     }

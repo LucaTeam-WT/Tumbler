@@ -55,6 +55,13 @@ internal class FakeAccountBackupStore : AccountBackupStore {
     /** Thrown by the commit, after the block returned: the commit fails and every row is restored. */
     var commitFailure: Throwable? = null
 
+    /**
+     * If set, every read returns a list whose first iteration throws an [OutOfMemoryError] at
+     * its second element, as allocating while converting the rows could. Later iterations
+     * and indexed reads work, so the caller can still wipe what it was given.
+     */
+    var conversionRunsOutOfMemory = false
+
     fun add(account: OtpAccount, createdAtMillis: Long = 0): String {
         val id = "row-${nextId++}"
         rows[id] = Row(account.deepCopy(), createdAtMillis)
@@ -84,8 +91,31 @@ internal class FakeAccountBackupStore : AccountBackupStore {
 
     private fun read(): List<StoredAccount> {
         threads += currentThreadName()
-        return sorted().map { (id, row) ->
+        val accounts = sorted().map { (id, row) ->
             StoredAccount(id, row.account.deepCopy(), row.createdAt).also { handedOut += it.account.secret }
+        }
+        return if (conversionRunsOutOfMemory) FailsOnFirstIteration(accounts) else accounts
+    }
+
+    private class FailsOnFirstIteration<T>(private val items: List<T>) : AbstractList<T>() {
+        private var iterations = 0
+
+        override val size: Int get() = items.size
+
+        override fun get(index: Int): T = items[index]
+
+        override fun iterator(): Iterator<T> {
+            val first = iterations++ == 0
+            val delegate = items.iterator()
+            var index = 0
+            return object : Iterator<T> {
+                override fun hasNext(): Boolean = delegate.hasNext()
+
+                override fun next(): T {
+                    if (first && index++ == 1) throw OutOfMemoryError("test: converting the rows")
+                    return delegate.next()
+                }
+            }
         }
     }
 

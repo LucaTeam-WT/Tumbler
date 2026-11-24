@@ -37,20 +37,21 @@ Run all three before declaring a task done.
 
 ```
 io.github.lucateam_wt.tumbler
-├── backup/    # encrypted backup file (docs/backup-format.md): scrypt (Bouncy Castle) + AES-256-GCM container, payload codec with limits, export password policy, import duplicate planning (format code is pure JVM); BackupService (export, read + plan, apply in one transaction, typed results) on an AccountBackupStore; created by AppContainer but no screen calls it yet
+├── backup/    # encrypted backup file (docs/backup-format.md): scrypt (Bouncy Castle) + AES-256-GCM container, payload codec with limits, export password policy, import duplicate planning (format code is pure JVM); BackupService (export, read + plan, apply in one transaction, typed results) on an AccountBackupStore; created by AppContainer and run by ui/backup
 ├── data/      # Room, Keystore crypto, repositories
 │   ├── crypto/    # AES-GCM SecretCipher impl, Android Keystore key provider
 │   ├── db/        # Room database, AccountEntity, AccountDao, summary projection
 │   └── repository/ # RoomAccountRepository (encrypts secrets), RoomAccountBackupStore (bulk read and transactional writes for backup), entity/domain mappers
 ├── domain/    # OTP generators (TOTP/HOTP), models, use cases
 │   ├── crypto/    # SecretCipher interface + exceptions
-│   ├── model/     # OtpAccount, OtpType, AccountSummary, StoredAccount, AccountLimits (label/secret limits on the add path)
+│   ├── model/     # OtpAccount, OtpType, AccountSummary, StoredAccount, AccountLimits (label/secret limits on the add path, AccountLimitException)
 │   ├── otp/       # Base32, Hotp, Totp, OtpAuthUri parser
 │   └── repository/ # AccountRepository and AccountBackupStore interfaces
 ├── ui/        # Compose screens, components, theme
-│   ├── accounts/  # compact-row accounts list (long-press menu; the next TOTP code shows in the last 10 s and is never stored; list item motion, empty/list crossfade, smooth countdown ring with pure helpers in RingMotion.kt), add screen, AccountListViewModel, UI state, clipboard copy
+│   ├── accounts/  # compact-row accounts list (long-press menu; overflow menu with export/import; the next TOTP code shows in the last 10 s and is never stored; list item motion, empty/list crossfade, smooth countdown ring with pure helpers in RingMotion.kt), add screen, AccountListViewModel (reload after an import), UI state, clipboard copy
+│   ├── backup/    # BackupViewModel (sealed BackupUiState; passwords in memory only, never saved state), password/progress/confirm/message dialogs, import review screen, SAF document wrapper (BackupFile, partial-file delete)
 │   ├── theme/     # Material 3 theme (dynamic color, dark mode)
-│   └── TumblerApp.kt  # root composable: switches list <-> add screen with AnimatedContent (slide + fade, no navigation library)
-├── di/        # AppContainer (manual DI, lazy: repository, backup service; Hilt is not used yet)
+│   └── TumblerApp.kt  # root composable: switches list <-> add <-> import review with AnimatedContent (slide + fade, no navigation library), hosts the SAF pickers and backup dialogs
+├── di/        # AppContainer (manual DI, lazy: repository, backup service; view model factories read it; Hilt is not used yet)
 └── TumblerApplication.kt  # owns the AppContainer
 ```

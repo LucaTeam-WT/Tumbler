@@ -32,10 +32,12 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import io.github.lucateam_wt.tumbler.R
+import io.github.lucateam_wt.tumbler.domain.model.AccountLimits
 
 /**
  * Lets the user paste an `otpauth://` link. The text is deliberately kept with `remember`
@@ -95,13 +97,23 @@ fun AddAccountScreen(
                 label = { Text(stringResource(R.string.add_link_label)) },
                 supportingText = {
                     Text(
-                        stringResource(
-                            when (error) {
-                                AddError.INVALID_LINK -> R.string.add_error_invalid_link
-                                AddError.STORAGE_FAILED -> R.string.add_error_storage
-                                null -> R.string.add_link_hint
-                            },
-                        ),
+                        when (error) {
+                            AddError.INVALID_LINK -> stringResource(R.string.add_error_invalid_link)
+                            AddError.LABEL_TOO_LONG ->
+                                pluralStringResource(
+                                    R.plurals.add_error_label_too_long,
+                                    AccountLimits.MAX_LABEL_UTF8_BYTES,
+                                    AccountLimits.MAX_LABEL_UTF8_BYTES,
+                                )
+                            AddError.SECRET_TOO_LONG ->
+                                pluralStringResource(
+                                    R.plurals.add_error_secret_too_long,
+                                    AccountLimits.MAX_SECRET_BYTES,
+                                    AccountLimits.MAX_SECRET_BYTES,
+                                )
+                            AddError.STORAGE_FAILED -> stringResource(R.string.add_error_storage)
+                            null -> stringResource(R.string.add_link_hint)
+                        },
                     )
                 },
                 isError = error != null,

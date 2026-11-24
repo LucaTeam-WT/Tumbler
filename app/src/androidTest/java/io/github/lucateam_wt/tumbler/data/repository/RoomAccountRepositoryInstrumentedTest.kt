@@ -8,11 +8,13 @@ import io.github.lucateam_wt.tumbler.data.db.TumblerDatabase
 import io.github.lucateam_wt.tumbler.domain.crypto.KeyUnavailableException
 import io.github.lucateam_wt.tumbler.domain.model.OtpAccount
 import io.github.lucateam_wt.tumbler.domain.model.OtpType
+import io.github.lucateam_wt.tumbler.domain.repository.NextHotpCodeResult
 import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertSame
 import org.junit.Assert.assertThrows
 import org.junit.Before
 import org.junit.Test
@@ -35,7 +37,7 @@ class RoomAccountRepositoryInstrumentedTest {
 
     private fun openRepository(): RoomAccountRepository {
         val database = TumblerDatabase.open(context, databaseName).also { openDatabases += it }
-        return RoomAccountRepository(database.accountDao(), AesGcmSecretCipher(AndroidKeystoreKeyProvider(alias)))
+        return RoomAccountRepository(database, AesGcmSecretCipher(AndroidKeystoreKeyProvider(alias)))
     }
 
     private fun deleteTestData() {
@@ -81,17 +83,17 @@ class RoomAccountRepositoryInstrumentedTest {
     }
 
     @Test
-    fun updateCounter_changesOnlyHotpRows() = runBlocking {
+    fun nextHotpCode_changesOnlyHotpRows() = runBlocking {
         val repository = openRepository()
         val totpId = repository.add(totp)
         val hotpId = repository.add(hotp)
 
-        // Real SQL reports 0 rows updated for a TOTP row or an unknown id.
-        assertThrows(NoSuchElementException::class.java) { runBlocking { repository.updateCounter(totpId, 9) } }
-        assertThrows(NoSuchElementException::class.java) { runBlocking { repository.updateCounter("missing", 9) } }
-        repository.updateCounter(hotpId, 9)
+        assertSame(NextHotpCodeResult.NotHotp, repository.nextHotpCode(totpId))
+        assertSame(NextHotpCodeResult.NotFound, repository.nextHotpCode("missing"))
+        // RFC 4226 Appendix D, counter 3; the real compare-and-set SQL matched the row.
+        assertEquals(NextHotpCodeResult.Code("969429", 4), repository.nextHotpCode(hotpId))
 
         assertEquals(totp, repository.getAccount(totpId))
-        assertEquals(hotp.copy(counter = 9), repository.getAccount(hotpId))
+        assertEquals(hotp.copy(counter = 4), repository.getAccount(hotpId))
     }
 }

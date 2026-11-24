@@ -5,6 +5,7 @@ import io.github.lucateam_wt.tumbler.domain.crypto.KeyUnavailableException
 import io.github.lucateam_wt.tumbler.domain.crypto.SecretCipherException
 import io.github.lucateam_wt.tumbler.domain.model.OtpAccount
 import io.github.lucateam_wt.tumbler.domain.model.OtpType
+import io.github.lucateam_wt.tumbler.domain.otp.Base32
 import io.github.lucateam_wt.tumbler.domain.otp.Hotp
 import io.github.lucateam_wt.tumbler.domain.otp.OtpAlgorithm
 import io.github.lucateam_wt.tumbler.domain.otp.Totp
@@ -26,6 +27,7 @@ import kotlinx.coroutines.test.setMain
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -173,6 +175,40 @@ class AccountListViewModelTest {
     }
 
     @Test
+    fun `add reports a label over the backup limit with its own error`() = runTest {
+        val viewModel = createViewModel()
+
+        viewModel.add("otpauth://totp/Example:${"a".repeat(1025)}?secret=$rfcBase32Secret")
+        assertEquals(AddState(error = AddError.LABEL_TOO_LONG), viewModel.addState.value)
+
+        viewModel.add("otpauth://totp/alice?secret=$rfcBase32Secret&issuer=${"a".repeat(1025)}")
+        assertEquals(AddState(error = AddError.LABEL_TOO_LONG), viewModel.addState.value)
+        assertTrue(repository.storedAccounts.isEmpty())
+    }
+
+    @Test
+    fun `add reports a secret over the backup limit with its own error`() = runTest {
+        val viewModel = createViewModel()
+
+        // 1025 bytes: repeats of the public RFC seed's Base32 ("GEZDGNBV" is "12345").
+        viewModel.add("otpauth://totp/Example:alice?secret=" + "GEZDGNBV".repeat(205))
+
+        assertEquals(AddState(error = AddError.SECRET_TOO_LONG), viewModel.addState.value)
+        assertTrue(repository.storedAccounts.isEmpty())
+    }
+
+    @Test
+    fun `add keeps the invalid link error for every other bad link`() = runTest {
+        val viewModel = createViewModel()
+
+        viewModel.add("otpauth://totp/al\ud800ice?secret=$rfcBase32Secret")
+        assertEquals(AddState(error = AddError.INVALID_LINK), viewModel.addState.value)
+
+        viewModel.add("otpauth://totp/alice?secret=$rfcBase32Secret&digits=9")
+        assertEquals(AddState(error = AddError.INVALID_LINK), viewModel.addState.value)
+    }
+
+    @Test
     fun `add reports a storage failure`() = runTest {
         repository.addFailure = SecretCipherException("Encryption failed")
         val viewModel = createViewModel()
@@ -252,7 +288,7 @@ class AccountListViewModelTest {
     fun `next code failure in storage shows no code and sets the action flag`() = runTest {
         val id = repository.add(hotpAccount())
         val viewModel = createViewModel()
-        repository.updateCounterFailure = SQLException("locked")
+        repository.nextHotpCodeFailure = SQLException("locked")
 
         viewModel.nextHotpCode(id)
 
@@ -270,6 +306,42 @@ class AccountListViewModelTest {
         assertTrue(state.loadFailed)
         assertFalse(state.isLoading)
         assertTrue(state.accounts.isEmpty())
+    }
+
+    @Test
+    fun `reload restarts a list whose loading had failed`() = runTest {
+        repository.observeFailure = SQLException("corrupt")
+        val viewModel = createViewModel()
+        assertTrue(viewModel.uiState.value.loadFailed)
+
+        repository.observeFailure = null
+        repository.add(totpAccount())
+        viewModel.reload()
+
+        assertFalse(viewModel.uiState.value.loadFailed)
+        assertEquals("94287082", (viewModel.items().single() as TotpItem).code)
+    }
+
+    @Test
+    fun `reload decrypts the accounts again`() = runTest {
+        val id = repository.add(totpAccount(digits = 8))
+        val viewModel = createViewModel()
+        assertEquals("94287082", (viewModel.items().single() as TotpItem).code)
+        // Overwritten like a committed import whose change the list has not been told about.
+        repository.replaceWithoutPublishing(id, totpAccount(digits = 6))
+
+        viewModel.reload()
+
+        assertEquals("287082", (viewModel.items().single() as TotpItem).code)
+    }
+
+    @Test
+    fun `nothing to export only once the list has loaded empty without a failure`() {
+        assertTrue(AccountListUiState(isLoading = false).nothingToExport)
+        assertFalse(AccountListUiState(isLoading = true).nothingToExport)
+        assertFalse(AccountListUiState(isLoading = false, loadFailed = true).nothingToExport)
+        val item = AccountItem.UnavailableItem("id", "ACME", "alice")
+        assertFalse(AccountListUiState(isLoading = false, accounts = listOf(item)).nothingToExport)
     }
 
     @Test
@@ -316,24 +388,104 @@ class AccountListViewModelTest {
         assertEquals(2L, repository.counterOf(id))
     }
 
+    /**
+     * The list decrypts every secret to tell whether its row is usable, and keeps none of the
+     * decrypted arrays: a HOTP row keeps no secret at all ("next code" decrypts the stored
+     * row again), and a TOTP row's generator keeps its own copy. That holds again for every
+     * reload after the table changed.
+     */
     @Test
-    fun `hotp next code survives a missing account`() = runTest {
-        val id = repository.add(hotpAccount())
+    fun `the list wipes every decrypted secret it read, also after the table changed`() = runTest {
+        val hotpId = repository.add(hotpAccount())
+        repository.add(totpAccount())
         val viewModel = createViewModel()
-        repository.updateCounterFailure = NoSuchElementException("No HOTP account to update")
+        assertEquals(2, repository.handedOutSecrets.size)
+
+        viewModel.nextHotpCode(hotpId) // stores counter 1, so the list loads again
+        repository.add(totpAccount(name = "carol"))
+
+        assertTrue("the list loaded again", repository.handedOutSecrets.size > 2)
+        repository.handedOutSecrets.forEach { (id, secret) -> assertTrue("secret read for $id not wiped", secret.all { it == 0.toByte() }) }
+        // Still working: the TOTP codes come from the generators' own copies (RFC 6238
+        // vector), the HOTP code from the stored row (RFC 4226 vector for counter 0).
+        val items = viewModel.items()
+        assertEquals(listOf("94287082", "94287082"), items.filterIsInstance<TotpItem>().map { it.code })
+        assertEquals("755224", items.filterIsInstance<HotpItem>().single().code)
+    }
+
+    /** Public RFC 6238 example secret, distinct from [rfcSecret]. */
+    private val otherSecret = "JBSWY3DPEHPK3PXP"
+
+    @Test
+    fun `hotp next code uses the stored secret and counter when an import replaced the row before the list reloaded`() = runTest {
+        val id = repository.add(hotpAccount(counter = 3))
+        val viewModel = createViewModel()
+        // A committed import replaced the row (matched by label only): new secret, counter 50.
+        // The list still holds the account it decrypted before.
+        val newSecret = Base32.decode(otherSecret)
+        repository.replaceWithoutPublishing(id, hotpAccount(counter = 50).copy(secret = newSecret))
 
         viewModel.nextHotpCode(id)
 
+        val item = viewModel.items().single() as HotpItem
+        assertEquals(Hotp(newSecret).generate(50), item.code)
+        assertNotEquals(Hotp(rfcSecret).generate(3), item.code)
+        assertEquals(51L, repository.counterOf(id))
+    }
+
+    @Test
+    fun `hotp next code never moves a counter back that an import raised before the list reloaded`() = runTest {
+        val id = repository.add(hotpAccount(counter = 3))
+        val viewModel = createViewModel()
+        // Same secret, larger counter kept by an import (KEEP_LARGER_OF_STORED_AND_IMPORTED).
+        repository.replaceWithoutPublishing(id, hotpAccount(counter = 50))
+
+        viewModel.nextHotpCode(id)
+
+        assertEquals(Hotp(rfcSecret).generate(50), (viewModel.items().single() as HotpItem).code)
+        assertEquals(51L, repository.counterOf(id))
+    }
+
+    @Test
+    fun `overlapping hotp next code requests get consecutive counters and different codes`() = runTest {
+        val id = repository.add(hotpAccount())
+        val viewModel = createViewModel()
+        val gate = CompletableDeferred<Unit>()
+        repository.nextHotpCodeGate = gate
+
+        viewModel.nextHotpCode(id)
+        viewModel.nextHotpCode(id)
         assertNull((viewModel.items().single() as HotpItem).code)
+        assertEquals(1, repository.nextHotpCodeCalls) // the second waits for the first
+        gate.complete(Unit)
+
+        assertEquals(2, repository.nextHotpCodeCalls)
+        assertEquals(2, repository.counterWrites)
+        assertEquals(2L, repository.counterOf(id))
+        // RFC 4226 counter 1; counter 0 ("755224") was shown first.
+        assertEquals("287082", (viewModel.items().single() as HotpItem).code)
+    }
+
+    @Test
+    fun `hotp next code survives a secret that no longer decrypts`() = runTest {
+        val id = repository.add(hotpAccount())
+        val viewModel = createViewModel()
+        repository.getAccountFailures[id] = KeyUnavailableException()
+
+        viewModel.nextHotpCode(id)
+
+        val item = viewModel.items().single() as HotpItem
+        assertNull(item.code)
+        assertEquals(HotpError.FAILED, item.error)
         assertEquals(0L, repository.counterOf(id))
 
-        repository.updateCounterFailure = null
+        repository.getAccountFailures.clear()
         viewModel.nextHotpCode(id)
         assertEquals("755224", (viewModel.items().single() as HotpItem).code)
     }
 
     @Test
-    fun `hotp at the counter limit shows an error, no code and does not call the repository`() = runTest {
+    fun `hotp at the counter limit shows an error, no code and writes nothing`() = runTest {
         val id = repository.add(hotpAccount(counter = Long.MAX_VALUE))
         val other = repository.add(totpAccount())
         val viewModel = createViewModel()
@@ -343,7 +495,7 @@ class AccountListViewModelTest {
         val item = viewModel.items().first { it.id == id } as HotpItem
         assertNull(item.code)
         assertEquals(HotpError.LIMIT_REACHED, item.error)
-        assertEquals(0, repository.updateCounterCalls)
+        assertEquals(0, repository.counterWrites)
         assertEquals(Long.MAX_VALUE, repository.counterOf(id))
         assertFalse(viewModel.uiState.value.actionFailed)
         // Other accounts keep working.
@@ -360,27 +512,27 @@ class AccountListViewModelTest {
         val expected = Hotp(rfcSecret, OtpAlgorithm.SHA1, 6).generate(Long.MAX_VALUE - 1)
         assertEquals(HotpItem(id, "Example", "bob", expected), viewModel.items().single())
         assertEquals(Long.MAX_VALUE, repository.counterOf(id))
-        assertEquals(1, repository.updateCounterCalls)
+        assertEquals(1, repository.counterWrites)
 
         viewModel.nextHotpCode(id)
 
         val item = viewModel.items().single() as HotpItem
         assertNull(item.code)
         assertEquals(HotpError.LIMIT_REACHED, item.error)
-        assertEquals(1, repository.updateCounterCalls)
+        assertEquals(1, repository.counterWrites)
         assertEquals(Long.MAX_VALUE, repository.counterOf(id))
     }
 
     @Test
-    fun `hotp next code ends in an error state when the repository throws`() = runTest {
-        val failures = listOf(
-            IllegalArgumentException("Counter must not be negative"),
-            NoSuchElementException("No HOTP account to update"),
+    fun `hotp next code ends in an error state when the stored row is gone or no longer hotp`() = runTest {
+        val changes = listOf<(String) -> Unit>(
+            { id -> repository.replaceWithoutPublishing(id, null) },
+            { id -> repository.replaceWithoutPublishing(id, totpAccount()) },
         )
-        for (failure in failures) {
+        for (change in changes) {
             val id = repository.add(hotpAccount())
             val viewModel = createViewModel()
-            repository.updateCounterFailure = failure
+            change(id)
 
             viewModel.nextHotpCode(id)
 
@@ -388,10 +540,9 @@ class AccountListViewModelTest {
             assertNull(item.code)
             assertEquals(HotpError.FAILED, item.error)
             assertFalse(viewModel.uiState.value.actionFailed)
-            assertEquals(0L, repository.counterOf(id))
 
             // The error is not sticky: the next request that succeeds replaces it with a code.
-            repository.updateCounterFailure = null
+            repository.replaceWithoutPublishing(id, hotpAccount())
             viewModel.nextHotpCode(id)
             val recovered = viewModel.items().last() as HotpItem
             assertEquals("755224", recovered.code)
@@ -520,5 +671,6 @@ class AccountListViewModelTest {
         viewModel.nextHotpCode(id)
 
         assertEquals(0L, repository.counterOf(id))
+        assertEquals(0, repository.nextHotpCodeCalls)
     }
 }
