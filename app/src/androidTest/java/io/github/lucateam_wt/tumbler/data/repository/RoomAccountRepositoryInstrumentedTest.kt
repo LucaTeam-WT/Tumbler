@@ -6,6 +6,7 @@ import io.github.lucateam_wt.tumbler.data.crypto.AesGcmSecretCipher
 import io.github.lucateam_wt.tumbler.data.crypto.AndroidKeystoreKeyProvider
 import io.github.lucateam_wt.tumbler.data.db.TumblerDatabase
 import io.github.lucateam_wt.tumbler.domain.crypto.KeyUnavailableException
+import io.github.lucateam_wt.tumbler.domain.crypto.NewStorageKeyRequiredException
 import io.github.lucateam_wt.tumbler.domain.model.OtpAccount
 import io.github.lucateam_wt.tumbler.domain.model.OtpType
 import io.github.lucateam_wt.tumbler.domain.repository.NextHotpCodeResult
@@ -16,6 +17,7 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertSame
 import org.junit.Assert.assertThrows
+import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -41,7 +43,7 @@ class RoomAccountRepositoryInstrumentedTest {
     }
 
     private fun deleteTestData() {
-        keyStore().deleteEntry(alias)
+        deleteTestKeys(alias)
         context.deleteDatabase(databaseName)
     }
 
@@ -73,12 +75,17 @@ class RoomAccountRepositoryInstrumentedTest {
     }
 
     @Test
-    fun keystoreAliasDeleted_getAccountThrowsKeyUnavailable() = runBlocking {
-        val repository = openRepository()
-        val id = repository.add(totp)
-        keyStore().deleteEntry(alias)
+    fun wrappingKeyDeleted_aNewProcessGetsKeyUnavailableAndNoKeyIsRecreated() = runBlocking {
+        val id = openRepository().add(totp)
+        val wrapAlias = "${alias}_wrap"
+        assertTrue(keyStore().containsAlias(wrapAlias))
+        keyStore().deleteEntry(wrapAlias)
 
-        assertThrows(KeyUnavailableException::class.java) { runBlocking { repository.getAccount(id) } }
+        // A new process: a new holder over the same database.
+        val next = openRepository()
+        assertThrows(KeyUnavailableException::class.java) { runBlocking { next.getAccount(id) } }
+        assertThrows(NewStorageKeyRequiredException::class.java) { runBlocking { next.add(hotp) } }
+        assertFalse(keyStore().containsAlias(wrapAlias))
         assertFalse(keyStore().containsAlias(alias))
     }
 

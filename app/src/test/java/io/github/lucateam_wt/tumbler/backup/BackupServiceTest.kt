@@ -11,6 +11,7 @@ import io.github.lucateam_wt.tumbler.backup.BackupFixtures.secretB
 import io.github.lucateam_wt.tumbler.backup.ConflictDecision.KEEP_BOTH
 import io.github.lucateam_wt.tumbler.backup.ConflictDecision.REPLACE
 import io.github.lucateam_wt.tumbler.backup.ConflictDecision.SKIP
+import io.github.lucateam_wt.tumbler.domain.crypto.KeyTemporarilyUnavailableException
 import io.github.lucateam_wt.tumbler.domain.crypto.SecretCipherException
 import io.github.lucateam_wt.tumbler.domain.model.OtpAccount
 import io.github.lucateam_wt.tumbler.domain.model.OtpType
@@ -45,6 +46,7 @@ import java.io.Closeable
 import java.io.IOException
 import java.io.InputStream
 import java.io.OutputStream
+import java.security.ProviderException
 import java.security.SecureRandom
 import java.util.concurrent.Executors
 import kotlin.coroutines.ContinuationInterceptor
@@ -286,6 +288,15 @@ class BackupServiceTest {
     }
 
     @Test
+    fun export_keyTemporarilyUnavailable_isStorageFailedNotAnUnreadableAccount() {
+        store.add(githubAccount)
+        store.readFailure = KeyTemporarilyUnavailableException(ProviderException("busy"))
+        val output = TestOutput()
+        assertSame(ExportResult.StorageFailed, export(output))
+        assertEquals(0, output.bytes.size())
+    }
+
+    @Test
     fun export_scryptOutOfMemory_isNotEnoughMemoryAndWipesTheSecrets() {
         store.add(githubAccount)
         codec.exportFailure = BackupNotEnoughMemoryException(OutOfMemoryError("test"))
@@ -378,6 +389,7 @@ class BackupServiceTest {
         val failures = listOf(
             UnreadableAccountException("row-3", SecretCipherException("Decryption failed")) to ImportReadResult.ExistingAccountUnreadable::class.java,
             SQLException("locked") to ImportReadResult.StorageFailed::class.java,
+            KeyTemporarilyUnavailableException(ProviderException("busy")) to ImportReadResult.StorageFailed::class.java,
             OutOfMemoryError("test") to ImportReadResult.NotEnoughMemory::class.java,
         )
         for ((failure, expected) in failures) {

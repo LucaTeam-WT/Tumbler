@@ -45,7 +45,7 @@ class NextHotpCodeInstrumentedTest {
     private fun keyStore(): KeyStore = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
 
     private fun deleteTestData() {
-        keyStore().deleteEntry(alias)
+        deleteTestKeys(alias)
         context.deleteDatabase(databaseName)
     }
 

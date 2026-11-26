@@ -24,11 +24,13 @@ import io.github.lucateam_wt.tumbler.backup.readBackup
 import io.github.lucateam_wt.tumbler.backup.sealBackup
 import io.github.lucateam_wt.tumbler.data.crypto.AesGcmSecretCipher
 import io.github.lucateam_wt.tumbler.data.crypto.AndroidKeystoreKeyProvider
+import io.github.lucateam_wt.tumbler.data.crypto.DataKeyCipher
 import io.github.lucateam_wt.tumbler.data.crypto.KeyProvider
 import io.github.lucateam_wt.tumbler.data.db.AccountEntity
 import io.github.lucateam_wt.tumbler.data.db.TumblerDatabase
 import io.github.lucateam_wt.tumbler.data.repository.RoomAccountBackupStore
 import io.github.lucateam_wt.tumbler.data.repository.RoomAccountRepository
+import io.github.lucateam_wt.tumbler.data.repository.deleteTestKeys
 import io.github.lucateam_wt.tumbler.data.repository.accountAssociatedData
 import io.github.lucateam_wt.tumbler.data.repository.testDataKeyHolder
 import io.github.lucateam_wt.tumbler.domain.model.OtpAccount
@@ -103,7 +105,7 @@ class BackupFlowInstrumentedTest {
     private inner class Device(alias: String, codec: BackupCodec = DefaultBackupCodec) : Closeable {
         val database: TumblerDatabase = Room.inMemoryDatabaseBuilder(context, TumblerDatabase::class.java).build()
         private val cipher = AesGcmSecretCipher(AndroidKeystoreKeyProvider(alias))
-        private val dataKeys = testDataKeyHolder(database, "${alias}_wrap")
+        val dataKeys = testDataKeyHolder(database, "${alias}_wrap")
         val repository = RoomAccountRepository(database, cipher, dataKeys)
         val store = RoomAccountBackupStore(database, cipher, dataKeys)
         val viewModel = onMain {
@@ -135,12 +137,12 @@ class BackupFlowInstrumentedTest {
     private fun keyStore(): KeyStore = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
 
     @Before
-    fun setUp() = aliases.forEach(keyStore()::deleteEntry)
+    fun setUp() = aliases.forEach(::deleteTestKeys)
 
     @After
     fun tearDown() {
         devices.forEach(Device::close)
-        aliases.forEach(keyStore()::deleteEntry)
+        aliases.forEach(::deleteTestKeys)
     }
 
     private fun device(index: Int, codec: BackupCodec = DefaultBackupCodec) = Device(aliases[index], codec).also { devices += it }
@@ -381,32 +383,37 @@ class BackupFlowInstrumentedTest {
     }
 
     /**
-     * Splits the per-row cost: the average of [KEYSTORE_SAMPLE] calls each of a key lookup
-     * alone, a decrypt of one stored row as the app does it (lookup included), the same decrypt
-     * with the key already looked up, and an encrypt (lookup included) of zeros. Every
+     * Splits the per-row cost: the average of [KEYSTORE_SAMPLE] calls each of a legacy key lookup
+     * alone, a legacy decrypt as the app does it for a row not migrated yet (lookup included), the
+     * same decrypt with the key already looked up, an encrypt (lookup included) of zeros, and the
+     * software open of one stored row with its data key, as the app reads every row now. Every
      * decrypted array is wiped.
      */
     private fun keystoreSample(device: Device, alias: String): String = runBlocking {
         val row = device.database.accountDao().getAll().first()
         val associatedData = accountAssociatedData(row.id)
         val provider = AndroidKeystoreKeyProvider(alias)
+        val zeros = ByteArray(rfcSecret.size + 2)
+        // Nothing writes the legacy format any more: make one legacy payload (and key) to time.
+        val legacyPayload = AesGcmSecretCipher(provider).encrypt(zeros, associatedData)
+        val dataKey = device.dataKeys.key(row.keyVersion)
         val key = checkNotNull(provider.getExistingKey())
         val loaded = object : KeyProvider {
             override fun getOrCreateKey(): SecretKey = key
             override fun getExistingKey(): SecretKey = key
         }
-        val zeros = ByteArray(rfcSecret.size + 2)
         fun perCall(block: () -> Unit): String {
             val started = SystemClock.elapsedRealtimeNanos()
             repeat(KEYSTORE_SAMPLE) { block() }
             return millis((SystemClock.elapsedRealtimeNanos() - started) / 1e6 / KEYSTORE_SAMPLE)
         }
         val lookup = perCall { checkNotNull(provider.getExistingKey()) }
-        val decrypt = perCall { AesGcmSecretCipher(provider).decrypt(row.secretBlob, associatedData).fill(0) }
-        val decryptLoaded = perCall { AesGcmSecretCipher(loaded).decrypt(row.secretBlob, associatedData).fill(0) }
+        val decrypt = perCall { AesGcmSecretCipher(provider).decrypt(legacyPayload, associatedData).fill(0) }
+        val decryptLoaded = perCall { AesGcmSecretCipher(loaded).decrypt(legacyPayload, associatedData).fill(0) }
         val encrypt = perCall { AesGcmSecretCipher(provider).encrypt(zeros, associatedData) }
-        "key lookup $lookup ms, decrypt $decrypt ms, decrypt with the key already looked up $decryptLoaded ms, " +
-            "encrypt $encrypt ms (average of $KEYSTORE_SAMPLE each)"
+        val open = perCall { DataKeyCipher.open(dataKey, row.id, row.secretBlob).fill(0) }
+        "legacy key lookup $lookup ms, legacy decrypt $decrypt ms, legacy decrypt with the key already looked up " +
+            "$decryptLoaded ms, legacy encrypt $encrypt ms, data-key open $open ms (average of $KEYSTORE_SAMPLE each)"
     }
 
     /**
@@ -495,10 +502,12 @@ class BackupFlowInstrumentedTest {
         assertEquals(sourceRows.map(::fields).toSet(), targetRows.map(::fields).toSet())
         val expected = (0 until count).map(::bulkAccount)
         assertEquals(expected.map { it.issuer to it.accountName }.toSet(), targetRows.map { it.issuer to it.accountName }.toSet())
-        val targetCipher = AesGcmSecretCipher(AndroidKeystoreKeyProvider(aliases[1]))
+        // Imported rows are sealed with the target's data key, never its legacy key.
+        assertTrue(targetRows.all { it.keyVersion == 1 && it.legacySecretBlob == null })
+        val targetKey = runBlocking { target.dataKeys.key(1) }
         for (i in listOf(0, 1, count / 2, count - 2, count - 1)) {
             val row = targetRows.single { it.issuer == expected[i].issuer }
-            val secret = targetCipher.decrypt(row.secretBlob, accountAssociatedData(row.id))
+            val secret = DataKeyCipher.open(targetKey, row.id, row.secretBlob)
             try {
                 assertTrue("secret of account $i", secret.contentEquals(expected[i].secret))
             } finally {

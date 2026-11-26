@@ -2,9 +2,11 @@ package io.github.lucateam_wt.tumbler.data.repository
 
 import io.github.lucateam_wt.tumbler.backup.isWiped
 import io.github.lucateam_wt.tumbler.data.crypto.AesGcmSecretCipher
+import io.github.lucateam_wt.tumbler.data.crypto.DataKeyCipher
 import io.github.lucateam_wt.tumbler.data.crypto.KeyProvider
 import io.github.lucateam_wt.tumbler.data.db.AccountEntity
 import io.github.lucateam_wt.tumbler.domain.crypto.KeyUnavailableException
+import io.github.lucateam_wt.tumbler.domain.crypto.NewStorageKeyRequiredException
 import io.github.lucateam_wt.tumbler.domain.crypto.SecretCipher
 import io.github.lucateam_wt.tumbler.domain.crypto.SecretCipherException
 import io.github.lucateam_wt.tumbler.domain.model.AccountSummary
@@ -23,6 +25,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
@@ -59,8 +62,13 @@ class RoomAccountRepositoryTest {
         val decrypted: MutableList<ByteArray> = Collections.synchronizedList(mutableListOf())
         var onDecrypt: () -> Unit = {}
 
+        /** Encryptions made through the repository; tests seed legacy rows with [seal]. */
+        val encrypts = java.util.concurrent.atomic.AtomicInteger()
+
+        fun seal(plaintext: ByteArray, associatedData: ByteArray): ByteArray = delegate.encrypt(plaintext, associatedData)
+
         override fun encrypt(plaintext: ByteArray, associatedData: ByteArray): ByteArray =
-            delegate.encrypt(plaintext, associatedData)
+            delegate.encrypt(plaintext, associatedData).also { encrypts.incrementAndGet() }
 
         override fun decrypt(payload: ByteArray, associatedData: ByteArray): ByteArray =
             delegate.decrypt(payload, associatedData).also {
@@ -96,7 +104,7 @@ class RoomAccountRepositoryTest {
     private val dao = FakeAccountDao()
     private val cipher = RecordingCipher(AesGcmSecretCipher(keyProvider))
     private val runner = SerialRunner(dao)
-    private val dataKeys = testDataKeyHolder()
+    private val dataKeys = linkedDataKeyHolder(dao)
     private var nextId = 0
     private var now = 1_000L
     private val repository = RoomAccountRepository(
@@ -128,6 +136,42 @@ class RoomAccountRepositoryTest {
 
     private fun ByteArray.containsSequence(needle: ByteArray): Boolean =
         (0..size - needle.size).any { start -> needle.indices.all { this[start + it] == needle[it] } }
+
+    /** Stores [account] in the legacy format, as the app did before the data key (a row not migrated yet). */
+    private fun addLegacy(account: OtpAccount): String {
+        val id = "id-${nextId++}"
+        dao.put(account.toEntity(id, cipher.seal(account.secret, accountAssociatedData(id)), now++))
+        return id
+    }
+
+    @Test
+    fun add_sealsWithTheDataKeyAndNeverUsesTheLegacyKey() = runBlocking {
+        val id = repository.add(totp)
+
+        val row = dao.stored(id)
+        assertEquals(1, row.keyVersion)
+        assertEquals(2, row.secretBlob[0].toInt())
+        assertNull(row.legacySecretBlob)
+        assertArrayEquals(totp.secret, DataKeyCipher.open(dataKeys.key(1), id, row.secretBlob))
+        assertEquals(0, cipher.encrypts.get())
+        assertTrue(cipher.decrypted.isEmpty())
+        assertEquals(totp, repository.getAccount(id))
+        assertTrue(cipher.decrypted.isEmpty())
+    }
+
+    @Test
+    fun add_whenANewStorageKeyIsRequired_refusesAndWritesNothing() = runBlocking {
+        val legacy = addLegacy(totp)
+        // A row names data key 3, whose record is gone: nothing is created automatically.
+        dao.put(dao.stored(legacy).copyWith(keyVersion = 3))
+        val transactions = runner.transactions
+
+        assertThrows(NewStorageKeyRequiredException::class.java) { runBlocking { repository.add(hotp) } }
+
+        assertEquals(1, dao.size)
+        assertEquals(transactions, runner.transactions)
+        assertEquals(0, cipher.encrypts.get())
+    }
 
     @Test
     fun add_thenGetAccount_returnsEqualAccount() = runBlocking {
@@ -172,7 +216,7 @@ class RoomAccountRepositoryTest {
 
     @Test
     fun keyLost_getAccountThrowsKeyUnavailable() = runBlocking {
-        val id = repository.add(totp)
+        val id = addLegacy(totp)
         keyProvider.lost = true
 
         assertThrows(KeyUnavailableException::class.java) { runBlocking { repository.getAccount(id) } }
@@ -198,17 +242,19 @@ class RoomAccountRepositoryTest {
 
     @Test
     fun nextHotpCode_returnsTheRfcCodeForTheStoredCounterAndStoresTheNextOne() = runBlocking {
-        val hotpId = repository.add(hotp)
+        for (hotpId in listOf(repository.add(hotp), addLegacy(hotp))) {
+            val transactions = runner.transactions
 
-        val first = repository.nextHotpCode(hotpId)
-        val second = repository.nextHotpCode(hotpId)
+            val first = repository.nextHotpCode(hotpId)
+            val second = repository.nextHotpCode(hotpId)
 
-        // RFC 4226 Appendix D, counters 5 and 6.
-        assertEquals(NextHotpCodeResult.Code("254676", 6), first)
-        assertEquals(NextHotpCodeResult.Code("287922", 7), second)
-        assertEquals(hotp.copy(counter = 7), repository.getAccount(hotpId))
-        assertEquals(2, runner.transactions)
-        assertFalse(first.toString().contains("254676"))
+            // RFC 4226 Appendix D, counters 5 and 6.
+            assertEquals(NextHotpCodeResult.Code("254676", 6), first)
+            assertEquals(NextHotpCodeResult.Code("287922", 7), second)
+            assertEquals(hotp.copy(counter = 7), repository.getAccount(hotpId))
+            assertEquals(transactions + 2, runner.transactions)
+            assertFalse(first.toString().contains("254676"))
+        }
     }
 
     @Test
@@ -229,7 +275,7 @@ class RoomAccountRepositoryTest {
 
     @Test
     fun nextHotpCode_totpOrUnknownRow_writesNothing() = runBlocking {
-        val totpId = repository.add(totp)
+        val totpId = addLegacy(totp)
         val before = dao.stored(totpId)
 
         assertSame(NextHotpCodeResult.NotHotp, repository.nextHotpCode(totpId))
@@ -240,7 +286,7 @@ class RoomAccountRepositoryTest {
 
     @Test
     fun nextHotpCode_atTheCounterLimit_writesNothingAndDecryptsNothing() = runBlocking {
-        val hotpId = repository.add(hotp.copy(counter = Long.MAX_VALUE))
+        val hotpId = addLegacy(hotp.copy(counter = Long.MAX_VALUE))
         val before = dao.stored(hotpId)
 
         assertSame(NextHotpCodeResult.LimitReached, repository.nextHotpCode(hotpId))
@@ -261,23 +307,26 @@ class RoomAccountRepositoryTest {
 
     @Test
     fun nextHotpCode_unreadableSecret_failsAndWritesNothing() = runBlocking {
-        val hotpId = repository.add(hotp)
-        val blob = dao.stored(hotpId).secretBlob.copyOf()
-        blob[blob.lastIndex] = (blob[blob.lastIndex].toInt() xor 1).toByte()
-        dao.put(dao.stored(hotpId).copyWith(secretBlob = blob))
-        val tampered = dao.stored(hotpId)
+        for (hotpId in listOf(repository.add(hotp), addLegacy(hotp))) {
+            val blob = dao.stored(hotpId).secretBlob.copyOf()
+            blob[blob.lastIndex] = (blob[blob.lastIndex].toInt() xor 1).toByte()
+            dao.put(dao.stored(hotpId).copyWith(secretBlob = blob))
+            val tampered = dao.stored(hotpId)
 
-        assertSame(NextHotpCodeResult.Failed, repository.nextHotpCode(hotpId))
-        assertSame(tampered, dao.stored(hotpId))
+            assertSame(NextHotpCodeResult.Failed, repository.nextHotpCode(hotpId))
+            assertSame(tampered, dao.stored(hotpId))
+        }
 
+        val legacyId = addLegacy(hotp)
         keyProvider.lost = true
-        assertSame(NextHotpCodeResult.Failed, repository.nextHotpCode(hotpId))
-        assertSame(tampered, dao.stored(hotpId))
+        val untouched = dao.stored(legacyId)
+        assertSame(NextHotpCodeResult.Failed, repository.nextHotpCode(legacyId))
+        assertSame(untouched, dao.stored(legacyId))
     }
 
     @Test
     fun nextHotpCode_wipesTheDecryptedSecretOnSuccessAndOnAnInvalidRow() = runBlocking {
-        val hotpId = repository.add(hotp)
+        val hotpId = addLegacy(hotp)
         assertTrue(repository.nextHotpCode(hotpId) is NextHotpCodeResult.Code)
         assertTrue(cipher.decrypted.single().isWiped())
 
@@ -292,7 +341,7 @@ class RoomAccountRepositoryTest {
     /** The list's load can be cancelled by a reload (collectLatest) while it decrypts. */
     @Test
     fun getAccount_cancelledDuringDecrypt_wipesTheSecret() = runBlocking {
-        val totpId = repository.add(totp)
+        val totpId = addLegacy(totp)
         var result: OtpAccount? = null
         val job = launch(Dispatchers.Default, start = CoroutineStart.LAZY) { result = repository.getAccount(totpId) }
         cipher.onDecrypt = { job.cancel() }
@@ -307,7 +356,7 @@ class RoomAccountRepositoryTest {
 
     @Test
     fun nextHotpCode_cancelledDuringDecrypt_wipesTheSecretAndWritesNothing() = runBlocking {
-        val hotpId = repository.add(hotp)
+        val hotpId = addLegacy(hotp)
         var result: NextHotpCodeResult? = null
         val job = launch(Dispatchers.Default, start = CoroutineStart.LAZY) { result = repository.nextHotpCode(hotpId) }
         cipher.onDecrypt = { job.cancel() }
@@ -335,21 +384,23 @@ class RoomAccountRepositoryTest {
 
     @Test
     fun nextHotpCode_withoutIsolation_compareAndSetNeverHandsOutACounterTwice() = runBlocking {
-        val hotpId = repository.add(hotp)
-        val unisolated = RoomAccountRepository(dao, cipher, dataKeys, PassThroughRunner)
-        // Both calls read counter 5 before either writes.
-        val bothRead = CountDownLatch(2)
-        cipher.onDecrypt = {
-            bothRead.countDown()
-            check(bothRead.await(5, TimeUnit.SECONDS))
+        for (hotpId in listOf(repository.add(hotp), addLegacy(hotp))) {
+            val unisolated = RoomAccountRepository(dao, cipher, dataKeys, PassThroughRunner)
+            // Both calls read counter 5 (and made its code) before either writes.
+            val bothRead = CountDownLatch(2)
+            dao.beforeAdvance = {
+                bothRead.countDown()
+                check(bothRead.await(5, TimeUnit.SECONDS))
+            }
+
+            val results = (1..2).map { async(Dispatchers.Default) { unisolated.nextHotpCode(hotpId) } }.awaitAll()
+
+            assertEquals(listOf(NextHotpCodeResult.Code("254676", 6)), results.filterIsInstance<NextHotpCodeResult.Code>())
+            assertEquals(listOf(NextHotpCodeResult.Failed), results.filter { it !is NextHotpCodeResult.Code })
+            assertEquals(6L, dao.stored(hotpId).counter)
+            assertTrue(cipher.decrypted.all { it.isWiped() })
+            dao.beforeAdvance = {}
         }
-
-        val results = (1..2).map { async(Dispatchers.Default) { unisolated.nextHotpCode(hotpId) } }.awaitAll()
-
-        assertEquals(listOf(NextHotpCodeResult.Code("254676", 6)), results.filterIsInstance<NextHotpCodeResult.Code>())
-        assertEquals(listOf(NextHotpCodeResult.Failed), results.filter { it !is NextHotpCodeResult.Code })
-        assertEquals(6L, dao.stored(hotpId).counter)
-        assertTrue(cipher.decrypted.all { it.isWiped() })
     }
 
     @Test

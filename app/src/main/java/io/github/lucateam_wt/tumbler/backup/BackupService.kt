@@ -178,6 +178,9 @@ internal class BackupService(
             return ExportResult.AccountUnreadable(e.accountId)
         } catch (e: SQLException) {
             return ExportResult.StorageFailed
+        } catch (e: SecretCipherException) {
+            // A key failure that may be transient (a definite one is an unreadable account).
+            return ExportResult.StorageFailed
         } catch (e: OutOfMemoryError) {
             // Outside scrypt (which exportBackup maps itself); docs/backup-format.md item 2.
             return ExportResult.NotEnoughMemory
@@ -221,6 +224,9 @@ internal class BackupService(
         } catch (e: UnreadableAccountException) {
             return ImportReadResult.ExistingAccountUnreadable(e.accountId)
         } catch (e: SQLException) {
+            return ImportReadResult.StorageFailed
+        } catch (e: SecretCipherException) {
+            // A key failure that may be transient (a definite one is an unreadable account).
             return ImportReadResult.StorageFailed
         } catch (e: OutOfMemoryError) {
             return ImportReadResult.NotEnoughMemory
@@ -444,7 +450,7 @@ internal sealed interface ExportResult {
      */
     data object WriteFailed : ExportResult
 
-    /** The database could not be read. Nothing was written. */
+    /** The database could not be read, or a storage key failed in a way that may be transient. Nothing was written. */
     data object StorageFailed : ExportResult
 }
 
@@ -478,7 +484,7 @@ internal sealed interface ImportReadResult {
         override fun toString(): String = "ExistingAccountUnreadable"
     }
 
-    /** The database could not be read. */
+    /** The database could not be read, or a storage key failed in a way that may be transient. */
     data object StorageFailed : ImportReadResult
 }
 

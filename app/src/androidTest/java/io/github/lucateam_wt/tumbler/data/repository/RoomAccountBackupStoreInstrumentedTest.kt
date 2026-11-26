@@ -38,7 +38,7 @@ class RoomAccountBackupStoreInstrumentedTest {
 
     @Before
     fun setUp() {
-        keyStore().deleteEntry(alias)
+        deleteTestKeys(alias)
         database = Room.inMemoryDatabaseBuilder(context, TumblerDatabase::class.java).build()
         val cipher = AesGcmSecretCipher(AndroidKeystoreKeyProvider(alias))
         val dataKeys = testDataKeyHolder(database, "${alias}_wrap")
@@ -49,7 +49,7 @@ class RoomAccountBackupStoreInstrumentedTest {
     @After
     fun tearDown() {
         database.close()
-        keyStore().deleteEntry(alias)
+        deleteTestKeys(alias)
     }
 
     @Test
@@ -100,14 +100,20 @@ class RoomAccountBackupStoreInstrumentedTest {
     }
 
     @Test
-    fun readAll_keystoreKeyDeleted_isUnreadableWithoutCreatingAKey() = runBlocking {
+    fun readAll_wrappingKeyDeleted_isUnreadableWithoutCreatingAKey() = runBlocking {
         val id = repository.add(totp)
-        keyStore().deleteEntry(alias)
+        val wrapAlias = "${alias}_wrap"
+        keyStore().deleteEntry(wrapAlias)
+        // A new process: a new holder over the same database.
+        val next = RoomAccountBackupStore(
+            database, AesGcmSecretCipher(AndroidKeystoreKeyProvider(alias)), testDataKeyHolder(database, wrapAlias),
+        )
 
-        val error = assertThrows(UnreadableAccountException::class.java) { runBlocking { store.readAll() } }
+        val error = assertThrows(UnreadableAccountException::class.java) { runBlocking { next.readAll() } }
 
         assertEquals(id, error.accountId)
         assertTrue(error.cause is KeyUnavailableException)
+        assertTrue(!keyStore().containsAlias(wrapAlias))
         assertTrue(!keyStore().containsAlias(alias))
     }
 }

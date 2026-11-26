@@ -19,6 +19,10 @@ class FakeAccountDao(private val dataKeyVersions: () -> Set<Int> = { emptySet() 
 
     private val rows = MutableStateFlow<Map<String, AccountEntity>>(emptyMap())
 
+    /** Runs before each [advanceCounter] in the calling coroutine (to hold callers between their read and write). */
+    @Volatile
+    var beforeAdvance: suspend (id: String) -> Unit = {}
+
     /** Runs before each [migrateSecret] in the calling coroutine (to change the row meanwhile, or to fail). */
     @Volatile
     var beforeMigrate: suspend (id: String) -> Unit = {}
@@ -61,6 +65,7 @@ class FakeAccountDao(private val dataKeyVersions: () -> Set<Int> = { emptySet() 
     }
 
     override suspend fun advanceCounter(id: String, expectedCounter: Long, expectedSecretBlob: ByteArray): Int {
+        beforeAdvance(id)
         var updated = 0
         // One atomic compare-and-set on the whole map, like the single SQL UPDATE.
         rows.update { map ->

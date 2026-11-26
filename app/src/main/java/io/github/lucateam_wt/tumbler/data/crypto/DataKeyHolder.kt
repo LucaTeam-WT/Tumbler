@@ -562,7 +562,12 @@ class DataKeyHolder(
         } catch (e: KeyTemporarilyUnavailableException) {
             throw e
         } catch (e: SecretCipherException) {
-            throw if (KeystoreErrors.isAuthenticationFailure(e)) e else KeyTemporarilyUnavailableException(e)
+            throw when {
+                KeystoreErrors.isAuthenticationFailure(e) -> e
+                // The wrapping key exists but can never be used again: gone, not transient.
+                KeystoreErrors.isPermanentlyInvalidated(e) -> KeyUnavailableException()
+                else -> KeyTemporarilyUnavailableException(e)
+            }
         }
     }
 }
