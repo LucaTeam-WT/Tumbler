@@ -21,4 +21,16 @@ class TumblerDatabaseSchemaTest {
         assertTrue(json.contains("\"tableName\": \"accounts\""))
         assertTrue(json.contains("`secretBlob` BLOB NOT NULL"))
     }
+
+    @Test
+    fun exportedSchemaVersion2_isPackaged() {
+        val json = InstrumentationRegistry.getInstrumentation().context.assets
+            .open("io.github.lucateam_wt.tumbler.data.db.TumblerDatabase/2.json")
+            .bufferedReader()
+            .use { it.readText() }
+
+        assertTrue(json.contains("\"version\": 2,"))
+        assertTrue(json.contains("`keyVersion` INTEGER NOT NULL DEFAULT 0"))
+        assertTrue(json.contains("\"tableName\": \"data_keys\""))
+    }
 }

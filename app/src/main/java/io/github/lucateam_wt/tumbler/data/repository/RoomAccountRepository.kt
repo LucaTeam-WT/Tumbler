@@ -1,5 +1,6 @@
 package io.github.lucateam_wt.tumbler.data.repository
 
+import io.github.lucateam_wt.tumbler.data.crypto.EnvelopeFormat
 import io.github.lucateam_wt.tumbler.data.db.AccountDao
 import io.github.lucateam_wt.tumbler.data.db.TumblerDatabase
 import io.github.lucateam_wt.tumbler.domain.crypto.SecretCipher
@@ -47,7 +48,7 @@ class RoomAccountRepository internal constructor(
         val secretBlob = withContext(dispatcher) {
             cipher.encrypt(account.secret, associatedData(id))
         }
-        dao.insert(account.toEntity(id, secretBlob, clock()))
+        dao.insert(account.toEntity(id, secretBlob, EnvelopeFormat.LEGACY_KEY_VERSION, clock()))
         return id
     }
 

@@ -2,6 +2,7 @@ package io.github.lucateam_wt.tumbler.data.repository
 
 import androidx.room.RoomDatabase
 import androidx.room.withTransaction
+import io.github.lucateam_wt.tumbler.data.crypto.EnvelopeFormat
 import io.github.lucateam_wt.tumbler.data.db.AccountDao
 import io.github.lucateam_wt.tumbler.data.db.AccountEntity
 import io.github.lucateam_wt.tumbler.data.db.TumblerDatabase
@@ -20,7 +21,8 @@ import java.util.UUID
 /**
  * [AccountBackupStore] backed by Room. It uses the same table, encryption and associated
  * data as [RoomAccountRepository] (each secret bound to its account id), so each reads what
- * the other wrote. The schema is unchanged.
+ * the other wrote. It writes the legacy format (`keyVersion` 0); replacing a row clears its
+ * legacy copy of the secret.
  *
  * Cipher calls run on [dispatcher] (by default [Dispatchers.IO]), because Android Keystore
  * operations block on IPC. A read that fails wipes the secrets it had already decrypted,
@@ -71,7 +73,7 @@ class RoomAccountBackupStore internal constructor(
             checkOpen()
             require(createdAtMillis >= 0) { "Creation time must not be negative" }
             val id = idGenerator()
-            dao.insert(account.toEntity(id, encrypt(account, id), createdAtMillis))
+            dao.insert(account.toEntity(id, encrypt(account, id), EnvelopeFormat.LEGACY_KEY_VERSION, createdAtMillis))
             return id
         }
 
@@ -88,6 +90,7 @@ class RoomAccountBackupStore internal constructor(
                 period = account.period,
                 counter = account.counter,
                 secretBlob = secretBlob,
+                keyVersion = EnvelopeFormat.LEGACY_KEY_VERSION,
             )
             if (updated == 0) throw NoSuchElementException("No account to replace")
         }

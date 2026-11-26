@@ -92,7 +92,7 @@ class RoomAccountBackupStoreTest {
         (0..size - needle.size).any { start -> needle.indices.all { this[start + it] == needle[it] } }
 
     private fun AccountEntity.with(type: String = this.type, digits: Int = this.digits, createdAt: Long = this.createdAt) =
-        AccountEntity(id, issuer, accountName, type, algorithm, digits, period, counter, secretBlob, createdAt)
+        AccountEntity(id, issuer, accountName, type, algorithm, digits, period, counter, secretBlob, createdAt, keyVersion, legacySecretBlob)
 
     @Test
     fun readAll_returnsEveryAccountOldestFirstWithItsCreationTime() = runBlocking {

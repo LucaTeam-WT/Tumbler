@@ -210,7 +210,7 @@ class RoomAccountRepositoryTest {
         // A backup import replaces the row (new secret, counter 50) after the copy was read.
         val newSecret = Base32.decode("JBSWY3DPEHPK3PXP")
         val replaced = hotp.copy(secret = newSecret, counter = 50)
-        dao.put(replaced.toEntity(hotpId, cipher.encrypt(newSecret, accountAssociatedData(hotpId)), 1_000))
+        dao.put(replaced.toEntity(hotpId, cipher.encrypt(newSecret, accountAssociatedData(hotpId)), keyVersion = 0, createdAt = 1_000))
 
         val result = repository.nextHotpCode(hotpId)
 
@@ -274,7 +274,7 @@ class RoomAccountRepositoryTest {
         assertTrue(cipher.decrypted.single().isWiped())
 
         cipher.decrypted.clear()
-        val invalid = AccountEntity(hotpId, "Bank", "bob", "HOTP", "SHA1", 5, 30, 6, dao.stored(hotpId).secretBlob, 1_000)
+        val invalid = AccountEntity(hotpId, "Bank", "bob", "HOTP", "SHA1", 5, 30, 6, dao.stored(hotpId).secretBlob, 1_000, 0, null)
         dao.put(invalid)
         assertSame(NextHotpCodeResult.Failed, repository.nextHotpCode(hotpId))
         assertTrue(cipher.decrypted.single().isWiped())
