@@ -205,13 +205,19 @@ fun AccountListScreen(
     modifier: Modifier = Modifier,
     onExportBackup: () -> Unit = {},
     onImportBackup: () -> Unit = {},
+    onStartNewStorageKey: () -> Unit = {},
+    onRetryStorage: () -> Unit = {},
 ) {
     val snackbarHostState = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
     val copiedMessage = stringResource(R.string.account_code_copied)
     val actionFailedMessage = stringResource(R.string.accounts_action_failed)
     val noAccountsMessage = stringResource(R.string.backup_export_no_accounts)
+    val importNeedsNewKeyMessage = stringResource(R.string.backup_import_needs_new_key)
     var pendingDeleteId by rememberSaveable { mutableStateOf<String?>(null) }
+    var confirmNewKey by rememberSaveable { mutableStateOf(false) }
+    // While accounts are being moved to the storage key, nothing may add, import or export.
+    val migrating = state.migration != null
 
     LaunchedEffect(state.actionFailed) {
         if (state.actionFailed) {
@@ -245,91 +251,150 @@ fun AccountListScreen(
             TopAppBar(
                 title = { Text(stringResource(R.string.accounts_title)) },
                 actions = {
-                    OverflowMenu(
-                        onExport = {
-                            if (state.nothingToExport) {
-                                // A short message instead of a password dialog for an empty backup.
-                                scope.launch {
-                                    snackbarHostState.currentSnackbarData?.dismiss()
-                                    snackbarHostState.showSnackbar(noAccountsMessage)
+                    if (!migrating) {
+                        OverflowMenu(
+                            onExport = {
+                                if (state.nothingToExport) {
+                                    // A short message instead of a password dialog for an empty backup.
+                                    scope.launch {
+                                        snackbarHostState.currentSnackbarData?.dismiss()
+                                        snackbarHostState.showSnackbar(noAccountsMessage)
+                                    }
+                                } else {
+                                    onExportBackup()
                                 }
-                            } else {
-                                onExportBackup()
-                            }
-                        },
-                        onImport = onImportBackup,
-                    )
+                            },
+                            onImport = {
+                                if (state.writesBlocked) {
+                                    // An import would be refused: say why before a file is picked.
+                                    scope.launch {
+                                        snackbarHostState.currentSnackbarData?.dismiss()
+                                        snackbarHostState.showSnackbar(importNeedsNewKeyMessage)
+                                    }
+                                } else {
+                                    onImportBackup()
+                                }
+                            },
+                        )
+                    }
                 },
             )
         },
         floatingActionButton = {
-            FloatingActionButton(
-                onClick = onAddClick,
-                modifier = Modifier.testTag(AccountListTags.ADD_BUTTON),
-            ) {
-                // Icon-only button: it gets its accessible name only from the icon, so the icon
-                // carries the description (null would make TalkBack announce an unnamed button).
-                Icon(
-                    painter = painterResource(R.drawable.ic_add),
-                    contentDescription = stringResource(R.string.accounts_add),
-                )
+            if (!migrating) {
+                FloatingActionButton(
+                    onClick = onAddClick,
+                    modifier = Modifier.testTag(AccountListTags.ADD_BUTTON),
+                ) {
+                    // Icon-only button: it gets its accessible name only from the icon, so the icon
+                    // carries the description (null would make TalkBack announce an unnamed button).
+                    Icon(
+                        painter = painterResource(R.drawable.ic_add),
+                        contentDescription = stringResource(R.string.accounts_add),
+                    )
+                }
             }
         },
         snackbarHost = { SnackbarHost(snackbarHostState) },
-    ) { innerPadding ->
-        val contentKind = when {
-            state.isLoading -> ContentKind.Loading
-            state.accounts.isEmpty() && state.loadFailed -> ContentKind.Failed
-            state.accounts.isEmpty() -> ContentKind.Empty
-            else -> ContentKind.List
+    ) { scaffoldPadding ->
+        val notice = state.storageNotice?.takeIf { !migrating && !state.isLoading }
+        val layoutDirection = LocalLayoutDirection.current
+        // With a banner, the content below it starts under the banner instead of under the app bar.
+        val innerPadding = if (notice == null) {
+            scaffoldPadding
+        } else {
+            PaddingValues(
+                start = scaffoldPadding.calculateStartPadding(layoutDirection),
+                top = 0.dp,
+                end = scaffoldPadding.calculateEndPadding(layoutDirection),
+                bottom = scaffoldPadding.calculateBottomPadding(),
+            )
         }
-        // The list that fades out after the last account was deleted keeps drawing its old rows.
-        val lastAccounts = remember { arrayOfNulls<List<AccountItem>>(1) }
-        if (state.accounts.isNotEmpty()) lastAccounts[0] = state.accounts
-        Crossfade(
-            targetState = contentKind,
-            animationSpec = tween(CONTENT_FADE_MILLIS, easing = FastOutSlowInEasing),
-            label = "accounts-content",
-        ) { shown ->
-            // Content that is fading out is only drawn: it has no semantics, so TalkBack and
-            // tests never see two states at once.
-            val exiting = shown != contentKind
-            val frame = Modifier
-                .fillMaxSize()
-                .then(if (exiting) Modifier.clearAndSetSemantics { } else Modifier)
-            when (shown) {
-                ContentKind.Loading -> LoadingState(frame.padding(innerPadding))
-                ContentKind.Failed ->
-                    MessageState(
-                        title = stringResource(R.string.accounts_load_failed_title),
-                        body = stringResource(R.string.accounts_load_failed_body),
-                        modifier = frame.padding(innerPadding),
-                    )
-                ContentKind.Empty ->
-                    MessageState(
-                        title = stringResource(R.string.accounts_empty_title),
-                        body = stringResource(R.string.accounts_empty_body),
-                        modifier = frame.padding(innerPadding),
-                    )
-                ContentKind.List -> {
-                    val accounts = if (exiting) lastAccounts[0].orEmpty() else state.accounts
-                    val layoutDirection = LocalLayoutDirection.current
-                    LazyColumn(
-                        modifier = frame,
-                        contentPadding = PaddingValues(
-                            start = innerPadding.calculateStartPadding(layoutDirection) + 16.dp,
-                            top = innerPadding.calculateTopPadding() + 8.dp,
-                            end = innerPadding.calculateEndPadding(layoutDirection) + 16.dp,
-                            bottom = innerPadding.calculateBottomPadding() + FAB_CLEARANCE,
-                        ),
-                        verticalArrangement = Arrangement.spacedBy(8.dp),
-                    ) {
-                        if (state.loadFailed) {
-                            item(key = "load-failed") {
-                                Text(
-                                    text = stringResource(R.string.accounts_load_failed_body),
-                                    style = MaterialTheme.typography.bodyMedium,
-                                    color = MaterialTheme.colorScheme.error,
+        Column(Modifier.fillMaxSize().padding(top = if (notice == null) 0.dp else scaffoldPadding.calculateTopPadding())) {
+            if (notice != null) {
+                StorageBanner(
+                    notice = notice,
+                    onStartNewKey = { confirmNewKey = true },
+                    onRetry = onRetryStorage,
+                    modifier = Modifier.padding(
+                        start = scaffoldPadding.calculateStartPadding(layoutDirection) + 16.dp,
+                        top = 8.dp,
+                        end = scaffoldPadding.calculateEndPadding(layoutDirection) + 16.dp,
+                        bottom = 8.dp,
+                    ),
+                )
+            }
+            val contentKind = when {
+                migrating -> ContentKind.Migrating
+                state.isLoading -> ContentKind.Loading
+                state.accounts.isEmpty() && state.loadFailed -> ContentKind.Failed
+                state.accounts.isEmpty() -> ContentKind.Empty
+                else -> ContentKind.List
+            }
+            // The list that fades out after the last account was deleted keeps drawing its old rows.
+            val lastAccounts = remember { arrayOfNulls<List<AccountItem>>(1) }
+            if (state.accounts.isNotEmpty()) lastAccounts[0] = state.accounts
+            Crossfade(
+                targetState = contentKind,
+                modifier = Modifier.weight(1f),
+                animationSpec = tween(CONTENT_FADE_MILLIS, easing = FastOutSlowInEasing),
+                label = "accounts-content",
+            ) { shown ->
+                // Content that is fading out is only drawn: it has no semantics, so TalkBack and
+                // tests never see two states at once.
+                val exiting = shown != contentKind
+                val frame = Modifier
+                    .fillMaxSize()
+                    .then(if (exiting) Modifier.clearAndSetSemantics { } else Modifier)
+                when (shown) {
+                    ContentKind.Migrating -> {
+                        // A progress that fades out keeps its last value; the list is never drawn under it.
+                        state.migration?.let { MigrationState(it, frame.padding(innerPadding)) }
+                            ?: LoadingState(frame.padding(innerPadding))
+                    }
+                    ContentKind.Loading -> LoadingState(frame.padding(innerPadding))
+                    ContentKind.Failed ->
+                        MessageState(
+                            title = stringResource(R.string.accounts_load_failed_title),
+                            body = stringResource(R.string.accounts_load_failed_body),
+                            modifier = frame.padding(innerPadding),
+                        )
+                    ContentKind.Empty ->
+                        MessageState(
+                            title = stringResource(R.string.accounts_empty_title),
+                            body = stringResource(R.string.accounts_empty_body),
+                            modifier = frame.padding(innerPadding),
+                        )
+                    ContentKind.List -> {
+                        val accounts = if (exiting) lastAccounts[0].orEmpty() else state.accounts
+                        LazyColumn(
+                            modifier = frame,
+                            contentPadding = PaddingValues(
+                                start = innerPadding.calculateStartPadding(layoutDirection) + 16.dp,
+                                top = innerPadding.calculateTopPadding() + 8.dp,
+                                end = innerPadding.calculateEndPadding(layoutDirection) + 16.dp,
+                                bottom = innerPadding.calculateBottomPadding() + FAB_CLEARANCE,
+                            ),
+                            verticalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            if (state.loadFailed) {
+                                item(key = "load-failed") {
+                                    Text(
+                                        text = stringResource(R.string.accounts_load_failed_body),
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        color = MaterialTheme.colorScheme.error,
+                                        modifier = Modifier.animateItem(
+                                            fadeInSpec = itemFadeIn(),
+                                            placementSpec = itemPlacement(),
+                                            fadeOutSpec = itemFadeOut(),
+                                        ),
+                                    )
+                                }
+                            }
+                            items(accounts, key = { it.id }) { item ->
+                                AccountRow(
+                                    item = item,
+                                    onAction = { performAction(item, it) },
                                     modifier = Modifier.animateItem(
                                         fadeInSpec = itemFadeIn(),
                                         placementSpec = itemPlacement(),
@@ -338,21 +403,20 @@ fun AccountListScreen(
                                 )
                             }
                         }
-                        items(accounts, key = { it.id }) { item ->
-                            AccountRow(
-                                item = item,
-                                onAction = { performAction(item, it) },
-                                modifier = Modifier.animateItem(
-                                    fadeInSpec = itemFadeIn(),
-                                    placementSpec = itemPlacement(),
-                                    fadeOutSpec = itemFadeOut(),
-                                ),
-                            )
-                        }
                     }
                 }
             }
         }
+    }
+
+    if (confirmNewKey) {
+        NewStorageKeyDialog(
+            onConfirm = {
+                confirmNewKey = false
+                onStartNewStorageKey()
+            },
+            onDismiss = { confirmNewKey = false },
+        )
     }
 
     val deleteTarget = state.accounts.firstOrNull { it.id == pendingDeleteId }
@@ -369,7 +433,7 @@ fun AccountListScreen(
 }
 
 /** Which of the mutually exclusive contents the accounts screen shows. */
-private enum class ContentKind { Loading, Failed, Empty, List }
+private enum class ContentKind { Migrating, Loading, Failed, Empty, List }
 
 private fun itemFadeIn() = tween<Float>(ITEM_FADE_IN_MILLIS, easing = FastOutSlowInEasing)
 
@@ -536,12 +600,16 @@ private fun Names(item: AccountItem, modifier: Modifier = Modifier) {
         if (item is AccountItem.UnavailableItem) {
             Spacer(Modifier.height(4.dp))
             Text(
-                text = stringResource(R.string.account_unavailable_title),
+                text = stringResource(
+                    if (item.temporary) R.string.account_temporarily_unavailable_title else R.string.account_unavailable_title,
+                ),
                 style = MaterialTheme.typography.labelLarge,
                 color = MaterialTheme.colorScheme.error,
             )
             Text(
-                text = stringResource(R.string.account_unavailable_body),
+                text = stringResource(
+                    if (item.temporary) R.string.account_temporarily_unavailable_body else R.string.account_unavailable_body,
+                ),
                 style = MaterialTheme.typography.bodySmall,
             )
         }

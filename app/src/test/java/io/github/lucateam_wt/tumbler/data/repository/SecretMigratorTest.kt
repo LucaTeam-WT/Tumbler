@@ -304,6 +304,16 @@ class SecretMigratorTest {
         val ids = (1..20).map { "acc-$it" }
         ids.forEach { seedLegacy(it) }
         val start = CompletableDeferred<Unit>()
+        // Both have taken their snapshot of all 20 rows before either writes one: each first
+        // write of "acc-1" waits until the other migrator has reached it too.
+        val arrivals = AtomicInteger()
+        val bothSnapshotted = CompletableDeferred<Unit>()
+        accounts.beforeMigrate = { id ->
+            if (id == "acc-1") {
+                if (arrivals.incrementAndGet() == 2) bothSnapshotted.complete(Unit)
+                bothSnapshotted.await()
+            }
+        }
         // Two holders: the worst case, as if two processes raced (the app has one per process).
         val holders = listOf(holder, newHolder())
         val results = holders.map { h ->

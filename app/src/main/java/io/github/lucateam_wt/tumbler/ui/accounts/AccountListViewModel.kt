@@ -7,6 +7,8 @@ import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
 import io.github.lucateam_wt.tumbler.TumblerApplication
+import io.github.lucateam_wt.tumbler.domain.crypto.KeyTemporarilyUnavailableException
+import io.github.lucateam_wt.tumbler.domain.crypto.NewStorageKeyRequiredException
 import io.github.lucateam_wt.tumbler.domain.crypto.SecretCipherException
 import io.github.lucateam_wt.tumbler.domain.model.AccountLimitException
 import io.github.lucateam_wt.tumbler.domain.model.AccountSummary
@@ -16,6 +18,9 @@ import io.github.lucateam_wt.tumbler.domain.otp.OtpAuthUri
 import io.github.lucateam_wt.tumbler.domain.otp.Totp
 import io.github.lucateam_wt.tumbler.domain.repository.AccountRepository
 import io.github.lucateam_wt.tumbler.domain.repository.NextHotpCodeResult
+import io.github.lucateam_wt.tumbler.domain.repository.StorageGate
+import io.github.lucateam_wt.tumbler.domain.repository.StorageState
+import io.github.lucateam_wt.tumbler.domain.repository.WriteAccess
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
@@ -65,6 +70,7 @@ internal fun nextCodeWindowSeconds(period: Int): Int =
  */
 class AccountListViewModel(
     private val repository: AccountRepository,
+    private val storage: StorageGate = AlwaysReadyStorage,
     private val clock: () -> Long = { System.currentTimeMillis() / 1000 },
 ) : ViewModel() {
 
@@ -78,6 +84,9 @@ class AccountListViewModel(
         class HotpReady(override val summary: AccountSummary) : Entry
 
         class Unavailable(override val summary: AccountSummary) : Entry
+
+        /** The secret could not be read this time (a failure that may be transient). */
+        class TemporarilyUnavailable(override val summary: AccountSummary) : Entry
     }
 
     /** The outcome of the last "next code" request of one HOTP account: a code or an error, never both. */
@@ -97,13 +106,24 @@ class AccountListViewModel(
         }
     }
 
-    val uiState: StateFlow<AccountListUiState> =
+    private val listState: Flow<AccountListUiState> =
         combine(entries, hotpResults, ticker, loadFailed, actionFailed) { loaded, results, now, loadError, actionError ->
             AccountListUiState(
                 isLoading = loaded == null && !loadError,
                 accounts = loaded.orEmpty().map { it.toItem(results, now) },
                 loadFailed = loadError,
                 actionFailed = actionError,
+            )
+        }
+
+    val uiState: StateFlow<AccountListUiState> =
+        combine(listState, storage.state) { list, storageState ->
+            val preparing = storageState as? StorageState.Preparing
+            list.copy(
+                // Before the first run has ended nothing is read, so the list is still loading.
+                isLoading = list.isLoading || (preparing != null && entries.value == null),
+                migration = preparing?.takeIf { it.total > 0 }?.let { MigrationProgress(it.done, it.total) },
+                storageNotice = (storageState as? StorageState.Ready)?.let { notice(it, list.accounts) },
             )
         }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(STOP_TIMEOUT_MILLIS), AccountListUiState())
 
@@ -112,8 +132,50 @@ class AccountListViewModel(
 
     private var observation: Job? = null
 
+    /** The last [StorageState.Ready.generation] the list was read for. */
+    private var readForGeneration = -1
+
     init {
-        observe()
+        storage.start()
+        // The list is read only once storage is ready, and again after every later run (a retry or
+        // a new storage key), since rows may have changed format and cached failures were cleared.
+        viewModelScope.launch {
+            storage.state.collect { state ->
+                if (state is StorageState.Ready && state.generation != readForGeneration) {
+                    val first = readForGeneration == -1
+                    readForGeneration = state.generation
+                    if (first) observe() else reload()
+                }
+            }
+        }
+    }
+
+    /** Runs the storage check again after a failure that may be transient ("Try again"). */
+    fun retryStorage() {
+        if (storage.state.value is StorageState.Preparing) return
+        storage.retry()
+    }
+
+    /**
+     * Starts a new storage key; call only after the user confirmed it. Accounts that cannot be
+     * read stay as they are. Ignored while storage is being prepared.
+     */
+    fun startNewStorageKey() {
+        if (storage.state.value is StorageState.Preparing) return
+        viewModelScope.launch { storage.startNewKey() }
+    }
+
+    private fun notice(state: StorageState.Ready, accounts: List<AccountItem>): StorageNotice? {
+        val unavailable = accounts.filterIsInstance<AccountItem.UnavailableItem>()
+        val unreadable = unavailable.count { !it.temporary }
+        val kind = when {
+            state.writeAccess == WriteAccess.NEW_KEY_REQUIRED -> StorageNoticeKind.NEW_KEY_REQUIRED
+            state.writeAccess == WriteAccess.TEMPORARILY_UNAVAILABLE || state.retryAdvised ||
+                unavailable.any { it.temporary } -> StorageNoticeKind.TEMPORARY
+            unreadable > 0 -> StorageNoticeKind.UNREADABLE
+            else -> return null
+        }
+        return StorageNotice(kind, unreadable)
     }
 
     /**
@@ -157,6 +219,8 @@ class AccountListViewModel(
         _addState.value = AddState(saving = true)
         viewModelScope.launch {
             _addState.value = try {
+                // The add screen can come back after process death while the migration runs: wait for it.
+                storage.awaitReady()
                 repository.add(OtpAuthUri.parse(uri))
                 AddState(saved = true)
             } catch (e: AccountLimitException) {
@@ -170,6 +234,8 @@ class AccountListViewModel(
                 )
             } catch (_: IllegalArgumentException) {
                 AddState(error = AddError.INVALID_LINK)
+            } catch (_: NewStorageKeyRequiredException) {
+                AddState(error = AddError.STORAGE_KEY_REQUIRED)
             } catch (_: SecretCipherException) {
                 AddState(error = AddError.STORAGE_FAILED)
             } catch (_: SQLException) {
@@ -256,6 +322,8 @@ class AccountListViewModel(
             } else {
                 Entry.HotpReady(summary)
             }
+        } catch (_: KeyTemporarilyUnavailableException) {
+            return Entry.TemporarilyUnavailable(summary)
         } catch (_: SecretCipherException) {
             return Entry.Unavailable(summary)
         } catch (_: IllegalArgumentException) {
@@ -269,6 +337,7 @@ class AccountListViewModel(
         val id = summary.id
         return when (this) {
             is Entry.Unavailable -> AccountItem.UnavailableItem(id, summary.issuer, summary.accountName)
+            is Entry.TemporarilyUnavailable -> AccountItem.UnavailableItem(id, summary.issuer, summary.accountName, temporary = true)
             is Entry.HotpReady -> AccountItem.HotpItem(id, summary.issuer, summary.accountName, results[id]?.code, results[id]?.error)
             is Entry.TotpReady -> {
                 val secondsRemaining = totp.secondsRemaining(now)
@@ -290,6 +359,17 @@ class AccountListViewModel(
         }
     }
 
+    /** Storage that needs no preparation, for previews and tests that do not care about it. */
+    internal object AlwaysReadyStorage : StorageGate {
+        override val state: StateFlow<StorageState> =
+            MutableStateFlow(StorageState.Ready(WriteAccess.AVAILABLE, retryAdvised = false, generation = 0))
+
+        override fun start() = Unit
+        override fun retry() = Unit
+        override suspend fun startNewKey(): Boolean = true
+        override suspend fun awaitReady() = Unit
+    }
+
     companion object {
         private const val TICK_MILLIS = 1_000L
         private const val STOP_TIMEOUT_MILLIS = 5_000L
@@ -298,7 +378,8 @@ class AccountListViewModel(
         val Factory: ViewModelProvider.Factory = viewModelFactory {
             initializer {
                 val app = checkNotNull(this[ViewModelProvider.AndroidViewModelFactory.APPLICATION_KEY])
-                AccountListViewModel((app as TumblerApplication).container.accountRepository)
+                val container = (app as TumblerApplication).container
+                AccountListViewModel(container.accountRepository, storage = container.storageGate)
             }
         }
     }

@@ -22,6 +22,8 @@
     <string name="action_delete_for">Delete %1$s</string>
     <string name="account_unavailable_title">Code unavailable</string>
     <string name="account_unavailable_body">This account cannot be decrypted on this device, so no code can be shown. You can delete it.</string>
+    <string name="account_temporarily_unavailable_title">Code temporarily unavailable</string>
+    <string name="account_temporarily_unavailable_body">The secure storage could not be used this time. Try again.</string>
     <string name="account_seconds_remaining">%1$d seconds left</string>
     <string name="account_next_totp_code" translatable="false">→ %1$s</string>
     <string name="account_next_totp_code_description">Next code %1$s</string>
@@ -39,6 +41,7 @@
     <string name="add_cancel">Cancel</string>
     <string name="add_error_invalid_link">This is not a valid otpauth:// link.</string>
     <string name="add_error_storage">The account could not be saved. Please try again.</string>
+    <string name="add_error_storage_key">The account could not be saved: start a new storage key first, from the message on the accounts list.</string>
     <plurals name="add_error_label_too_long">
         <item quantity="one">The issuer or account name in this link is too long to fit in a backup (more than %1$d byte).</item>
         <item quantity="other">The issuer or account name in this link is too long to fit in a backup (more than %1$d bytes).</item>
@@ -163,4 +166,30 @@
     </plurals>
     <string name="backup_confirm_body">Nothing else on this device changes.</string>
     <string name="backup_import_confirm">Import</string>
+    <string name="backup_import_needs_new_key">Start a new storage key before importing: see the message on the accounts list.</string>
+
+    <!-- Secure storage: the move to the storage key, and what happens when that key cannot be used. -->
+    <string name="storage_migrating_title">Updating secure storage</string>
+    <string name="storage_migrating_body">Your accounts are being moved to a new storage key. This happens once; keep the app open until it is done.</string>
+    <!-- Progress next to the bar, for example "3 of 8". -->
+    <string name="storage_migrating_progress">%1$d of %2$d</string>
+    <!-- Read by TalkBack for the progress bar, for example "3 of 8 accounts updated". -->
+    <plurals name="storage_migrating_description">
+        <item quantity="one">%1$d of %2$d account updated</item>
+        <item quantity="other">%1$d of %2$d accounts updated</item>
+    </plurals>
+    <plurals name="storage_unreadable_title">
+        <item quantity="one">%1$d account cannot be read</item>
+        <item quantity="other">%1$d accounts cannot be read</item>
+    </plurals>
+    <string name="storage_unreadable_body">They can only come back from a backup: delete them, then import a backup that contains them.</string>
+    <string name="storage_new_key_title">A new storage key is needed</string>
+    <string name="storage_new_key_body">The storage key on this device can no longer be used, so accounts cannot be added or imported. Start a new storage key to save accounts again. Accounts that cannot be read stay in the list; only a backup can bring them back.</string>
+    <string name="storage_new_key_action">Start a new storage key</string>
+    <string name="storage_temporary_title">Secure storage is temporarily unavailable</string>
+    <string name="storage_temporary_body">Some accounts could not be read or updated this time. Please try again.</string>
+    <string name="storage_retry_action">Try again</string>
+    <string name="storage_new_key_dialog_title">Start a new storage key?</string>
+    <string name="storage_new_key_dialog_body">New and imported accounts will be saved with a new key. Accounts that cannot be read now are kept but stay unreadable; only a backup can bring them back. This cannot be undone.</string>
+    <string name="storage_new_key_dialog_confirm">Start new key</string>
 </resources>
