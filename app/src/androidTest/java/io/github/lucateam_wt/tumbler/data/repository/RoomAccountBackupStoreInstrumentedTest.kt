@@ -41,8 +41,9 @@ class RoomAccountBackupStoreInstrumentedTest {
         keyStore().deleteEntry(alias)
         database = Room.inMemoryDatabaseBuilder(context, TumblerDatabase::class.java).build()
         val cipher = AesGcmSecretCipher(AndroidKeystoreKeyProvider(alias))
-        repository = RoomAccountRepository(database, cipher)
-        store = RoomAccountBackupStore(database, cipher)
+        val dataKeys = testDataKeyHolder(database, "${alias}_wrap")
+        repository = RoomAccountRepository(database, cipher, dataKeys)
+        store = RoomAccountBackupStore(database, cipher, dataKeys)
     }
 
     @After

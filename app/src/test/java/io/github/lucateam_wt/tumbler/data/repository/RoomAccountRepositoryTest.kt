@@ -90,11 +90,13 @@ class RoomAccountRepositoryTest {
     private val dao = FakeAccountDao()
     private val cipher = RecordingCipher(AesGcmSecretCipher(keyProvider))
     private val runner = SerialRunner(dao)
+    private val dataKeys = testDataKeyHolder()
     private var nextId = 0
     private var now = 1_000L
     private val repository = RoomAccountRepository(
         dao = dao,
         cipher = cipher,
+        dataKeys = dataKeys,
         transactions = runner,
         idGenerator = { "id-${nextId++}" },
         clock = { now++ },
@@ -328,7 +330,7 @@ class RoomAccountRepositoryTest {
     @Test
     fun nextHotpCode_withoutIsolation_compareAndSetNeverHandsOutACounterTwice() = runBlocking {
         val hotpId = repository.add(hotp)
-        val unisolated = RoomAccountRepository(dao, cipher, PassThroughRunner)
+        val unisolated = RoomAccountRepository(dao, cipher, dataKeys, PassThroughRunner)
         // Both calls read counter 5 before either writes.
         val bothRead = CountDownLatch(2)
         cipher.onDecrypt = {

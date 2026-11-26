@@ -54,8 +54,9 @@ class NextHotpCodeInstrumentedTest {
         deleteTestData()
         database = TumblerDatabase.open(context, databaseName)
         val cipher = AesGcmSecretCipher(AndroidKeystoreKeyProvider(alias))
-        repository = RoomAccountRepository(database, cipher)
-        store = RoomAccountBackupStore(database, cipher)
+        val dataKeys = testDataKeyHolder(database, "${alias}_wrap")
+        repository = RoomAccountRepository(database, cipher, dataKeys)
+        store = RoomAccountBackupStore(database, cipher, dataKeys)
     }
 
     @After

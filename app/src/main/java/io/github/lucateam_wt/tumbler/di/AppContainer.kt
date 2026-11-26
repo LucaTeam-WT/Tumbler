@@ -4,9 +4,12 @@ import android.content.Context
 import io.github.lucateam_wt.tumbler.backup.BackupService
 import io.github.lucateam_wt.tumbler.data.crypto.AesGcmSecretCipher
 import io.github.lucateam_wt.tumbler.data.crypto.AndroidKeystoreKeyProvider
+import io.github.lucateam_wt.tumbler.data.crypto.DataKeyHolder
+import io.github.lucateam_wt.tumbler.data.crypto.keystoreDataKeyWrapper
 import io.github.lucateam_wt.tumbler.data.db.TumblerDatabase
 import io.github.lucateam_wt.tumbler.data.repository.RoomAccountBackupStore
 import io.github.lucateam_wt.tumbler.data.repository.RoomAccountRepository
+import io.github.lucateam_wt.tumbler.data.repository.RoomDataKeyStore
 import io.github.lucateam_wt.tumbler.domain.crypto.SecretCipher
 import io.github.lucateam_wt.tumbler.domain.repository.AccountRepository
 
@@ -17,12 +20,21 @@ class AppContainer(private val context: Context) {
 
     private val secretCipher: SecretCipher by lazy { AesGcmSecretCipher(AndroidKeystoreKeyProvider()) }
 
+    /**
+     * The process's data keys, shared by every reader so each is unwrapped at most once. Only rows
+     * sealed with a data key use it, and the app does not write such rows yet: today it is never
+     * asked for a key, so it makes no database or Keystore call.
+     */
+    private val dataKeys: DataKeyHolder by lazy {
+        DataKeyHolder(RoomDataKeyStore(database), ::keystoreDataKeyWrapper)
+    }
+
     val accountRepository: AccountRepository by lazy {
-        RoomAccountRepository(database, secretCipher)
+        RoomAccountRepository(database, secretCipher, dataKeys)
     }
 
     /** Backup export and import, used by the backup screens through `BackupViewModel`. */
     internal val backupService: BackupService by lazy {
-        BackupService(RoomAccountBackupStore(database, secretCipher))
+        BackupService(RoomAccountBackupStore(database, secretCipher, dataKeys))
     }
 }

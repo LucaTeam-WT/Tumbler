@@ -1,5 +1,6 @@
 package io.github.lucateam_wt.tumbler.data.repository
 
+import io.github.lucateam_wt.tumbler.data.crypto.DataKeyHolder
 import io.github.lucateam_wt.tumbler.data.crypto.EnvelopeFormat
 import io.github.lucateam_wt.tumbler.data.db.AccountDao
 import io.github.lucateam_wt.tumbler.data.db.TumblerDatabase
@@ -19,9 +20,12 @@ import kotlinx.coroutines.withContext
 import java.util.UUID
 
 /**
- * [AccountRepository] backed by Room, with each secret encrypted by [cipher] and bound
- * to its account id as associated data, so a secret copied into another row fails to
- * decrypt.
+ * [AccountRepository] backed by Room, with each secret encrypted and bound to its account id as
+ * associated data, so a secret copied into another row fails to decrypt.
+ *
+ * New secrets are encrypted by [cipher] in the legacy format (`keyVersion` 0). Stored secrets
+ * are read in either format through [StoredSecretReader]: legacy rows with [cipher], rows
+ * sealed with a data key with that key from [dataKeys] (`docs/storage-format.md`).
  *
  * Cipher calls run on [dispatcher] (by default [Dispatchers.IO]) because Android
  * Keystore operations block on IPC to the keystore service and secure hardware. Cipher
@@ -31,14 +35,17 @@ import java.util.UUID
 class RoomAccountRepository internal constructor(
     private val dao: AccountDao,
     private val cipher: SecretCipher,
+    dataKeys: DataKeyHolder,
     private val transactions: TransactionRunner,
     private val dispatcher: CoroutineDispatcher = Dispatchers.IO,
     private val idGenerator: () -> String = { UUID.randomUUID().toString() },
     private val clock: () -> Long = { System.currentTimeMillis() },
 ) : AccountRepository {
 
-    constructor(database: TumblerDatabase, cipher: SecretCipher) :
-        this(database.accountDao(), cipher, RoomTransactionRunner(database))
+    constructor(database: TumblerDatabase, cipher: SecretCipher, dataKeys: DataKeyHolder) :
+        this(database.accountDao(), cipher, dataKeys, RoomTransactionRunner(database))
+
+    private val secrets = StoredSecretReader(cipher, dataKeys)
 
     override fun observeAccounts(): Flow<List<AccountSummary>> =
         dao.observeAll().map { rows -> rows.map { it.toSummary() } }
@@ -54,13 +61,12 @@ class RoomAccountRepository internal constructor(
 
     override suspend fun getAccount(id: String): OtpAccount? {
         val entity = dao.getById(id) ?: return null
+        val open = secrets.opener(entity)
         // Set inside the cipher block, so the plaintext is wiped even if withContext drops
         // its result because the caller was cancelled (as in nextHotpCode).
         var plaintext: ByteArray? = null
         try {
-            val secret = withContext(dispatcher) {
-                cipher.decrypt(entity.secretBlob, associatedData(entity.id)).also { plaintext = it }
-            }
+            val secret = withContext(dispatcher) { open().also { plaintext = it } }
             return entity.toOtpAccount(secret)
         } catch (t: Throwable) {
             // Not handed over (cancelled, or the row holds an unknown enum name): wipe it here.
@@ -84,9 +90,9 @@ class RoomAccountRepository internal constructor(
         // its result because the caller was cancelled.
         var plaintext: ByteArray? = null
         try {
-            val secret = withContext(dispatcher) {
-                cipher.decrypt(row.secretBlob, associatedData(row.id)).also { plaintext = it }
-            }
+            // In the transaction's coroutine: a data key's record is read in this transaction.
+            val open = secrets.opener(row)
+            val secret = withContext(dispatcher) { open().also { plaintext = it } }
             val account = row.toOtpAccount(secret)
             val code = Hotp(account.secret, account.algorithm, account.digits).generate(account.counter)
             if (dao.advanceCounter(id, row.counter, row.secretBlob) != 1) {

@@ -78,10 +78,11 @@ class RoomAccountBackupStoreTest {
     private val dao = FakeAccountDao()
     private val cipher = RecordingCipher(AesGcmSecretCipher(keyProvider))
     private val runner = RollbackRunner(dao)
+    private val dataKeys = testDataKeyHolder()
     private var nextId = 0
     private var now = 1_000L
-    private val repository = RoomAccountRepository(dao, cipher, runner, idGenerator = { "id-${nextId++}" }, clock = { now++ })
-    private val store = RoomAccountBackupStore(dao, cipher, runner, idGenerator = { "id-${nextId++}" })
+    private val repository = RoomAccountRepository(dao, cipher, dataKeys, runner, idGenerator = { "id-${nextId++}" }, clock = { now++ })
+    private val store = RoomAccountBackupStore(dao, cipher, dataKeys, runner, idGenerator = { "id-${nextId++}" })
 
     private val totpSecret = Base32.decode("JBSWY3DPEHPK3PXP")
     private val hotpSecret = Base32.decode("GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ")

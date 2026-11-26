@@ -2,6 +2,7 @@ package io.github.lucateam_wt.tumbler.data.repository
 
 import androidx.room.RoomDatabase
 import androidx.room.withTransaction
+import io.github.lucateam_wt.tumbler.data.crypto.DataKeyHolder
 import io.github.lucateam_wt.tumbler.data.crypto.EnvelopeFormat
 import io.github.lucateam_wt.tumbler.data.db.AccountDao
 import io.github.lucateam_wt.tumbler.data.db.AccountEntity
@@ -21,8 +22,8 @@ import java.util.UUID
 /**
  * [AccountBackupStore] backed by Room. It uses the same table, encryption and associated
  * data as [RoomAccountRepository] (each secret bound to its account id), so each reads what
- * the other wrote. It writes the legacy format (`keyVersion` 0); replacing a row clears its
- * legacy copy of the secret.
+ * the other wrote: it writes the legacy format with [cipher] (`keyVersion` 0) and reads either
+ * format through [StoredSecretReader]. Replacing a row clears its legacy copy of the secret.
  *
  * Cipher calls run on [dispatcher] (by default [Dispatchers.IO]), because Android Keystore
  * operations block on IPC. A read that fails wipes the secrets it had already decrypted,
@@ -32,13 +33,16 @@ import java.util.UUID
 class RoomAccountBackupStore internal constructor(
     private val dao: AccountDao,
     private val cipher: SecretCipher,
+    dataKeys: DataKeyHolder,
     private val transactions: TransactionRunner,
     private val dispatcher: CoroutineDispatcher = Dispatchers.IO,
     private val idGenerator: () -> String = { UUID.randomUUID().toString() },
 ) : AccountBackupStore {
 
-    constructor(database: TumblerDatabase, cipher: SecretCipher) :
-        this(database.accountDao(), cipher, RoomTransactionRunner(database))
+    constructor(database: TumblerDatabase, cipher: SecretCipher, dataKeys: DataKeyHolder) :
+        this(database.accountDao(), cipher, dataKeys, RoomTransactionRunner(database))
+
+    private val secrets = StoredSecretReader(cipher, dataKeys)
 
     override suspend fun readAll(): List<StoredAccount> = decryptAll(dao.getAll())
 
@@ -123,9 +127,10 @@ class RoomAccountBackupStore internal constructor(
     private suspend fun decrypt(row: AccountEntity): StoredAccount {
         var plaintext: ByteArray? = null
         try {
-            val secret = withContext(dispatcher) {
-                cipher.decrypt(row.secretBlob, accountAssociatedData(row.id)).also { plaintext = it }
-            }
+            // In the caller's coroutine: inside writeTransaction, a data key's record is read in
+            // that transaction.
+            val open = secrets.opener(row)
+            val secret = withContext(dispatcher) { open().also { plaintext = it } }
             return StoredAccount(row.id, row.toOtpAccount(secret), row.createdAt)
         } catch (e: SecretCipherException) {
             // Nothing was decrypted.
