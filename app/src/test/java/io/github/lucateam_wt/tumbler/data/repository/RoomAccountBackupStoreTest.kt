@@ -21,12 +21,18 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertSame
 import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
+import org.junit.Rule
 import org.junit.Test
+import org.junit.rules.Timeout
 import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
 
 /** [RoomAccountBackupStore] on [FakeAccountDao]; real Room transactions are covered by the instrumented test. */
 class RoomAccountBackupStoreTest {
+
+    /** A lock regression in the data-key code would hang instead of failing. */
+    @get:Rule
+    val timeout: Timeout = Timeout.seconds(30)
 
     /** Plain JVM AES key; [lost] simulates the Keystore entry being deleted. */
     private class TestKeyProvider : KeyProvider {

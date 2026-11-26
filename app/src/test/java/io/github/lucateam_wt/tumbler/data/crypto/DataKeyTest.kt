@@ -43,7 +43,7 @@ class DataKeyTest {
         assertNull(key.use { it.copyOf() })
     }
 
-    @Test
+    @Test(timeout = 10_000)
     fun `wipe zeroes the key bytes`() {
         val bytes = ByteArray(32) { 7 }
         val key = DataKey(1, bytes)
@@ -53,7 +53,7 @@ class DataKeyTest {
         key.wipe()
     }
 
-    @Test
+    @Test(timeout = 10_000)
     fun `wipe from inside the key's own use is refused and leaves the key intact`() {
         val key = DataKey(1, ByteArray(32) { 3 })
         assertThrows(IllegalStateException::class.java) { key.use { key.wipe() } }
@@ -61,7 +61,7 @@ class DataKeyTest {
         assertEquals(3.toByte(), key.use { it[0] })
     }
 
-    @Test
+    @Test(timeout = 10_000)
     fun `toString prints no key material`() {
         assertEquals("DataKey(version=4, <redacted>)", DataKey(4, ByteArray(32) { 0x41 }).toString())
         assertEquals(

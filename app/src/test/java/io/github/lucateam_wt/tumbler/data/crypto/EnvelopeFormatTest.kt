@@ -14,8 +14,10 @@ class EnvelopeFormatTest {
     fun `sizes match the documented layout`() {
         assertEquals(32, EnvelopeFormat.DATA_KEY_BYTES)
         assertEquals(62, EnvelopeFormat.WRAPPED_DATA_KEY_BYTES)
-        assertEquals(30, EnvelopeFormat.MIN_SECRET_PAYLOAD_BYTES)
-        assertEquals(30 + 64 * 1024, EnvelopeFormat.MAX_SECRET_PAYLOAD_BYTES)
+        // A secret is 1 to 65536 bytes, so a sealed one is 31 to 65566 bytes.
+        assertEquals(1, EnvelopeFormat.MIN_SECRET_BYTES)
+        assertEquals(31, EnvelopeFormat.MIN_SECRET_PAYLOAD_BYTES)
+        assertEquals(65_566, EnvelopeFormat.MAX_SECRET_PAYLOAD_BYTES)
         assertEquals(0, EnvelopeFormat.LEGACY_KEY_VERSION)
     }
 

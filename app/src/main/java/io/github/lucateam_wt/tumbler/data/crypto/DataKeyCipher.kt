@@ -14,7 +14,8 @@ import javax.crypto.spec.SecretKeySpec
  * a random 12-byte nonce per seal, a 128-bit tag, and associated data that binds the purpose,
  * the key version and the account id ([EnvelopeFormat.secretAssociatedData]).
  *
- * Payload (version 2): `02 | 0c | nonce (12) | ciphertext | tag (16)`. See `docs/storage-format.md`.
+ * Payload (version 2): `02 | 0c | nonce (12) | ciphertext (1 to 65536) | tag (16)`, so 31 to
+ * 65566 bytes. See `docs/storage-format.md`.
  *
  * Every failure is a [SecretCipherException] with a fixed message that never contains key
  * material, plaintext, nonces or associated data. A new [Cipher] is made per call.
@@ -25,16 +26,18 @@ internal object DataKeyCipher {
     private const val KEY_ALGORITHM = "AES"
 
     /**
-     * Seals [plaintext] (1 to [EnvelopeFormat.MAX_SECRET_BYTES] bytes) for [accountId] under [key],
-     * with a fresh nonce from [random].
+     * Seals [plaintext] ([EnvelopeFormat.MIN_SECRET_BYTES] to [EnvelopeFormat.MAX_SECRET_BYTES]
+     * bytes) for [accountId] under [key], with a fresh nonce from [random]. The result carries
+     * the key version bound in the associated data; store it with the blob.
      */
-    fun seal(key: DataKey, accountId: String, plaintext: ByteArray, random: SecureRandom): ByteArray {
-        if (plaintext.isEmpty()) throw SecretCipherException("Plaintext empty")
-        if (plaintext.size > EnvelopeFormat.MAX_SECRET_BYTES) throw SecretCipherException("Plaintext too large")
-        val associatedData = EnvelopeFormat.secretAssociatedData(key.version, accountId)
+    fun seal(key: DataKey, accountId: String, plaintext: ByteArray, random: SecureRandom): SealedSecret {
+        checkPlaintext(plaintext)
+        val keyVersion = key.version
+        val associatedData = EnvelopeFormat.secretAssociatedData(keyVersion, accountId)
         val nonce = ByteArray(EnvelopeFormat.NONCE_BYTES).also(random::nextBytes)
-        return key.use { sealWith(it, nonce, plaintext, associatedData) }
+        val blob = key.use { sealWith(it, nonce, plaintext, associatedData) }
             ?: throw SecretCipherException("Data key unavailable")
+        return SealedSecret(keyVersion, blob)
     }
 
     /**
@@ -51,10 +54,12 @@ internal object DataKeyCipher {
     /**
      * [seal] with an explicit [nonce] and associated data, for known-answer tests. A production
      * caller could reuse a key and nonce, which breaks GCM; `app/lint.xml` makes such a call a
-     * lint error.
+     * lint error. It refuses the same plaintext lengths as [seal], so it never makes a payload
+     * that [open] refuses.
      */
     @VisibleForTesting(otherwise = VisibleForTesting.PRIVATE)
     internal fun sealWith(key: ByteArray, nonce: ByteArray, plaintext: ByteArray, associatedData: ByteArray): ByteArray {
+        checkPlaintext(plaintext)
         if (key.size != EnvelopeFormat.DATA_KEY_BYTES) throw SecretCipherException("Invalid key")
         if (nonce.size != EnvelopeFormat.NONCE_BYTES) throw SecretCipherException("Invalid nonce")
         val sealed = try {
@@ -106,6 +111,12 @@ internal object DataKeyCipher {
         }
     }
 
+    private fun checkPlaintext(plaintext: ByteArray) {
+        if (plaintext.size < EnvelopeFormat.MIN_SECRET_BYTES) throw SecretCipherException("Plaintext empty")
+        if (plaintext.size > EnvelopeFormat.MAX_SECRET_BYTES) throw SecretCipherException("Plaintext too large")
+    }
+
+    /** Refuses a payload whose ciphertext would be empty or too large, as [checkPlaintext] does when sealing. */
     private fun checkPayload(payload: ByteArray) {
         if (payload.size < EnvelopeFormat.MIN_SECRET_PAYLOAD_BYTES) throw SecretCipherException("Payload too short")
         if (payload.size > EnvelopeFormat.MAX_SECRET_PAYLOAD_BYTES) throw SecretCipherException("Payload too large")

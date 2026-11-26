@@ -1,5 +1,6 @@
 package io.github.lucateam_wt.tumbler.data.crypto
 
+import java.security.SecureRandom
 import java.util.Collections
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
@@ -19,6 +20,14 @@ class FakeKeystore {
     /** Keys generated so far, over every alias. */
     val generations = AtomicInteger()
 
+    /**
+     * If set, every key lookup throws what it returns, as the Keystore does on a transient error
+     * (a busy keystore service or secure element): a [java.security.KeyStoreException], a
+     * [java.security.ProviderException] or an [java.io.IOException].
+     */
+    @Volatile
+    var lookupFailure: (() -> Exception)? = null
+
     operator fun contains(alias: String): Boolean = keys.containsKey(alias)
 
     fun lose(alias: String) {
@@ -27,6 +36,11 @@ class FakeKeystore {
 
     fun invalidate(alias: String) {
         invalidated += alias
+    }
+
+    /** Undoes [invalidate]: the key works again, as after a Keystore error that went away. */
+    fun revalidate(alias: String) {
+        invalidated -= alias
     }
 
     /** Generates a key under [alias] (replacing none: the alias must be empty). */
@@ -44,6 +58,7 @@ class FakeKeystore {
     }
 
     private fun existing(alias: String): SecretKey? {
+        lookupFailure?.let { throw it() }
         val key = keys[alias] ?: return null
         // A key of another algorithm makes every AES operation fail, as an invalidated Keystore key does.
         return if (alias in invalidated) SecretKeySpec(key.encoded, "HmacSHA256") else key
@@ -87,6 +102,23 @@ class CountingWrappers(private val keystore: FakeKeystore) {
 }
 
 /**
+ * A [SecureRandom] that remembers every array it filled, so a test can check that a data key the
+ * holder generated was wiped (its 32 bytes are zero) without the holder exposing it.
+ */
+class RecordingRandom : SecureRandom() {
+
+    private val arrays: MutableList<ByteArray> = Collections.synchronizedList(mutableListOf())
+
+    /** The arrays filled so far, in order (the same objects, not copies). */
+    val filled: List<ByteArray> get() = synchronized(arrays) { arrays.toList() }
+
+    override fun nextBytes(bytes: ByteArray) {
+        super.nextBytes(bytes)
+        arrays += bytes
+    }
+}
+
+/**
  * The `data_keys` table in memory, plus the highest `keyVersion` of the account rows. Like the
  * Room DAO, [insertIfAbsent] never overwrites. [beforeCall] runs in the calling coroutine before
  * every call; [beforeInsert] runs before each insert.
@@ -105,6 +137,14 @@ class FakeDataKeyStore : DataKeyStore {
     @Volatile
     var beforeInsert: (WrappedDataKey) -> Unit = {}
 
+    /**
+     * Runs in the calling coroutine after each insert was applied, before the call returns: a
+     * caller cancelled here has stored its record (as with a Room call that commits and then
+     * resumes into a cancelled caller).
+     */
+    @Volatile
+    var afterInsert: suspend (WrappedDataKey) -> Unit = {}
+
     override suspend fun get(version: Int): WrappedDataKey? {
         count()
         return records[version]
@@ -118,7 +158,9 @@ class FakeDataKeyStore : DataKeyStore {
     override suspend fun insertIfAbsent(key: WrappedDataKey): Boolean {
         count()
         beforeInsert(key)
-        return records.putIfAbsent(key.version, key) == null
+        val inserted = records.putIfAbsent(key.version, key) == null
+        afterInsert(key)
+        return inserted
     }
 
     override suspend fun highestAccountKeyVersion(): Int {

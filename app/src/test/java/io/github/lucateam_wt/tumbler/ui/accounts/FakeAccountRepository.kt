@@ -47,6 +47,10 @@ class FakeAccountRepository : AccountRepository {
     var nextHotpCodeCalls = 0
         private set
 
+    /** How many times [forgetCachedReadFailures] was called. */
+    var forgetCachedReadFailuresCalls = 0
+        private set
+
     /** How many times [nextHotpCode] wrote a counter. */
     var counterWrites = 0
         private set
@@ -67,6 +71,10 @@ class FakeAccountRepository : AccountRepository {
     override fun observeAccounts(): Flow<List<AccountSummary>> {
         observeFailure?.let { failure -> return flow { throw failure } }
         return summaries
+    }
+
+    override fun forgetCachedReadFailures() {
+        forgetCachedReadFailuresCalls++
     }
 
     override suspend fun add(account: OtpAccount): String {

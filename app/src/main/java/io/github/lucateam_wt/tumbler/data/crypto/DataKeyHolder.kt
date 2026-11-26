@@ -1,5 +1,6 @@
 package io.github.lucateam_wt.tumbler.data.crypto
 
+import io.github.lucateam_wt.tumbler.domain.crypto.KeyTemporarilyUnavailableException
 import io.github.lucateam_wt.tumbler.domain.crypto.KeyUnavailableException
 import io.github.lucateam_wt.tumbler.domain.crypto.SecretCipherException
 import kotlinx.coroutines.CompletableDeferred
@@ -12,18 +13,25 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
 import java.security.MessageDigest
 import java.security.SecureRandom
+import javax.crypto.AEADBadTagException
 
 /**
  * The data keys of this process (`docs/storage-format.md`, "Key states"). One instance per
- * process, shared by every reader and writer, so each data key is unwrapped at most once.
+ * process, shared by every reader and writer, so a data key is normally unwrapped once per process.
  *
  * **Reading** ([key]) never creates a key. The first caller for a version reads its record from
  * [store] in its own coroutine, then waits for one shared unwrap that runs in this holder's scope.
  * Concurrent first callers share it, and a caller that is cancelled while it waits does not abort
- * it: the key is kept for the next caller. A failed unwrap (the wrapping key is gone, the record is
- * malformed or does not authenticate) is cached and reported to every later caller without
- * another Keystore call, until [clearFailures]. Other failures (running out of memory, for
- * example) are not cached.
+ * it: the key is kept for the next caller.
+ *
+ * **Failures.** A definite failure of an unwrap is cached and reported to every later caller
+ * without another Keystore call, until [clearFailures] or [wipe]: the record is malformed, the
+ * unwrapped key has the wrong length, the wrapping key is gone ([KeyUnavailableException]), or the
+ * record does not authenticate (an [AEADBadTagException] cause). Any other cipher failure is a
+ * Keystore or secure-hardware error that may be transient: every caller already waiting on that
+ * unwrap gets [KeyTemporarilyUnavailableException], nothing is cached, and the next call starts a
+ * new unwrap (still one at a time per version). Failures that are not cipher errors (running out
+ * of memory, for example) are not cached either.
  *
  * **Writing** has two steps. [prepareWriteKey], outside any database transaction, returns the
  * version to seal with and creates a data key when there is none, or when the newest one's
@@ -39,7 +47,8 @@ import java.security.SecureRandom
  * **Never overwritten:** a new key always gets a version above every stored record and every
  * account row, and its own Keystore alias ([EnvelopeFormat.wrapAlias]); it is stored with
  * [DataKeyStore.insertIfAbsent]. When a different record already holds that version, ours is
- * wiped and the stored one is used.
+ * wiped and the stored one is used. No new key is made for a version this holder already has a
+ * key for.
  *
  * [wipe] zeroes every key once no operation uses it; the next use unwraps again.
  *
@@ -66,10 +75,14 @@ class DataKeyHolder(
     /**
      * New keys being made, or made but not yet stored, by version. Guarded by [lock].
      *
-     * Entries of both maps are only ever removed, never put back, so work that ends after its
-     * entry was removed (by [wipe] or a newer record) sees that by identity and wipes its result.
+     * Entries of both maps are only ever removed, never put back (except by [wipe], for a key it
+     * was not allowed to zero), so work that ends after its entry was removed (by [wipe] or a newer
+     * record) sees that by identity and wipes its result.
      */
     private val created = HashMap<Int, Pending>()
+
+    /** Keys that [wipe] could not zero and could not keep in [unwrapped]; the next [wipe] zeroes them. Guarded by [lock]. */
+    private val unwiped = ArrayList<DataKey>()
 
     private class Slot(val record: WrappedDataKey) {
         lateinit var deferred: Deferred<DataKey>
@@ -78,7 +91,7 @@ class DataKeyHolder(
         @Volatile
         var key: DataKey? = null
 
-        /** The unwrap failed with a cipher error, which stays cached. */
+        /** The unwrap failed definitely, which stays cached. */
         @Volatile
         var failed = false
     }
@@ -98,6 +111,8 @@ class DataKeyHolder(
      * costs no database or Keystore call.
      *
      * @throws KeyUnavailableException if there is no record of [version] or its wrapping key is gone.
+     * @throws KeyTemporarilyUnavailableException if the Keystore failed in a way that may be
+     *   transient; nothing is cached and the next call tries again.
      * @throws SecretCipherException if [version] is below 1, or its record is malformed or does not
      *   unwrap.
      */
@@ -122,10 +137,13 @@ class DataKeyHolder(
      *
      * - No record: creates version `highest account keyVersion + 1` (1 on a new install).
      * - The newest record unwraps: returns its version.
-     * - The newest record's wrapping key is gone: creates the next version under its own alias; the
-     *   old record stays and its rows stay unreadable.
+     * - The newest record's wrapping key is gone: creates the next version (above every record and
+     *   every account row) under its own alias; the old record stays and its rows stay unreadable.
      * - The newest record exists but does not unwrap: throws, and creates nothing.
      *
+     * @throws KeyTemporarilyUnavailableException if the newest key, or a new one, could not be
+     *   used or made this time because of a Keystore error that may be transient; calling again
+     *   retries.
      * @throws SecretCipherException if no key can be used or made.
      */
     suspend fun prepareWriteKey(): Int {
@@ -155,6 +173,7 @@ class DataKeyHolder(
      * if it came from that same record. Never creates a key.
      *
      * @throws KeyUnavailableException if the transaction cannot see a record of [version].
+     * @throws KeyTemporarilyUnavailableException if the Keystore failed in a way that may be transient.
      * @throws SecretCipherException if the record does not unwrap.
      */
     suspend fun writeKey(version: Int): DataKey {
@@ -164,27 +183,65 @@ class DataKeyHolder(
         return keyFor(record)
     }
 
-    /** Forgets cached unwrap failures, so the next call for those versions tries again. */
+    /**
+     * Forgets cached definite unwrap failures, so the next call for those versions tries again.
+     * Transient failures are never cached. Makes no database or Keystore call, so a reload of the
+     * account list can call it every time.
+     */
     fun clearFailures() {
         synchronized(lock) { unwrapped.values.removeAll { it.failed } }
     }
 
     /**
      * Zeroes every data key this holder has, each once no operation uses it, and forgets them; work
-     * still running wipes its result when it ends. The next use unwraps again. Do not call it from
-     * inside an operation that uses a key.
+     * still running wipes its result when it ends. The next use unwraps again. Cached failures are
+     * forgotten too.
+     *
+     * Do not call it from inside an operation that uses a key: that key cannot be zeroed under its
+     * own use, so it is kept (and still served) for a later [wipe], every other key and pending new
+     * key is still zeroed, and the first such failure ([IllegalStateException]) is thrown at the end.
      */
     fun wipe() {
         val slots: List<Slot>
         val pending: List<Pending>
+        val leftover: List<DataKey>
         synchronized(lock) {
             slots = unwrapped.values.toList()
             unwrapped.clear()
             pending = created.values.toList()
             created.clear()
+            leftover = unwiped.toList()
+            unwiped.clear()
         }
-        slots.forEach(::release)
-        pending.forEach { it.result?.key?.wipe() }
+        var failure: Throwable? = null
+        val kept = ArrayList<Slot>(0)
+        for (slot in slots) {
+            try {
+                release(slot)
+            } catch (t: Throwable) {
+                kept += slot
+                if (failure == null) failure = t else failure.addSuppressed(t)
+            }
+        }
+        val refused = ArrayList<DataKey>(0)
+        for (key in pending.mapNotNull { it.result?.key } + leftover) {
+            try {
+                key.wipe()
+            } catch (t: Throwable) {
+                refused += key
+                if (failure == null) failure = t else failure.addSuppressed(t)
+            }
+        }
+        if (kept.isNotEmpty() || refused.isNotEmpty()) {
+            synchronized(lock) {
+                for (slot in kept) {
+                    val key = slot.key
+                    if (unwrapped.putIfAbsent(slot.record.version, slot) != null && key != null) unwiped += key
+                }
+                unwiped += refused
+            }
+        }
+        failure?.let { throw it }
     }
 
     private suspend fun keyFor(record: WrappedDataKey): DataKey {
@@ -227,8 +284,9 @@ class DataKeyHolder(
         val record = slot.record
         try {
             if (!isWellFormed(record)) throw SecretCipherException("Invalid wrapped data key")
-            val raw = wrapperFor(record.kekAlias)
-                .unwrap(record.wrappedKey, EnvelopeFormat.wrapAssociatedData(record.version, record.kekAlias))
+            val associatedData = EnvelopeFormat.wrapAssociatedData(record.version, record.kekAlias)
+            val wrapper = wrapperFor(record.kekAlias)
+            val raw = keystoreCall { wrapper.unwrap(record.wrappedKey, associatedData) }
             if (raw.size != EnvelopeFormat.DATA_KEY_BYTES) {
                 raw.fill(0)
                 throw SecretCipherException("Invalid data key")
@@ -240,7 +298,13 @@ class DataKeyHolder(
             // Wiped or replaced while unwrapping: never kept. Callers see a wiped key and look again.
             if (!current) key.wipe()
             return key
+        } catch (e: KeyTemporarilyUnavailableException) {
+            // May be transient: not cached. Callers already waiting share this failure; the next
+            // call finds no slot and unwraps again.
+            forget(slot)
+            throw e
         } catch (e: SecretCipherException) {
+            // Definite (malformed, wrong length, wrapping key gone, does not authenticate): cached.
             slot.failed = true
             throw e
         } catch (t: Throwable) {
@@ -250,14 +314,29 @@ class DataKeyHolder(
         }
     }
 
-    /** Makes (once, shared by concurrent callers) and stores a new key for [version]; false if another key holds it. */
+    /**
+     * Makes (once, shared by concurrent callers) and stores a new key for [version]; false if another
+     * key holds it or the caller must read the table again.
+     *
+     * If this holder already has a slot for [version] (another caller made or read that version
+     * after this caller read the table, for example while this caller's read ran before the other's
+     * insert committed), no key is made: see [isStored].
+     */
     private suspend fun storeNewKey(version: Int): Boolean {
+        var installed: Slot? = null
         val pending = synchronized(lock) {
-            created[version] ?: Pending(version).also { made ->
-                made.deferred = scope.async(start = CoroutineStart.LAZY) { create(made) }
-                created[version] = made
+            val slot = unwrapped[version]
+            if (slot != null) {
+                installed = slot
+                null
+            } else {
+                created[version] ?: Pending(version).also { made ->
+                    made.deferred = scope.async(start = CoroutineStart.LAZY) { create(made) }
+                    created[version] = made
+                }
             }
         }
+        if (pending == null) return isStored(checkNotNull(installed))
         pending.deferred.start()
         val creation = pending.deferred.await()
         val stored = if (store.insertIfAbsent(creation.record)) creation.record else store.get(version)
@@ -268,6 +347,20 @@ class DataKeyHolder(
         // Another key holds this version, or the record cannot be read back: ours was never stored.
         synchronized(lock) { if (created[version]?.result === creation) created.remove(version) }
         creation.key.wipe()
+        return false
+    }
+
+    /**
+     * Whether [slot]'s version is stored with a usable key. A slot exists only for a record that was
+     * read from, or stored in, [store], so its version is taken and no new key is made for it. True
+     * if the stored record is the slot's and the slot has not failed. A failed slot gives false, so
+     * the caller reads the table again and reports that key's failure. A slot whose record is gone
+     * (its transaction rolled back) or differs is dropped and its key wiped, so it is never used.
+     */
+    private suspend fun isStored(slot: Slot): Boolean {
+        val stored = store.get(slot.record.version)
+        if (stored != null && stored.sameKeyAs(slot.record)) return !slot.failed
+        forget(slot)
         return false
     }
 
@@ -284,9 +377,9 @@ class DataKeyHolder(
         var owned = true
         try {
             val wrapper = wrapperFor(alias)
-            val wrapped = wrapper.wrap(raw, associatedData)
+            val wrapped = keystoreCall { wrapper.wrap(raw, associatedData) }
             if (!EnvelopeFormat.isWellFormedWrappedKey(wrapped)) throw SecretCipherException("Invalid wrapped data key")
-            val check = wrapper.unwrap(wrapped, associatedData)
+            val check = keystoreCall { wrapper.unwrap(wrapped, associatedData) }
             try {
                 if (!MessageDigest.isEqual(check, raw)) throw SecretCipherException("Data key check failed")
             } finally {
@@ -319,7 +412,9 @@ class DataKeyHolder(
             when {
                 // A concurrent caller sharing this creation installed it already.
                 existing != null && existing.key === creation.key -> Unit
-                // The same record was unwrapped meanwhile: keep that slot, drop this copy.
+                // The same record was unwrapped meanwhile: keep that slot, drop this copy. (Reached
+                // only after created[version] was cleared without adopting this creation, that is
+                // after wipe(), so the copy is already zeroed; kept as a guard.)
                 existing != null && !existing.failed && existing.record.sameKeyAs(creation.record) ->
                     superfluous = creation.key
                 // wipe() ran meanwhile: nothing to install; the next use unwraps the record.
@@ -346,6 +441,8 @@ class DataKeyHolder(
         slot.deferred.await()
     } catch (_: KeyUnavailableException) {
         throw KeyUnavailableException()
+    } catch (e: KeyTemporarilyUnavailableException) {
+        throw KeyTemporarilyUnavailableException(e)
     } catch (e: SecretCipherException) {
         throw SecretCipherException("Data key unavailable", e)
     }
@@ -366,5 +463,39 @@ class DataKeyHolder(
     private companion object {
         /** Retries after a key was wiped or replaced under the caller, or a creation lost a race. */
         const val MAX_ATTEMPTS = 3
+
+        /** How deep [isAuthenticationFailure] looks into a cause chain. */
+        const val MAX_CAUSE_DEPTH = 8
+
+        /**
+         * Runs one wrapper call and sorts its failure. A missing wrapping key
+         * ([KeyUnavailableException]) and a key that does not authenticate (an [AEADBadTagException]
+         * cause) are definite and pass through. Any other cipher failure is a Keystore or
+         * secure-hardware error that may be transient ([java.security.ProviderException],
+         * [java.security.KeyStoreException], [java.io.IOException], an
+         * [java.security.InvalidKeyException] and the like, which [AesGcmSecretCipher] reports as
+         * "Decryption failed" or "Encryption failed") and becomes [KeyTemporarilyUnavailableException].
+         */
+        inline fun <T> keystoreCall(block: () -> T): T = try {
+            block()
+        } catch (e: KeyUnavailableException) {
+            throw e
+        } catch (e: KeyTemporarilyUnavailableException) {
+            throw e
+        } catch (e: SecretCipherException) {
+            throw if (isAuthenticationFailure(e)) e else KeyTemporarilyUnavailableException(e)
+        }
+
+        /** True if [e] or one of its causes is an [AEADBadTagException]: the key or record does not authenticate. */
+        fun isAuthenticationFailure(e: Throwable): Boolean {
+            var cause: Throwable? = e
+            var depth = 0
+            while (cause != null && depth <= MAX_CAUSE_DEPTH) {
+                if (cause is AEADBadTagException) return true
+                cause = cause.cause
+                depth++
+            }
+            return false
+        }
     }
 }

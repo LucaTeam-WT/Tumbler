@@ -77,7 +77,7 @@ class RoomAccountBackupStore internal constructor(
             checkOpen()
             require(createdAtMillis >= 0) { "Creation time must not be negative" }
             val id = idGenerator()
-            dao.insert(account.toEntity(id, encrypt(account, id), EnvelopeFormat.LEGACY_KEY_VERSION, createdAtMillis))
+            dao.insert(account.toEntity(id, encrypt(account, id), createdAtMillis))
             return id
         }
 

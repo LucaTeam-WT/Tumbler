@@ -30,7 +30,9 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertSame
 import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
+import org.junit.Rule
 import org.junit.Test
+import org.junit.rules.Timeout
 import java.util.Collections
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
@@ -38,6 +40,10 @@ import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
 
 class RoomAccountRepositoryTest {
+
+    /** A lock regression in the data-key code would hang instead of failing. */
+    @get:Rule
+    val timeout: Timeout = Timeout.seconds(30)
 
     /** Plain JVM AES key; [lost] simulates the Keystore entry being deleted. */
     private class TestKeyProvider : KeyProvider {
@@ -212,7 +218,7 @@ class RoomAccountRepositoryTest {
         // A backup import replaces the row (new secret, counter 50) after the copy was read.
         val newSecret = Base32.decode("JBSWY3DPEHPK3PXP")
         val replaced = hotp.copy(secret = newSecret, counter = 50)
-        dao.put(replaced.toEntity(hotpId, cipher.encrypt(newSecret, accountAssociatedData(hotpId)), keyVersion = 0, createdAt = 1_000))
+        dao.put(replaced.toEntity(hotpId, cipher.encrypt(newSecret, accountAssociatedData(hotpId)), createdAt = 1_000))
 
         val result = repository.nextHotpCode(hotpId)
 

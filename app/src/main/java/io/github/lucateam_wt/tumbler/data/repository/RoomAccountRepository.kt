@@ -1,7 +1,6 @@
 package io.github.lucateam_wt.tumbler.data.repository
 
 import io.github.lucateam_wt.tumbler.data.crypto.DataKeyHolder
-import io.github.lucateam_wt.tumbler.data.crypto.EnvelopeFormat
 import io.github.lucateam_wt.tumbler.data.db.AccountDao
 import io.github.lucateam_wt.tumbler.data.db.TumblerDatabase
 import io.github.lucateam_wt.tumbler.domain.crypto.SecretCipher
@@ -35,7 +34,7 @@ import java.util.UUID
 class RoomAccountRepository internal constructor(
     private val dao: AccountDao,
     private val cipher: SecretCipher,
-    dataKeys: DataKeyHolder,
+    private val dataKeys: DataKeyHolder,
     private val transactions: TransactionRunner,
     private val dispatcher: CoroutineDispatcher = Dispatchers.IO,
     private val idGenerator: () -> String = { UUID.randomUUID().toString() },
@@ -50,12 +49,17 @@ class RoomAccountRepository internal constructor(
     override fun observeAccounts(): Flow<List<AccountSummary>> =
         dao.observeAll().map { rows -> rows.map { it.toSummary() } }
 
+    /** Forgets the data-key failures [dataKeys] cached, so the next read of those rows unwraps again. */
+    override fun forgetCachedReadFailures() {
+        dataKeys.clearFailures()
+    }
+
     override suspend fun add(account: OtpAccount): String {
         val id = idGenerator()
         val secretBlob = withContext(dispatcher) {
             cipher.encrypt(account.secret, associatedData(id))
         }
-        dao.insert(account.toEntity(id, secretBlob, EnvelopeFormat.LEGACY_KEY_VERSION, clock()))
+        dao.insert(account.toEntity(id, secretBlob, clock()))
         return id
     }
 

@@ -7,24 +7,32 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
+import org.junit.Rule
 import org.junit.Test
+import org.junit.rules.Timeout
 import java.security.SecureRandom
 
 class DataKeyCipherTest {
+
+    /** A lock regression in [DataKey] would hang instead of failing. */
+    @get:Rule
+    val timeout: Timeout = Timeout.seconds(30)
 
     private val random = SecureRandom()
     private val secret = "JBSWY3DPEHPK3PXP".toByteArray(Charsets.US_ASCII)
 
     /**
      * AES-256-GCM known answers from McGrew and Viega, "The Galois/Counter Mode of Operation
-     * (GCM)", test cases 13 to 16 (also in the NIST GCM validation set), run through the same
-     * seal and open code as the app.
+     * (GCM)", test cases 14 to 16 (also in the NIST GCM validation set), run through the same
+     * seal and open code as the app. Test case 13 has an empty plaintext, which the format
+     * refuses; it is checked separately.
      */
     private class Vector(val key: String, val nonce: String, val plaintext: String, val aad: String, val ciphertext: String, val tag: String)
 
+    /** Test case 13: an empty plaintext, which the format refuses in both directions. */
+    private val emptyVector = Vector("00".repeat(32), "00".repeat(12), "", "", "", "530f8afbc74536b9a963b4f1c4cb738b")
+
     private val vectors = listOf(
-        // Test case 13
-        Vector("00".repeat(32), "00".repeat(12), "", "", "", "530f8afbc74536b9a963b4f1c4cb738b"),
         // Test case 14
         Vector(
             "00".repeat(32), "00".repeat(12), "00".repeat(16), "",
@@ -71,9 +79,45 @@ class DataKeyCipherTest {
     }
 
     @Test
+    fun `an empty secret is refused when sealing and an authentic empty payload when opening`() {
+        val v = emptyVector
+        assertEquals(
+            "Plaintext empty",
+            assertThrows(SecretCipherException::class.java) {
+                DataKeyCipher.sealWith(v.key.hex(), v.nonce.hex(), ByteArray(0), v.aad.hex())
+            }.message,
+        )
+        // 30 bytes with a valid tag (McGrew-Viega test case 13): refused before decryption, with
+        // the same error as any other payload that is too short.
+        val payload = ("02" + "0c" + v.nonce + v.ciphertext + v.tag).hex()
+        assertEquals(30, payload.size)
+        assertEquals(
+            "Payload too short",
+            assertThrows(SecretCipherException::class.java) { DataKeyCipher.openWith(v.key.hex(), payload, v.aad.hex()) }.message,
+        )
+        val key = DataKey(1, v.key.hex())
+        assertEquals(
+            "Payload too short",
+            assertThrows(SecretCipherException::class.java) { DataKeyCipher.open(key, "acc-1", payload) }.message,
+        )
+    }
+
+    @Test
+    fun `a sealed secret carries the key version bound in its associated data`() {
+        val raw = ByteArray(32).also(random::nextBytes)
+        val sealed = DataKeyCipher.seal(DataKey(7, raw.copyOf()), "acc-1", secret, random)
+        assertEquals(7, sealed.keyVersion)
+        assertArrayEquals(secret, DataKeyCipher.openWith(raw, sealed.blob, EnvelopeFormat.secretAssociatedData(7, "acc-1")))
+        assertThrows(SecretCipherException::class.java) {
+            DataKeyCipher.openWith(raw, sealed.blob, EnvelopeFormat.secretAssociatedData(6, "acc-1"))
+        }
+        assertFalse(sealed.toString().contains(sealed.blob.toHex()))
+    }
+
+    @Test
     fun `seal and open round trip with the documented associated data`() {
         val key = dataKey()
-        val payload = DataKeyCipher.seal(key, "acc-1", secret, random)
+        val payload = DataKeyCipher.seal(key, "acc-1", secret, random).blob
         assertEquals(30 + secret.size, payload.size)
         assertEquals(2, payload[0].toInt())
         assertEquals(12, payload[1].toInt())
@@ -87,7 +131,7 @@ class DataKeyCipherTest {
     fun `the largest secret round trips and a larger one is refused`() {
         val key = dataKey()
         val largest = ByteArray(64 * 1024) { it.toByte() }
-        assertArrayEquals(largest, DataKeyCipher.open(key, "a", DataKeyCipher.seal(key, "a", largest, random)))
+        assertArrayEquals(largest, DataKeyCipher.open(key, "a", DataKeyCipher.seal(key, "a", largest, random).blob))
         assertThrows(SecretCipherException::class.java) { DataKeyCipher.seal(key, "a", ByteArray(64 * 1024 + 1), random) }
         assertThrows(SecretCipherException::class.java) { DataKeyCipher.seal(key, "a", ByteArray(0), random) }
     }
@@ -95,7 +139,7 @@ class DataKeyCipherTest {
     @Test
     fun `changing any byte of the payload fails`() {
         val key = dataKey()
-        val payload = DataKeyCipher.seal(key, "acc-1", secret, random)
+        val payload = DataKeyCipher.seal(key, "acc-1", secret, random).blob
         for (index in payload.indices) {
             val tampered = payload.copyOf().also { it[index] = (it[index].toInt() xor 0x01).toByte() }
             assertThrows("byte $index", SecretCipherException::class.java) { DataKeyCipher.open(key, "acc-1", tampered) }
@@ -105,7 +149,7 @@ class DataKeyCipherTest {
     @Test
     fun `nonce, ciphertext and tag are each authenticated`() {
         val key = dataKey()
-        val payload = DataKeyCipher.seal(key, "acc-1", secret, random)
+        val payload = DataKeyCipher.seal(key, "acc-1", secret, random).blob
         val nonceAt = 2
         val ciphertextAt = 14
         val tagAt = payload.size - 16
@@ -120,7 +164,7 @@ class DataKeyCipherTest {
     fun `the payload opens only for its account, key version and purpose`() {
         val raw = ByteArray(32).also(random::nextBytes)
         val key = DataKey(1, raw.copyOf())
-        val payload = DataKeyCipher.seal(key, "acc-1", secret, random)
+        val payload = DataKeyCipher.seal(key, "acc-1", secret, random).blob
 
         // Another account id.
         assertThrows(SecretCipherException::class.java) { DataKeyCipher.open(key, "acc-2", payload) }
@@ -140,8 +184,8 @@ class DataKeyCipherTest {
     @Test
     fun `truncated, oversized and wrongly framed payloads are refused before decryption`() {
         val key = dataKey()
-        val payload = DataKeyCipher.seal(key, "acc-1", secret, random)
-        for (size in listOf(0, 1, 2, 14, 29)) {
+        val payload = DataKeyCipher.seal(key, "acc-1", secret, random).blob
+        for (size in listOf(0, 1, 2, 14, 29, 30)) {
             val e = assertThrows(SecretCipherException::class.java) { DataKeyCipher.open(key, "acc-1", payload.copyOf(size)) }
             assertEquals("Payload too short", e.message)
         }
@@ -190,7 +234,7 @@ class DataKeyCipherTest {
         val nonces = HashSet<String>()
         val payloads = HashSet<String>()
         repeat(10_000) {
-            val payload = DataKeyCipher.seal(key, "acc-1", secret, random)
+            val payload = DataKeyCipher.seal(key, "acc-1", secret, random).blob
             nonces += payload.copyOfRange(2, 14).toHex()
             payloads += payload.toHex()
         }
@@ -201,7 +245,7 @@ class DataKeyCipherTest {
     @Test
     fun `a wiped key neither seals nor opens`() {
         val key = dataKey()
-        val payload = DataKeyCipher.seal(key, "acc-1", secret, random)
+        val payload = DataKeyCipher.seal(key, "acc-1", secret, random).blob
         key.wipe()
         assertTrue(key.isWiped)
         assertNull(key.use { it.copyOf() })

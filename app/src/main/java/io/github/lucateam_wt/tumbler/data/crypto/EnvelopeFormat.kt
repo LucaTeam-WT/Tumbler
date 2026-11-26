@@ -35,10 +35,15 @@ internal object EnvelopeFormat {
     const val TAG_BYTES = TAG_BITS / 8
     const val HEADER_BYTES = 2
 
+    /** The smallest secret the format seals or opens: an empty secret is refused both ways. */
+    const val MIN_SECRET_BYTES = 1
+
     /** The largest secret the format seals or opens, as for the legacy payload. */
     const val MAX_SECRET_BYTES = 64 * 1024
-    const val MIN_SECRET_PAYLOAD_BYTES = HEADER_BYTES + NONCE_BYTES + TAG_BYTES
-    const val MAX_SECRET_PAYLOAD_BYTES = MIN_SECRET_PAYLOAD_BYTES + MAX_SECRET_BYTES
+
+    /** A sealed secret is `HEADER_BYTES + NONCE_BYTES + secret + TAG_BYTES`: 31 to 65566 bytes. */
+    const val MIN_SECRET_PAYLOAD_BYTES = HEADER_BYTES + NONCE_BYTES + MIN_SECRET_BYTES + TAG_BYTES
+    const val MAX_SECRET_PAYLOAD_BYTES = HEADER_BYTES + NONCE_BYTES + MAX_SECRET_BYTES + TAG_BYTES
 
     /** An account id or key alias is at most this many UTF-8 bytes in associated data (ids are 36-character UUIDs). */
     const val MAX_NAME_BYTES = 255

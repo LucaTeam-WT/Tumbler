@@ -336,6 +336,17 @@ class AccountListViewModelTest {
     }
 
     @Test
+    fun `reload lets the repository retry secrets whose key it had found unreadable`() = runTest {
+        repository.add(totpAccount())
+        val viewModel = createViewModel()
+        assertEquals(0, repository.forgetCachedReadFailuresCalls)
+
+        viewModel.reload()
+
+        assertEquals(1, repository.forgetCachedReadFailuresCalls)
+    }
+
+    @Test
     fun `nothing to export only once the list has loaded empty without a failure`() {
         assertTrue(AccountListUiState(isLoading = false).nothingToExport)
         assertFalse(AccountListUiState(isLoading = true).nothingToExport)

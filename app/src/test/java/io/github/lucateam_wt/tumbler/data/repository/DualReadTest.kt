@@ -8,6 +8,7 @@ import io.github.lucateam_wt.tumbler.data.crypto.FakeDataKeyStore
 import io.github.lucateam_wt.tumbler.data.crypto.FakeKeystore
 import io.github.lucateam_wt.tumbler.data.crypto.KeyProvider
 import io.github.lucateam_wt.tumbler.data.db.AccountEntity
+import io.github.lucateam_wt.tumbler.domain.crypto.KeyTemporarilyUnavailableException
 import io.github.lucateam_wt.tumbler.domain.crypto.KeyUnavailableException
 import io.github.lucateam_wt.tumbler.domain.crypto.SecretCipherException
 import io.github.lucateam_wt.tumbler.domain.model.OtpAccount
@@ -26,9 +27,13 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertSame
 import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
+import org.junit.Rule
 import org.junit.Test
+import org.junit.rules.Timeout
+import java.security.ProviderException
 import java.security.SecureRandom
 import java.util.Collections
+import javax.crypto.AEADBadTagException
 import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
 import kotlin.coroutines.AbstractCoroutineContextElement
@@ -48,6 +53,10 @@ internal const val TEST_WRAP_ALIAS = "test_wrap_key"
  * [DataKeyHolder] over the same key table and Keystore), because the app does not write them yet.
  */
 class DualReadTest {
+
+    /** A lock regression in the data-key code would hang instead of failing. */
+    @get:Rule
+    val timeout: Timeout = Timeout.seconds(30)
 
     /** The legacy Keystore key as a plain JVM key; [lost] simulates its entry being deleted. */
     private class LegacyKeys : KeyProvider {
@@ -112,6 +121,34 @@ class DualReadTest {
         assertEquals(listOf("s", "l"), store.writeTransaction { readAll() }.map { it.id })
         assertEquals(1, wrappers.unwraps.get())
         assertEquals(0, wrappers.wraps.get())
+    }
+
+    @Test
+    fun aKeyFoundUnreadableIsRetriedOnlyAfterForgetCachedReadFailures() = runBlocking<Unit> {
+        putSealed("s", totp, 1)
+        resetCounters()
+        wrappers.failUnwrapsWith = { SecretCipherException("Decryption failed", AEADBadTagException("Tag mismatch")) }
+
+        assertThrows(SecretCipherException::class.java) { runBlocking { repository.getAccount("s") } }
+        wrappers.failUnwrapsWith = null
+        assertThrows(SecretCipherException::class.java) { runBlocking { repository.getAccount("s") } }
+        assertEquals(1, wrappers.unwraps.get())
+
+        repository.forgetCachedReadFailures()
+        assertEquals(totp, repository.getAccount("s"))
+        assertEquals(2, wrappers.unwraps.get())
+    }
+
+    @Test
+    fun aKeystoreErrorOnADataKeyRowIsRetryableAndNotCached() = runBlocking<Unit> {
+        putSealed("s", totp, 1)
+        resetCounters()
+        keystore.lookupFailure = { ProviderException("busy") }
+
+        assertThrows(KeyTemporarilyUnavailableException::class.java) { runBlocking { repository.getAccount("s") } }
+        keystore.lookupFailure = null
+        assertEquals(totp, repository.getAccount("s"))
+        assertEquals(2, wrappers.unwraps.get())
     }
 
     @Test
@@ -265,8 +302,9 @@ class DualReadTest {
         val earlier = testDataKeyHolder(keyTable, wrappers)
         val row = runBlocking {
             val version = earlier.prepareWriteKey()
-            val blob = DataKeyCipher.seal(earlier.writeKey(version), id, account.secret, random)
-            account.toEntity(id, blob, version, createdAt)
+            val sealed = DataKeyCipher.seal(earlier.writeKey(version), id, account.secret, random)
+            assertEquals(version, sealed.keyVersion)
+            account.toEntity(id, sealed, createdAt)
         }
         assertEquals(2, row.secretBlob[0].toInt())
         dao.put(row)
@@ -274,7 +312,7 @@ class DualReadTest {
     }
 
     private fun putLegacy(id: String, account: OtpAccount, createdAt: Long): AccountEntity =
-        account.toEntity(id, legacyCipher.encrypt(account.secret, accountAssociatedData(id)), 0, createdAt)
+        account.toEntity(id, legacyCipher.encrypt(account.secret, accountAssociatedData(id)), createdAt)
             .also { dao.put(it) }
 
     private fun resetCounters() {

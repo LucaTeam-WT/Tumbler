@@ -1,5 +1,6 @@
 package io.github.lucateam_wt.tumbler.data.repository
 
+import io.github.lucateam_wt.tumbler.data.crypto.SealedSecret
 import io.github.lucateam_wt.tumbler.data.db.AccountSummaryRow
 import io.github.lucateam_wt.tumbler.domain.model.AccountSummary
 import io.github.lucateam_wt.tumbler.domain.model.OtpAccount
@@ -20,7 +21,7 @@ class AccountMappersTest {
     fun toEntity_copiesEveryFieldAndStoresEnumsByName() {
         val account = OtpAccount("Bank", "bob", OtpType.HOTP, secret, OtpAlgorithm.SHA512, 7, 45, 9)
 
-        val entity = account.toEntity("id-1", blob, 3, 123L)
+        val entity = account.toEntity("id-1", blob, 123L)
 
         assertEquals("id-1", entity.id)
         assertEquals("Bank", entity.issuer)
@@ -32,8 +33,21 @@ class AccountMappersTest {
         assertEquals(9L, entity.counter)
         assertArrayEquals(blob, entity.secretBlob)
         assertEquals(123L, entity.createdAt)
+        assertEquals(0, entity.keyVersion)
+        assertNull(entity.legacySecretBlob)
+        assertEquals(account, entity.toOtpAccount(secret.copyOf()))
+    }
+
+    @Test
+    fun toEntity_ofASealedSecretTakesTheKeyVersionItWasSealedWith() {
+        val account = OtpAccount("Bank", "bob", OtpType.HOTP, secret, OtpAlgorithm.SHA512, 7, 45, 9)
+
+        val entity = account.toEntity("id-1", SealedSecret(3, blob), 123L)
+
+        assertArrayEquals(blob, entity.secretBlob)
         assertEquals(3, entity.keyVersion)
         assertNull(entity.legacySecretBlob)
+        assertEquals(123L, entity.createdAt)
         assertEquals(account, entity.toOtpAccount(secret.copyOf()))
     }
 
@@ -42,7 +56,7 @@ class AccountMappersTest {
         for (type in OtpType.entries) {
             for (algorithm in OtpAlgorithm.entries) {
                 val account = OtpAccount("I", "A", type, secret, algorithm)
-                val entity = account.toEntity("id", blob, 0, 0L)
+                val entity = account.toEntity("id", blob, 0L)
 
                 assertEquals(type.name, entity.type)
                 assertEquals(algorithm.name, entity.algorithm)

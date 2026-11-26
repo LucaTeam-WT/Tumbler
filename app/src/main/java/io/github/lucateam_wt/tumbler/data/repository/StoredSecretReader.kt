@@ -30,6 +30,9 @@ internal class StoredSecretReader(
      * Step 1: what is needed to open [row]'s secret. The returned function returns a new plaintext
      * array that the caller owns and must wipe.
      *
+     * @throws io.github.lucateam_wt.tumbler.domain.crypto.KeyTemporarilyUnavailableException if
+     *   the row's data key could not be unwrapped this time (a Keystore error that may be
+     *   transient); nothing is cached and calling again retries.
      * @throws SecretCipherException if the row's key version is negative or its data key cannot
      *   be used (no record, wrapping key gone, record does not unwrap).
      */
