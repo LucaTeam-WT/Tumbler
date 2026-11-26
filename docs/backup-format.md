@@ -373,9 +373,10 @@ write time), and an added or deleted account that is no import's counterpart.
 `AppContainer.backupService` creates it, and `BackupViewModel` (`ui/backup/`) calls it
 ([Export and import screens](#export-and-import-screens)). It reads and writes the
 accounts through `AccountBackupStore` (`RoomAccountBackupStore`: the same table, encryption
-and associated data as `RoomAccountRepository`; it writes secrets in the legacy format and
-reads both formats of [storage-format.md](storage-format.md), which this backup format does
-not depend on). Every function:
+and associated data as `RoomAccountRepository`; it seals the secrets it writes with the
+newest data key and reads both formats of [storage-format.md](storage-format.md), which
+this backup format does not depend on). Before every read and every write transaction it
+waits until the startup migration of stored secrets has ended. Every function:
 
 - runs on an injectable dispatcher (by default `Dispatchers.Default`, since scrypt is
   CPU-bound), so it may be called from the main thread;
@@ -430,7 +431,8 @@ On every result except `Ready` the imported secrets are already wiped.
    time. The result is `Success(inserted, replaced, skipped)`.
 
 A failure while writing rolls the whole transaction back and leaves the plan open for a
-retry. Those results are `StorageFailed` (a database or Keystore error), `NotEnoughMemory`
+retry. Those results are `StorageFailed` (a database or Keystore error, a storage key that
+failed in a way that may be transient, or a storage key that must be replaced first), `NotEnoughMemory`
 and `ExistingAccountUnreadable`. `PlanClosed` means the plan was already applied (or may
 have been, see below), replaced or closed, or is being applied.
 
@@ -787,9 +789,11 @@ does what, and what is left:
       `BackupFlowInstrumentedTest.memory_thousandAccountsExportAndImportWithoutRunningOutOfMemory`
       checks correctness, not speed, within one 30-minute budget. As soon as each phase
       ends it logs, under the tag `TumblerBackupPerf`:
-      - the setup (1000 accounts added, one Keystore encryption each);
+      - the setup (1000 accounts added; before the data key one Keystore encryption each,
+        now one software seal each);
       - where the Keystore keeps the key (StrongBox, TEE or software);
-      - the average time of a key lookup, a decrypt and an encrypt;
+      - the average time of a key lookup, a decrypt and an encrypt (and, since the data
+        key, of a legacy decrypt and of opening a row with the data key);
       - one scrypt at the default parameters;
       - the export, the read and the import, with the file size and the scrypt parameters
         read from its header.
@@ -801,9 +805,10 @@ does what, and what is left:
       adb logcat -d -s TumblerBackupPerf:I
       ```
 
-      Each secret is encrypted on its own under the Keystore key. An export therefore runs
-      one Keystore decryption per account. An import runs one Keystore encryption per new
-      or replaced account, and decrypts the device's accounts twice: once for the plan and
+      At the time of this measurement (before the data key, see below) each secret was
+      encrypted on its own under the Keystore key. An export therefore ran one Keystore
+      decryption per account. An import ran one Keystore encryption per new
+      or replaced account, and decrypted the device's accounts twice: once for the plan and
       once inside the write transaction. scrypt runs once per file.
 
       Measured in the full run on the PKG110 (Android 17, API 37, heap limit 256 MiB,
@@ -829,6 +834,14 @@ does what, and what is left:
       planned against was empty; on a device with accounts, the read and the import each
       add one Keystore decryption per account already there. The time to show the account
       list (one Keystore decryption per account as well) was not measured.
+
+      These figures were measured before the data key. Since then the secrets are sealed in
+      software with one data key, which is unwrapped once per process: export, import and
+      the account list make no Keystore call per account once it is ready (a row read
+      through its legacy copy still costs one). An upgraded device converts each stored
+      secret once at startup, with one Keystore decryption per account. None of this has
+      been measured on a device yet; the test's setup and its sample lines now time the
+      data key instead.
     - *Still to do:* `BackupPayloadTest.decode_rejectsMalformedUtf8` and the golden
       password's NFD and longest-decomposition cases as instrumented tests; the
       `Character` whitespace tables across API levels (26 to current), for item 7; the

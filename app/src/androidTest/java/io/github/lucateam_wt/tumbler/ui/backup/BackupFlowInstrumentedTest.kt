@@ -439,7 +439,7 @@ class BackupFlowInstrumentedTest {
                 "p=${defaults.p}, heap limit ${runtime.maxMemory() / MIB} MiB, budget ${PERF_TIMEOUT_MILLIS / 60_000} min",
         )
 
-        // Setup: each account is one Keystore encryption and one insert.
+        // Setup: each account is one software seal with the data key and one insert (the first add makes the key).
         val setupStarted = SystemClock.elapsedRealtime()
         runBlocking {
             withTimeoutOrNull(remaining()) {
