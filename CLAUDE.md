@@ -39,11 +39,11 @@ Run all three before declaring a task done.
 io.github.lucateam_wt.tumbler
 ├── backup/    # encrypted backup file (docs/backup-format.md): scrypt (Bouncy Castle) + AES-256-GCM container, payload codec with limits, export password policy, import duplicate planning (format code is pure JVM); BackupService (export, read + plan, apply in one transaction, typed results) on an AccountBackupStore; created by AppContainer and run by ui/backup
 ├── data/      # Room, Keystore crypto, repositories
-│   ├── crypto/    # AES-GCM SecretCipher impl, Android Keystore key provider
-│   ├── db/        # Room database, AccountEntity, AccountDao, summary projection
-│   └── repository/ # RoomAccountRepository (encrypts secrets), RoomAccountBackupStore (bulk read and transactional writes for backup), entity/domain mappers
+│   ├── crypto/    # AES-GCM SecretCipher impl, Android Keystore key provider; envelope core (docs/storage-format.md, pure Kotlin except the Keystore wrapper): EnvelopeFormat (layouts, associated data, aliases), DataKeyCipher (software AES-256-GCM; seal returns a SealedSecret with its key version), DataKey (wipe waits for use), DataKeyWrapper + Keystore impl, DataKeyStore, DataKeyHolder (one shared unwrap per process, definite failures cached, transient Keystore errors retried, never creates on read)
+│   ├── db/        # Room database (schema v2, DatabaseMigrations, no destructive fallback), AccountEntity (keyVersion, legacySecretBlob), AccountDao, DataKeyEntity + DataKeyDao (insert-only data_keys), summary projection
+│   └── repository/ # RoomAccountRepository (encrypts secrets, legacy format), RoomAccountBackupStore (bulk read and transactional writes for backup), StoredSecretReader (opens either format; key resolved in the caller's transaction), RoomDataKeyStore, entity/domain mappers
 ├── domain/    # OTP generators (TOTP/HOTP), models, use cases
-│   ├── crypto/    # SecretCipher interface + exceptions
+│   ├── crypto/    # SecretCipher interface + exceptions (KeyUnavailableException, KeyTemporarilyUnavailableException: retryable)
 │   ├── model/     # OtpAccount, OtpType, AccountSummary, StoredAccount, AccountLimits (label/secret limits on the add path, AccountLimitException)
 │   ├── otp/       # Base32, Hotp, Totp, OtpAuthUri parser
 │   └── repository/ # AccountRepository and AccountBackupStore interfaces
@@ -52,6 +52,6 @@ io.github.lucateam_wt.tumbler
 │   ├── backup/    # BackupViewModel (sealed BackupUiState; passwords in memory only, never saved state), password/progress/confirm/message dialogs, import review screen, SAF document wrapper (BackupFile, partial-file delete)
 │   ├── theme/     # Material 3 theme (dynamic color, dark mode)
 │   └── TumblerApp.kt  # root composable: switches list <-> add <-> import review with AnimatedContent (slide + fade, no navigation library), hosts the SAF pickers and backup dialogs
-├── di/        # AppContainer (manual DI, lazy: repository, backup service; view model factories read it; Hilt is not used yet)
+├── di/        # AppContainer (manual DI, lazy: repository, backup service, one shared DataKeyHolder; view model factories read it; Hilt is not used yet)
 └── TumblerApplication.kt  # owns the AppContainer
 ```

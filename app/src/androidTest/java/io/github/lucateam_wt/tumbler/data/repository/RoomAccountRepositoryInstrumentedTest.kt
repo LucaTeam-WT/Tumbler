@@ -37,7 +37,7 @@ class RoomAccountRepositoryInstrumentedTest {
 
     private fun openRepository(): RoomAccountRepository {
         val database = TumblerDatabase.open(context, databaseName).also { openDatabases += it }
-        return RoomAccountRepository(database, AesGcmSecretCipher(AndroidKeystoreKeyProvider(alias)))
+        return RoomAccountRepository(database, AesGcmSecretCipher(AndroidKeystoreKeyProvider(alias)), testDataKeyHolder(database, "${alias}_wrap"))
     }
 
     private fun deleteTestData() {

@@ -1,5 +1,7 @@
 package io.github.lucateam_wt.tumbler.data.repository
 
+import io.github.lucateam_wt.tumbler.data.crypto.EnvelopeFormat
+import io.github.lucateam_wt.tumbler.data.crypto.SealedSecret
 import io.github.lucateam_wt.tumbler.data.db.AccountEntity
 import io.github.lucateam_wt.tumbler.data.db.AccountSummaryRow
 import io.github.lucateam_wt.tumbler.domain.model.AccountSummary
@@ -14,8 +16,22 @@ import io.github.lucateam_wt.tumbler.domain.otp.OtpAlgorithm
  */
 internal fun accountAssociatedData(id: String): ByteArray = id.toByteArray(Charsets.UTF_8)
 
-/** Builds the row for [this] account. Enums are stored by name. */
-internal fun OtpAccount.toEntity(id: String, secretBlob: ByteArray, createdAt: Long) = AccountEntity(
+/**
+ * Builds the row for [this] account, whose [secretBlob] is a legacy payload under the Keystore
+ * key (`keyVersion` 0). Enums are stored by name. A new row has no legacy copy of its secret.
+ */
+internal fun OtpAccount.toEntity(id: String, secretBlob: ByteArray, createdAt: Long) =
+    toEntity(id, secretBlob, EnvelopeFormat.LEGACY_KEY_VERSION, createdAt)
+
+/**
+ * Builds the row for [this] account with a secret sealed by a data key: `keyVersion` is the
+ * version [sealed] was bound to, so the row cannot name another key. Enums are stored by name. A
+ * new row has no legacy copy of its secret.
+ */
+internal fun OtpAccount.toEntity(id: String, sealed: SealedSecret, createdAt: Long) =
+    toEntity(id, sealed.blob, sealed.keyVersion, createdAt)
+
+private fun OtpAccount.toEntity(id: String, secretBlob: ByteArray, keyVersion: Int, createdAt: Long) = AccountEntity(
     id = id,
     issuer = issuer,
     accountName = accountName,
@@ -26,6 +42,8 @@ internal fun OtpAccount.toEntity(id: String, secretBlob: ByteArray, createdAt: L
     counter = counter,
     secretBlob = secretBlob,
     createdAt = createdAt,
+    keyVersion = keyVersion,
+    legacySecretBlob = null,
 )
 
 /**

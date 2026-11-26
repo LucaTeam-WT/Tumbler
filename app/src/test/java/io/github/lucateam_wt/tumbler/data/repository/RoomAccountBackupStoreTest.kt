@@ -21,12 +21,18 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertSame
 import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
+import org.junit.Rule
 import org.junit.Test
+import org.junit.rules.Timeout
 import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
 
 /** [RoomAccountBackupStore] on [FakeAccountDao]; real Room transactions are covered by the instrumented test. */
 class RoomAccountBackupStoreTest {
+
+    /** A lock regression in the data-key code would hang instead of failing. */
+    @get:Rule
+    val timeout: Timeout = Timeout.seconds(30)
 
     /** Plain JVM AES key; [lost] simulates the Keystore entry being deleted. */
     private class TestKeyProvider : KeyProvider {
@@ -78,10 +84,11 @@ class RoomAccountBackupStoreTest {
     private val dao = FakeAccountDao()
     private val cipher = RecordingCipher(AesGcmSecretCipher(keyProvider))
     private val runner = RollbackRunner(dao)
+    private val dataKeys = testDataKeyHolder()
     private var nextId = 0
     private var now = 1_000L
-    private val repository = RoomAccountRepository(dao, cipher, runner, idGenerator = { "id-${nextId++}" }, clock = { now++ })
-    private val store = RoomAccountBackupStore(dao, cipher, runner, idGenerator = { "id-${nextId++}" })
+    private val repository = RoomAccountRepository(dao, cipher, dataKeys, runner, idGenerator = { "id-${nextId++}" }, clock = { now++ })
+    private val store = RoomAccountBackupStore(dao, cipher, dataKeys, runner, idGenerator = { "id-${nextId++}" })
 
     private val totpSecret = Base32.decode("JBSWY3DPEHPK3PXP")
     private val hotpSecret = Base32.decode("GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ")
@@ -92,7 +99,7 @@ class RoomAccountBackupStoreTest {
         (0..size - needle.size).any { start -> needle.indices.all { this[start + it] == needle[it] } }
 
     private fun AccountEntity.with(type: String = this.type, digits: Int = this.digits, createdAt: Long = this.createdAt) =
-        AccountEntity(id, issuer, accountName, type, algorithm, digits, period, counter, secretBlob, createdAt)
+        AccountEntity(id, issuer, accountName, type, algorithm, digits, period, counter, secretBlob, createdAt, keyVersion, legacySecretBlob)
 
     @Test
     fun readAll_returnsEveryAccountOldestFirstWithItsCreationTime() = runBlocking {

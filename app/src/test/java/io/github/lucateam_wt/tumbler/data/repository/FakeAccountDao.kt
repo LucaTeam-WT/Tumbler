@@ -68,16 +68,28 @@ class FakeAccountDao : AccountDao {
         period: Int,
         counter: Long,
         secretBlob: ByteArray,
+        keyVersion: Int,
     ): Int {
         val row = rows.value[id] ?: return 0
-        put(AccountEntity(id, issuer, accountName, type, algorithm, digits, period, counter, secretBlob, row.createdAt))
+        // Like the SQL: createdAt is kept and the legacy copy of the secret is cleared.
+        put(
+            AccountEntity(
+                id, issuer, accountName, type, algorithm, digits, period, counter, secretBlob, row.createdAt,
+                keyVersion = keyVersion,
+                legacySecretBlob = null,
+            ),
+        )
         return 1
     }
 
     override suspend fun delete(id: String) = rows.update { it - id }
+
+    override suspend fun highestKeyVersion(): Int? = rows.value.values.maxOfOrNull { it.keyVersion }
 }
 
 fun AccountEntity.copyWith(
     counter: Long = this.counter,
     secretBlob: ByteArray = this.secretBlob,
-) = AccountEntity(id, issuer, accountName, type, algorithm, digits, period, counter, secretBlob, createdAt)
+    keyVersion: Int = this.keyVersion,
+    legacySecretBlob: ByteArray? = this.legacySecretBlob,
+) = AccountEntity(id, issuer, accountName, type, algorithm, digits, period, counter, secretBlob, createdAt, keyVersion, legacySecretBlob)

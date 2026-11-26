@@ -30,7 +30,9 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertSame
 import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
+import org.junit.Rule
 import org.junit.Test
+import org.junit.rules.Timeout
 import java.util.Collections
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
@@ -38,6 +40,10 @@ import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
 
 class RoomAccountRepositoryTest {
+
+    /** A lock regression in the data-key code would hang instead of failing. */
+    @get:Rule
+    val timeout: Timeout = Timeout.seconds(30)
 
     /** Plain JVM AES key; [lost] simulates the Keystore entry being deleted. */
     private class TestKeyProvider : KeyProvider {
@@ -90,11 +96,13 @@ class RoomAccountRepositoryTest {
     private val dao = FakeAccountDao()
     private val cipher = RecordingCipher(AesGcmSecretCipher(keyProvider))
     private val runner = SerialRunner(dao)
+    private val dataKeys = testDataKeyHolder()
     private var nextId = 0
     private var now = 1_000L
     private val repository = RoomAccountRepository(
         dao = dao,
         cipher = cipher,
+        dataKeys = dataKeys,
         transactions = runner,
         idGenerator = { "id-${nextId++}" },
         clock = { now++ },
@@ -210,7 +218,7 @@ class RoomAccountRepositoryTest {
         // A backup import replaces the row (new secret, counter 50) after the copy was read.
         val newSecret = Base32.decode("JBSWY3DPEHPK3PXP")
         val replaced = hotp.copy(secret = newSecret, counter = 50)
-        dao.put(replaced.toEntity(hotpId, cipher.encrypt(newSecret, accountAssociatedData(hotpId)), 1_000))
+        dao.put(replaced.toEntity(hotpId, cipher.encrypt(newSecret, accountAssociatedData(hotpId)), createdAt = 1_000))
 
         val result = repository.nextHotpCode(hotpId)
 
@@ -274,7 +282,7 @@ class RoomAccountRepositoryTest {
         assertTrue(cipher.decrypted.single().isWiped())
 
         cipher.decrypted.clear()
-        val invalid = AccountEntity(hotpId, "Bank", "bob", "HOTP", "SHA1", 5, 30, 6, dao.stored(hotpId).secretBlob, 1_000)
+        val invalid = AccountEntity(hotpId, "Bank", "bob", "HOTP", "SHA1", 5, 30, 6, dao.stored(hotpId).secretBlob, 1_000, 0, null)
         dao.put(invalid)
         assertSame(NextHotpCodeResult.Failed, repository.nextHotpCode(hotpId))
         assertTrue(cipher.decrypted.single().isWiped())
@@ -328,7 +336,7 @@ class RoomAccountRepositoryTest {
     @Test
     fun nextHotpCode_withoutIsolation_compareAndSetNeverHandsOutACounterTwice() = runBlocking {
         val hotpId = repository.add(hotp)
-        val unisolated = RoomAccountRepository(dao, cipher, PassThroughRunner)
+        val unisolated = RoomAccountRepository(dao, cipher, dataKeys, PassThroughRunner)
         // Both calls read counter 5 before either writes.
         val bothRead = CountDownLatch(2)
         cipher.onDecrypt = {

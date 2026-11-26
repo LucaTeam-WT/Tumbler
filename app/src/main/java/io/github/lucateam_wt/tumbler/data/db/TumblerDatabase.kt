@@ -10,12 +10,15 @@ import androidx.room.RoomDatabase
  *
  * There is deliberately no destructive migration fallback: if a migration is missing,
  * opening the database fails loudly instead of silently deleting every account. Each
- * schema version is exported to `app/schemas` and committed.
+ * schema version is exported to `app/schemas` and committed, and every migration is in
+ * [DatabaseMigrations].
  */
-@Database(entities = [AccountEntity::class], version = 1, exportSchema = true)
+@Database(entities = [AccountEntity::class, DataKeyEntity::class], version = 2, exportSchema = true)
 abstract class TumblerDatabase : RoomDatabase() {
 
     abstract fun accountDao(): AccountDao
+
+    abstract fun dataKeyDao(): DataKeyDao
 
     companion object {
         private const val DATABASE_NAME = "lucaauth.db"
@@ -32,6 +35,7 @@ abstract class TumblerDatabase : RoomDatabase() {
         /** Opens the database file [name]; tests use their own name. */
         internal fun open(context: Context, name: String): TumblerDatabase =
             Room.databaseBuilder(context.applicationContext, TumblerDatabase::class.java, name)
+                .addMigrations(*DatabaseMigrations.ALL)
                 .build()
     }
 }

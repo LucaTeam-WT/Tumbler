@@ -44,14 +44,16 @@ interface AccountDao {
     suspend fun advanceCounter(id: String, expectedCounter: Long, expectedSecretBlob: ByteArray): Int
 
     /**
-     * Overwrites every column of row [id] except `id` and `createdAt`, which are kept.
+     * Overwrites every column of row [id] except `id` and `createdAt`, which are kept, and
+     * clears [AccountEntity.legacySecretBlob], so no copy of the replaced secret stays behind.
      *
      * @return the number of rows updated: 1, or 0 if [id] is unknown.
      */
     @Query(
         "UPDATE accounts SET issuer = :issuer, accountName = :accountName, type = :type, " +
             "algorithm = :algorithm, digits = :digits, period = :period, counter = :counter, " +
-            "secretBlob = :secretBlob WHERE id = :id",
+            "secretBlob = :secretBlob, keyVersion = :keyVersion, legacySecretBlob = NULL " +
+            "WHERE id = :id",
     )
     suspend fun replace(
         id: String,
@@ -63,8 +65,14 @@ interface AccountDao {
         period: Int,
         counter: Long,
         secretBlob: ByteArray,
+        keyVersion: Int,
     ): Int
 
+    /** Deletes row [id], and with it its [AccountEntity.legacySecretBlob]. */
     @Query("DELETE FROM accounts WHERE id = :id")
     suspend fun delete(id: String)
+
+    /** The highest [AccountEntity.keyVersion] of any row, or `null` if there is no row. */
+    @Query("SELECT MAX(keyVersion) FROM accounts")
+    suspend fun highestKeyVersion(): Int?
 }

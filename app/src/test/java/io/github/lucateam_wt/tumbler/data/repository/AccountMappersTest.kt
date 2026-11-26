@@ -1,5 +1,6 @@
 package io.github.lucateam_wt.tumbler.data.repository
 
+import io.github.lucateam_wt.tumbler.data.crypto.SealedSecret
 import io.github.lucateam_wt.tumbler.data.db.AccountSummaryRow
 import io.github.lucateam_wt.tumbler.domain.model.AccountSummary
 import io.github.lucateam_wt.tumbler.domain.model.OtpAccount
@@ -7,6 +8,7 @@ import io.github.lucateam_wt.tumbler.domain.model.OtpType
 import io.github.lucateam_wt.tumbler.domain.otp.OtpAlgorithm
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertThrows
 import org.junit.Test
 
@@ -30,6 +32,21 @@ class AccountMappersTest {
         assertEquals(45, entity.period)
         assertEquals(9L, entity.counter)
         assertArrayEquals(blob, entity.secretBlob)
+        assertEquals(123L, entity.createdAt)
+        assertEquals(0, entity.keyVersion)
+        assertNull(entity.legacySecretBlob)
+        assertEquals(account, entity.toOtpAccount(secret.copyOf()))
+    }
+
+    @Test
+    fun toEntity_ofASealedSecretTakesTheKeyVersionItWasSealedWith() {
+        val account = OtpAccount("Bank", "bob", OtpType.HOTP, secret, OtpAlgorithm.SHA512, 7, 45, 9)
+
+        val entity = account.toEntity("id-1", SealedSecret(3, blob), 123L)
+
+        assertArrayEquals(blob, entity.secretBlob)
+        assertEquals(3, entity.keyVersion)
+        assertNull(entity.legacySecretBlob)
         assertEquals(123L, entity.createdAt)
         assertEquals(account, entity.toOtpAccount(secret.copyOf()))
     }

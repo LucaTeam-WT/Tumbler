@@ -30,6 +30,7 @@ import io.github.lucateam_wt.tumbler.data.db.TumblerDatabase
 import io.github.lucateam_wt.tumbler.data.repository.RoomAccountBackupStore
 import io.github.lucateam_wt.tumbler.data.repository.RoomAccountRepository
 import io.github.lucateam_wt.tumbler.data.repository.accountAssociatedData
+import io.github.lucateam_wt.tumbler.data.repository.testDataKeyHolder
 import io.github.lucateam_wt.tumbler.domain.model.OtpAccount
 import io.github.lucateam_wt.tumbler.domain.model.OtpType
 import io.github.lucateam_wt.tumbler.domain.otp.Base32
@@ -102,8 +103,9 @@ class BackupFlowInstrumentedTest {
     private inner class Device(alias: String, codec: BackupCodec = DefaultBackupCodec) : Closeable {
         val database: TumblerDatabase = Room.inMemoryDatabaseBuilder(context, TumblerDatabase::class.java).build()
         private val cipher = AesGcmSecretCipher(AndroidKeystoreKeyProvider(alias))
-        val repository = RoomAccountRepository(database, cipher)
-        val store = RoomAccountBackupStore(database, cipher)
+        private val dataKeys = testDataKeyHolder(database, "${alias}_wrap")
+        val repository = RoomAccountRepository(database, cipher, dataKeys)
+        val store = RoomAccountBackupStore(database, cipher, dataKeys)
         val viewModel = onMain {
             BackupViewModel(BackupService(store, codec = codec), { repository.observeAccounts().first() })
         }

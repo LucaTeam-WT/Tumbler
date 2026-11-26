@@ -119,9 +119,11 @@ class AccountListViewModel(
     /**
      * Reads the accounts again from storage, for example after an import that may have
      * changed them. The list already follows every change through the repository's flow;
-     * this also restarts that flow if a storage failure had stopped it.
+     * this also restarts that flow if a storage failure had stopped it, and lets accounts whose
+     * storage key was found unreadable be tried again.
      */
     fun reload() {
+        repository.forgetCachedReadFailures()
         observe()
     }
 

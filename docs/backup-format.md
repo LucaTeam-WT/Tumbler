@@ -373,7 +373,9 @@ write time), and an added or deleted account that is no import's counterpart.
 `AppContainer.backupService` creates it, and `BackupViewModel` (`ui/backup/`) calls it
 ([Export and import screens](#export-and-import-screens)). It reads and writes the
 accounts through `AccountBackupStore` (`RoomAccountBackupStore`: the same table, encryption
-and associated data as `RoomAccountRepository`, and no schema change). Every function:
+and associated data as `RoomAccountRepository`; it writes secrets in the legacy format and
+reads both formats of [storage-format.md](storage-format.md), which this backup format does
+not depend on). Every function:
 
 - runs on an injectable dispatcher (by default `Dispatchers.Default`, since scrypt is
   CPU-bound), so it may be called from the main thread;

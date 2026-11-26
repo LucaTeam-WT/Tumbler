@@ -1,5 +1,6 @@
 package io.github.lucateam_wt.tumbler.domain.repository
 
+import io.github.lucateam_wt.tumbler.domain.crypto.KeyTemporarilyUnavailableException
 import io.github.lucateam_wt.tumbler.domain.crypto.KeyUnavailableException
 import io.github.lucateam_wt.tumbler.domain.crypto.SecretCipherException
 import io.github.lucateam_wt.tumbler.domain.model.AccountSummary
@@ -11,6 +12,13 @@ interface AccountRepository {
 
     /** Emits all accounts, oldest first, and again after every change. Never includes secrets. */
     fun observeAccounts(): Flow<List<AccountSummary>>
+
+    /**
+     * Forgets the failures this repository cached while opening stored secrets (a storage key
+     * that was found unreadable), so the next [getAccount] of those accounts tries again. Failures
+     * that may be transient are never cached. Makes no database or Keystore call itself.
+     */
+    fun forgetCachedReadFailures()
 
     /**
      * Encrypts and stores [account].
@@ -30,6 +38,8 @@ interface AccountRepository {
      * @return the account, or `null` if there is no account with [id].
      * @throws KeyUnavailableException if the encryption key is gone (for example after
      *   app data was cleared); the secret cannot be recovered.
+     * @throws KeyTemporarilyUnavailableException if the key could not be used this time (a
+     *   Keystore error that may be transient); calling again retries.
      * @throws SecretCipherException if the stored secret is corrupted or was tampered with.
      */
     suspend fun getAccount(id: String): OtpAccount?
