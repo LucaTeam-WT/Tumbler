@@ -75,4 +75,27 @@ interface AccountDao {
     /** The highest [AccountEntity.keyVersion] of any row, or `null` if there is no row. */
     @Query("SELECT MAX(keyVersion) FROM accounts")
     suspend fun highestKeyVersion(): Int?
+
+    /** Id and secret of every row still in the legacy format (`keyVersion` 0), in list order. */
+    @Query("SELECT id, secretBlob FROM accounts WHERE keyVersion = 0 ORDER BY createdAt ASC, id ASC")
+    suspend fun legacyRows(): List<LegacySecretRow>
+
+    /**
+     * Compare-and-set of the migration (`docs/storage-format.md`, "Migration of existing rows"):
+     * row [id] gets [secretBlob] sealed with data key [keyVersion], and keeps its old payload in
+     * `legacySecretBlob`, all in one statement, only while it is still a legacy row holding exactly
+     * [expectedSecretBlob], only for [keyVersion] >= 1, and only if the record of that data key is
+     * stored. Every other column, the counter included, is left as it is, so a "next code" that
+     * committed meanwhile is kept.
+     *
+     * @return 1, or 0 if the row is gone, was changed (replaced, already migrated) or the record is
+     *   missing; nothing is written then.
+     */
+    @Query(
+        "UPDATE accounts SET secretBlob = :secretBlob, keyVersion = :keyVersion, " +
+            "legacySecretBlob = :expectedSecretBlob " +
+            "WHERE id = :id AND keyVersion = 0 AND secretBlob = :expectedSecretBlob AND :keyVersion >= 1 " +
+            "AND EXISTS (SELECT 1 FROM data_keys WHERE version = :keyVersion)",
+    )
+    suspend fun migrateSecret(id: String, secretBlob: ByteArray, keyVersion: Int, expectedSecretBlob: ByteArray): Int
 }

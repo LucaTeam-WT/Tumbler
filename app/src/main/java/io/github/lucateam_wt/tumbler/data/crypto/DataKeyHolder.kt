@@ -2,6 +2,7 @@ package io.github.lucateam_wt.tumbler.data.crypto
 
 import io.github.lucateam_wt.tumbler.domain.crypto.KeyTemporarilyUnavailableException
 import io.github.lucateam_wt.tumbler.domain.crypto.KeyUnavailableException
+import io.github.lucateam_wt.tumbler.domain.crypto.NewStorageKeyRequiredException
 import io.github.lucateam_wt.tumbler.domain.crypto.SecretCipherException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineDispatcher
@@ -34,11 +35,18 @@ import javax.crypto.AEADBadTagException
  * of memory, for example) are not cached either.
  *
  * **Writing** has two steps. [prepareWriteKey], outside any database transaction, returns the
- * version to seal with and creates a data key when there is none, or when the newest one's
- * wrapping key is gone. It never creates one while the newest key exists but does not unwrap.
- * [writeKey], inside the transaction that writes the rows, re-reads that version's record in that
- * transaction and refuses to seal if it is not there, so a row is never committed without the
- * record of its key.
+ * version to seal with, unwrapping it if needed. It creates a data key only on a fresh install (no
+ * record, and no account names a data key). If the newest key cannot be used for good (its
+ * wrapping key is gone or invalidated, its record does not unwrap, or accounts name a version
+ * without a record) it throws [NewStorageKeyRequiredException] and creates nothing: only
+ * [startNewKey], which the app calls after the user confirmed it, makes the next version. A
+ * failure that may be transient never leads to a new key. [writeKey], inside the transaction that
+ * writes the rows, re-reads that version's record in that transaction and returns the key only if
+ * it is already unwrapped from that same record, so a row is never committed without the record of
+ * its key, and nothing is unwrapped inside a transaction.
+ *
+ * **Inside a transaction** callers use only [writeKey] and [readyKey], which never unwrap and never
+ * call the Keystore: keys are resolved before the transaction opens ([prepareWriteKey], [key]).
  *
  * **Deadlock freedom:** the holder's own scope does Keystore work only, never database work, and
  * no lock of the holder is held across a [store] call. So a caller that holds a write transaction
@@ -132,34 +140,65 @@ class DataKeyHolder(
     }
 
     /**
-     * Write path, step 1: the version to seal new secrets with. Call it **outside** any database
-     * transaction: a key created inside one that rolls back would leave no record.
+     * The data key [version] if this holder has already unwrapped it, otherwise `null`. Makes no
+     * database or Keystore call and never starts an unwrap, so it is safe inside a transaction.
+     */
+    fun readyKey(version: Int): DataKey? =
+        synchronized(lock) { unwrapped[version]?.key }?.takeUnless { it.isWiped }
+
+    /**
+     * Write path, step 1: the version to seal new secrets with, unwrapped and ready for [writeKey].
+     * Call it **outside** any database transaction: a key created inside one that rolls back would
+     * leave no record, and an unwrap would run under the transaction.
      *
-     * - No record: creates version `highest account keyVersion + 1` (1 on a new install).
+     * - No record and no account names a data key (a fresh install): creates version 1.
      * - The newest record unwraps: returns its version.
-     * - The newest record's wrapping key is gone: creates the next version (above every record and
-     *   every account row) under its own alias; the old record stays and its rows stay unreadable.
-     * - The newest record exists but does not unwrap: throws, and creates nothing.
+     * - The newest key cannot be used for good (wrapping key gone or invalidated, record does not
+     *   unwrap), or accounts name a version but no record exists: throws
+     *   [NewStorageKeyRequiredException] and creates nothing.
      *
-     * @throws KeyTemporarilyUnavailableException if the newest key, or a new one, could not be
+     * @throws NewStorageKeyRequiredException as above; [startNewKey] is the only way out.
+     * @throws KeyTemporarilyUnavailableException if the newest key, or the first one, could not be
      *   used or made this time because of a Keystore error that may be transient; calling again
-     *   retries.
-     * @throws SecretCipherException if no key can be used or made.
+     *   retries. Nothing is created because of it.
+     * @throws SecretCipherException if no key can be used or made for another reason.
      */
     suspend fun prepareWriteKey(): Int {
         repeat(MAX_ATTEMPTS) {
             val newest = store.all().maxByOrNull { it.version }
-            val highestUsed = if (newest == null) {
-                store.highestAccountKeyVersion()
-            } else {
-                try {
-                    keyFor(newest)
-                    return newest.version
-                } catch (_: KeyUnavailableException) {
-                    // Its wrapping key is gone: make the next version, keeping this record.
-                }
-                maxOf(newest.version, store.highestAccountKeyVersion())
+            if (newest != null) {
+                val failure = definiteFailureOf(newest) ?: return newest.version
+                throw NewStorageKeyRequiredException(failure)
             }
+            if (store.highestAccountKeyVersion() > EnvelopeFormat.LEGACY_KEY_VERSION) {
+                // Rows name a data key whose record is gone: never guess, never reuse their number.
+                throw NewStorageKeyRequiredException()
+            }
+            if (storeNewKey(EnvelopeFormat.FIRST_DATA_KEY_VERSION)) return EnvelopeFormat.FIRST_DATA_KEY_VERSION
+        }
+        throw SecretCipherException("Data key unavailable")
+    }
+
+    /**
+     * Starts a new storage key: the explicit, user-confirmed way out of
+     * [NewStorageKeyRequiredException]. Call it outside any database transaction.
+     *
+     * It checks the newest key again first. If that key unwraps, it returns its version and creates
+     * nothing (a second tap, or the key came back); if it fails in a way that may be transient, it
+     * throws and creates nothing. Only when the newest key cannot be used for good, or rows name a
+     * version without a record, does it create the next version: one above every record and every
+     * account row, under its own alias, so no version number or alias is ever reused. Old records
+     * and the rows sealed with them are left exactly as they are.
+     *
+     * @return the version new secrets are sealed with from now on.
+     * @throws KeyTemporarilyUnavailableException if the Keystore failed in a way that may be transient.
+     * @throws SecretCipherException if no key can be made.
+     */
+    suspend fun startNewKey(): Int {
+        repeat(MAX_ATTEMPTS) {
+            val newest = store.all().maxByOrNull { it.version }
+            if (newest != null && definiteFailureOf(newest) == null) return newest.version
+            val highestUsed = maxOf(newest?.version ?: 0, store.highestAccountKeyVersion())
             if (highestUsed == Int.MAX_VALUE) throw SecretCipherException("No data key version left")
             val target = highestUsed.coerceAtLeast(EnvelopeFormat.LEGACY_KEY_VERSION) + 1
             if (storeNewKey(target)) return target
@@ -168,19 +207,41 @@ class DataKeyHolder(
     }
 
     /**
+     * Whether new secrets can be sealed now, without creating anything: unwraps the newest key (once
+     * per process, as [prepareWriteKey] would) but never makes a key. Call it outside any transaction.
+     */
+    suspend fun writeKeyStatus(): WriteKeyStatus {
+        val newest = store.all().maxByOrNull { it.version }
+            ?: return if (store.highestAccountKeyVersion() > EnvelopeFormat.LEGACY_KEY_VERSION) {
+                WriteKeyStatus.NEW_KEY_REQUIRED
+            } else {
+                WriteKeyStatus.NOT_CREATED
+            }
+        return try {
+            if (definiteFailureOf(newest) == null) WriteKeyStatus.READY else WriteKeyStatus.NEW_KEY_REQUIRED
+        } catch (_: SecretCipherException) {
+            WriteKeyStatus.TEMPORARILY_UNAVAILABLE
+        }
+    }
+
+    /**
      * Write path, step 2: the key to seal with [version], called **inside** the transaction that
-     * writes the rows. It reads [version]'s record in that transaction and uses a cached key only
-     * if it came from that same record. Never creates a key.
+     * writes the rows. It reads [version]'s record in that transaction and returns the key only if
+     * this holder has already unwrapped it from that same record ([prepareWriteKey] did). It never
+     * unwraps and never creates a key.
      *
      * @throws KeyUnavailableException if the transaction cannot see a record of [version].
-     * @throws KeyTemporarilyUnavailableException if the Keystore failed in a way that may be transient.
-     * @throws SecretCipherException if the record does not unwrap.
+     * @throws KeyTemporarilyUnavailableException if the key is not unwrapped from that record in
+     *   memory (call [prepareWriteKey] again, outside the transaction).
+     * @throws SecretCipherException if [version] is below 1 or the record is not of [version].
      */
     suspend fun writeKey(version: Int): DataKey {
         if (version < EnvelopeFormat.FIRST_DATA_KEY_VERSION) throw SecretCipherException("Unsupported key version")
         val record = store.get(version) ?: throw KeyUnavailableException()
         if (record.version != version) throw SecretCipherException("Invalid wrapped data key")
-        return keyFor(record)
+        val key = synchronized(lock) { unwrapped[version]?.takeIf { it.record.sameKeyAs(record) }?.key }
+        if (key == null || key.isWiped) throw KeyTemporarilyUnavailableException()
+        return key
     }
 
     /**
@@ -242,6 +303,27 @@ class DataKeyHolder(
             }
         }
         failure?.let { throw it }
+    }
+
+    /**
+     * `null` if [record]'s key unwraps (it is then ready), or the definite failure that makes it
+     * unusable for good: its wrapping key is gone, or its unwrap failed in a way that stays cached
+     * (malformed, wrong length, does not authenticate). Failures that may be transient, and any
+     * other failure, are thrown.
+     */
+    private suspend fun definiteFailureOf(record: WrappedDataKey): SecretCipherException? {
+        try {
+            keyFor(record)
+            return null
+        } catch (e: KeyTemporarilyUnavailableException) {
+            throw e
+        } catch (e: SecretCipherException) {
+            val cached = synchronized(lock) {
+                unwrapped[record.version]?.let { it.failed && it.record.sameKeyAs(record) } == true
+            }
+            if (e is KeyUnavailableException || cached) return e
+            throw e
+        }
     }
 
     private suspend fun keyFor(record: WrappedDataKey): DataKey {
@@ -464,9 +546,6 @@ class DataKeyHolder(
         /** Retries after a key was wiped or replaced under the caller, or a creation lost a race. */
         const val MAX_ATTEMPTS = 3
 
-        /** How deep [isAuthenticationFailure] looks into a cause chain. */
-        const val MAX_CAUSE_DEPTH = 8
-
         /**
          * Runs one wrapper call and sorts its failure. A missing wrapping key
          * ([KeyUnavailableException]) and a key that does not authenticate (an [AEADBadTagException]
@@ -483,19 +562,7 @@ class DataKeyHolder(
         } catch (e: KeyTemporarilyUnavailableException) {
             throw e
         } catch (e: SecretCipherException) {
-            throw if (isAuthenticationFailure(e)) e else KeyTemporarilyUnavailableException(e)
-        }
-
-        /** True if [e] or one of its causes is an [AEADBadTagException]: the key or record does not authenticate. */
-        fun isAuthenticationFailure(e: Throwable): Boolean {
-            var cause: Throwable? = e
-            var depth = 0
-            while (cause != null && depth <= MAX_CAUSE_DEPTH) {
-                if (cause is AEADBadTagException) return true
-                cause = cause.cause
-                depth++
-            }
-            return false
+            throw if (KeystoreErrors.isAuthenticationFailure(e)) e else KeyTemporarilyUnavailableException(e)
         }
     }
 }
