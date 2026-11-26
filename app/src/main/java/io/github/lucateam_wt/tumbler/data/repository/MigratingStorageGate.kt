@@ -70,22 +70,31 @@ internal class MigratingStorageGate(
 
     /** @return false if [newKey] was asked for and no key could be made or checked. */
     private suspend fun run(forgetFailures: Boolean = false, newKey: Boolean = false): Boolean = runs.withLock {
-        _state.value = StorageState.Preparing()
-        if (forgetFailures) dataKeys.clearFailures()
-        val keyMade = !newKey || attempt { dataKeys.startNewKey() } != null
-        val result = attempt { migrator.run { done, total -> _state.value = StorageState.Preparing(done, total) } }
-        val access = when (attempt { dataKeys.writeKeyStatus() }) {
-            WriteKeyStatus.NOT_CREATED, WriteKeyStatus.READY -> WriteAccess.AVAILABLE
-            WriteKeyStatus.NEW_KEY_REQUIRED -> WriteAccess.NEW_KEY_REQUIRED
-            WriteKeyStatus.TEMPORARILY_UNAVAILABLE, null -> WriteAccess.TEMPORARILY_UNAVAILABLE
+        var ended = false
+        try {
+            _state.value = StorageState.Preparing()
+            if (forgetFailures) dataKeys.clearFailures()
+            val keyMade = !newKey || attempt { dataKeys.startNewKey() } != null
+            val result = attempt { migrator.run { done, total -> _state.value = StorageState.Preparing(done, total) } }
+            val access = when (attempt { dataKeys.writeKeyStatus() }) {
+                WriteKeyStatus.NOT_CREATED, WriteKeyStatus.READY -> WriteAccess.AVAILABLE
+                WriteKeyStatus.NEW_KEY_REQUIRED -> WriteAccess.NEW_KEY_REQUIRED
+                WriteKeyStatus.TEMPORARILY_UNAVAILABLE, null -> WriteAccess.TEMPORARILY_UNAVAILABLE
+            }
+            end(access, retryAdvised = !keyMade || result == null || result.retryAdvised || access == WriteAccess.TEMPORARILY_UNAVAILABLE)
+            ended = true
+            keyMade
+        } finally {
+            // A cancellation (or an error that is not an Exception) never leaves the state at
+            // Preparing, which would make every add, export and import wait for good.
+            if (!ended) end(WriteAccess.TEMPORARILY_UNAVAILABLE, retryAdvised = true)
         }
+    }
+
+    /** Publishes the outcome of a run; called under [runs]. */
+    private fun end(access: WriteAccess, retryAdvised: Boolean) {
         generation++
-        _state.value = StorageState.Ready(
-            writeAccess = access,
-            retryAdvised = !keyMade || result == null || result.retryAdvised || access == WriteAccess.TEMPORARILY_UNAVAILABLE,
-            generation = generation,
-        )
-        keyMade
+        _state.value = StorageState.Ready(writeAccess = access, retryAdvised = retryAdvised, generation = generation)
     }
 
     /** [block]'s result, or `null` if it failed; cancellation is never caught. Nothing is logged. */

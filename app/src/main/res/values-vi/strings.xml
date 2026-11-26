@@ -161,7 +161,7 @@
 
     <!-- Bộ nhớ an toàn: chuyển sang khóa lưu trữ, và khi khóa đó không dùng được. -->
     <string name="storage_migrating_title">Đang cập nhật bộ nhớ an toàn</string>
-    <string name="storage_migrating_body">Các tài khoản của bạn đang được chuyển sang khóa lưu trữ mới. Việc này chỉ diễn ra một lần; hãy giữ ứng dụng mở cho đến khi xong.</string>
+    <string name="storage_migrating_body">Các tài khoản của bạn đang được chuyển sang khóa lưu trữ mới, từng tài khoản một. Nếu ứng dụng bị đóng, việc này sẽ tiếp tục vào lần mở sau.</string>
     <string name="storage_migrating_progress">%1$d / %2$d</string>
     <plurals name="storage_migrating_description">
         <item quantity="other">Đã cập nhật %1$d trên %2$d tài khoản</item>

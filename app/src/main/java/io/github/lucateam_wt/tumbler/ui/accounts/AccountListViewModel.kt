@@ -141,13 +141,24 @@ class AccountListViewModel(
         // a new storage key), since rows may have changed format and cached failures were cleared.
         viewModelScope.launch {
             storage.state.collect { state ->
-                if (state is StorageState.Ready && state.generation != readForGeneration) {
-                    val first = readForGeneration == -1
-                    readForGeneration = state.generation
-                    if (first) observe() else reload()
+                when {
+                    state is StorageState.Ready && state.generation != readForGeneration -> {
+                        val first = readForGeneration == -1
+                        readForGeneration = state.generation
+                        if (first) observe() else reload()
+                    }
+                    // A later run (retry, new key) may convert rows: each converted row changes the
+                    // table, which would reload the whole list once per row. Stop reading until it
+                    // has ended; its outcome reads the list again. The rows already shown stay.
+                    state is StorageState.Preparing -> pauseObservation()
                 }
             }
         }
+    }
+
+    private fun pauseObservation() {
+        observation?.cancel()
+        observation = null
     }
 
     /** Runs the storage check again after a failure that may be transient ("Try again"). */
@@ -186,7 +197,8 @@ class AccountListViewModel(
      */
     fun reload() {
         repository.forgetCachedReadFailures()
-        observe()
+        // While storage is prepared nothing is read; the run's outcome reads the list again.
+        if (storage.state.value is StorageState.Ready) observe()
     }
 
     private fun observe() {

@@ -1,5 +1,6 @@
 package io.github.lucateam_wt.tumbler.data.repository
 
+import androidx.annotation.VisibleForTesting
 import io.github.lucateam_wt.tumbler.data.crypto.EnvelopeFormat
 import io.github.lucateam_wt.tumbler.data.crypto.SealedSecret
 import io.github.lucateam_wt.tumbler.data.db.AccountEntity
@@ -19,7 +20,9 @@ internal fun accountAssociatedData(id: String): ByteArray = id.toByteArray(Chars
 /**
  * Builds the row for [this] account, whose [secretBlob] is a legacy payload under the Keystore
  * key (`keyVersion` 0). Enums are stored by name. A new row has no legacy copy of its secret.
+ * The app no longer writes legacy rows; only tests build them (as an earlier version stored them).
  */
+@VisibleForTesting
 internal fun OtpAccount.toEntity(id: String, secretBlob: ByteArray, createdAt: Long) =
     toEntity(id, secretBlob, EnvelopeFormat.LEGACY_KEY_VERSION, createdAt)
 

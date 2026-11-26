@@ -240,6 +240,29 @@ class AccountListStorageTest {
     }
 
     @Test
+    fun `nothing is read while a later run converts rows, and its outcome reads the list once`() = runTest {
+        addTotp("alice")
+        val viewModel = createViewModel()
+        gate.ready(retryAdvised = true)
+        val reads = repository.handedOutSecrets.size
+        assertEquals(1, reads)
+
+        viewModel.retryStorage()
+        gate.state.value = StorageState.Preparing(done = 0, total = 3)
+        // Each converted row changes the table; a list still observing would read every row each time.
+        repeat(3) { addTotp("row-$it") }
+        viewModel.reload() // an import's reload request while the run goes on reads nothing either
+
+        assertEquals(reads, repository.handedOutSecrets.size)
+        assertEquals(MigrationProgress(0, 3), viewModel.uiState.value.migration)
+
+        gate.ready()
+
+        assertEquals(4, viewModel.uiState.value.accounts.size)
+        assertEquals(reads + 4, repository.handedOutSecrets.size)
+    }
+
+    @Test
     fun `the same outcome emitted again does not read the list again`() = runTest {
         addTotp("alice")
         createViewModel()

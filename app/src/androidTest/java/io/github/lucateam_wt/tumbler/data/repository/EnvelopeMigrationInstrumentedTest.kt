@@ -125,6 +125,48 @@ class EnvelopeMigrationInstrumentedTest {
         assertEquals(MigrationResult(total = 0), migrator(database, holder(database)).run())
     }
 
+    /**
+     * The real SQL of the conversion's compare-and-set (`AccountDao.migrateSecret`), clause by
+     * clause: it applies only to a legacy row that still holds the expected payload, for a key
+     * version >= 1 whose record is stored, and changes nothing but the secret columns.
+     */
+    @Test
+    fun theConversionUpdateRefusesEveryRowItMustNotChange() = runBlocking {
+        val database = database(RoomDatabase.JournalMode.WRITE_AHEAD_LOGGING)
+        val dao = database.accountDao()
+        seedLegacy(database, "acc-1", hotp, 1)
+        val old = checkNotNull(dao.getById("acc-1")).secretBlob
+        val sealed = byteArrayOf(2, 12, 1, 2, 3)
+        val other = old.copyOf().also { it[it.size - 1] = (it[it.size - 1] + 1).toByte() }
+
+        // No record of version 1 yet.
+        assertEquals(0, dao.migrateSecret("acc-1", sealed, 1, old))
+        assertEquals(1, withTimeout(TIMEOUT_MILLIS) { holder(database).prepareWriteKey() })
+
+        assertEquals(0, dao.migrateSecret("acc-1", sealed, 1, other)) // payload changed meanwhile
+        assertEquals(0, dao.migrateSecret("acc-1", sealed, 2, old)) // no record of version 2
+        assertEquals(0, dao.migrateSecret("acc-1", sealed, 0, old)) // not a data key version
+        assertEquals(0, dao.migrateSecret("missing", sealed, 1, old)) // row deleted
+        assertArrayEquals(old, checkNotNull(dao.getById("acc-1")).secretBlob)
+        assertEquals(0, checkNotNull(dao.getById("acc-1")).keyVersion)
+
+        // A "next code" committed before the conversion: the counter moved, the payload did not.
+        assertEquals(1, dao.advanceCounter("acc-1", 0, old))
+        assertEquals(1, dao.migrateSecret("acc-1", sealed, 1, old))
+        val row = checkNotNull(dao.getById("acc-1"))
+        assertEquals(1, row.keyVersion)
+        assertArrayEquals(sealed, row.secretBlob)
+        assertArrayEquals(old, row.legacySecretBlob)
+        assertEquals(1L, row.counter)
+        assertEquals(hotp.issuer, row.issuer)
+
+        // Already converted: a second run (or a second migrator) changes nothing.
+        assertEquals(0, dao.migrateSecret("acc-1", byteArrayOf(2, 12, 9), 1, old))
+        assertArrayEquals(sealed, checkNotNull(dao.getById("acc-1")).secretBlob)
+        // And the unchanged HOTP compare-and-set refuses the stale payload.
+        assertEquals(0, dao.advanceCounter("acc-1", 1, old))
+    }
+
     @Test
     fun aKillMidMigrationResumesWithTheSameKey() = runBlocking {
         var database = database(RoomDatabase.JournalMode.TRUNCATE)

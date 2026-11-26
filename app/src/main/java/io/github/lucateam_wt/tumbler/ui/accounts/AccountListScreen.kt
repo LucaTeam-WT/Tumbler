@@ -409,7 +409,12 @@ fun AccountListScreen(
         }
     }
 
-    if (confirmNewKey) {
+    // The dialog survives process death; it shows only while a new key is still required (not
+    // while storage is prepared again), so a confirm is never silently ignored.
+    LaunchedEffect(confirmNewKey, state.writesBlocked, state.isLoading, migrating) {
+        if (confirmNewKey && !state.writesBlocked && !state.isLoading && !migrating) confirmNewKey = false
+    }
+    if (confirmNewKey && state.writesBlocked && !migrating) {
         NewStorageKeyDialog(
             onConfirm = {
                 confirmNewKey = false

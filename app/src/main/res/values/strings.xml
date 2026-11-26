@@ -170,7 +170,7 @@
 
     <!-- Secure storage: the move to the storage key, and what happens when that key cannot be used. -->
     <string name="storage_migrating_title">Updating secure storage</string>
-    <string name="storage_migrating_body">Your accounts are being moved to a new storage key. This happens once; keep the app open until it is done.</string>
+    <string name="storage_migrating_body">Your accounts are being moved to a new storage key, one at a time. If the app is closed, this continues the next time you open it.</string>
     <!-- Progress next to the bar, for example "3 of 8". -->
     <string name="storage_migrating_progress">%1$d of %2$d</string>
     <!-- Read by TalkBack for the progress bar, for example "3 of 8 accounts updated". -->

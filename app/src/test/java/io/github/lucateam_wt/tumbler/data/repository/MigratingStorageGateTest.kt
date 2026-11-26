@@ -10,6 +10,7 @@ import io.github.lucateam_wt.tumbler.data.crypto.KeyProvider
 import io.github.lucateam_wt.tumbler.data.db.AccountEntity
 import io.github.lucateam_wt.tumbler.domain.repository.StorageState
 import io.github.lucateam_wt.tumbler.domain.repository.WriteAccess
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -264,6 +265,24 @@ class MigratingStorageGateTest {
         gate.retry()
         assertTrue(gate.readyAfter(1).retryAdvised)
         assertEquals(0, accounts.stored("acc-1").keyVersion)
+    }
+
+    @Test
+    fun `a stray cancellation inside a run still ends in a ready state, and a retry works`() = runBlocking {
+        seedLegacy("acc-1")
+        accounts.beforeMigrate = { throw CancellationException("stray") }
+        val (gate, _) = newProcess()
+
+        gate.awaitReady()
+
+        assertEquals(
+            StorageState.Ready(WriteAccess.TEMPORARILY_UNAVAILABLE, retryAdvised = true, generation = 1),
+            gate.state.value,
+        )
+        accounts.beforeMigrate = {}
+        gate.retry()
+        assertEquals(StorageState.Ready(WriteAccess.AVAILABLE, retryAdvised = false, generation = 2), gate.readyAfter(1))
+        assertEquals(1, accounts.stored("acc-1").keyVersion)
     }
 
     @Test
