@@ -44,8 +44,9 @@ start of this version the app then converts every legacy row: it decrypts the se
 the legacy key, seals it with the data key and writes the new payload in one
 compare-and-set statement that also moves the old payload into `legacySecretBlob`; no
 SQLite transaction is held while the Keystore is used. The old payload stays there (and
-the legacy key in the Keystore) for one release, so the conversion can be undone; this
-version does not remove either. Replacing an account during an import clears its
+the legacy key in the Keystore) for one release: reads fall back to it when a data key is
+lost, and a later version could undo the conversion from it (this version has no code that
+does; it also removes neither). Replacing an account during an import clears its
 `legacySecretBlob`; deleting an account deletes its row. Neither erases the old
 ciphertext from the file: `PRAGMA secure_delete` is not set, so SQLite may leave a
 replaced, deleted or converted secret (still encrypted, under the key it was sealed with)
@@ -79,7 +80,8 @@ transaction).
 remembered and never leads to a new key: the screen offers "Try again". A wrapping key
 that is gone or permanently invalidated, or a stored wrapped key that does not
 authenticate, makes that data key unusable: accounts that only it can open show as
-unreadable, and adding and importing are refused until the user confirms "Start a new
+unreadable. If that key is the newest one, or accounts name a key whose stored record is
+gone, adding and importing are refused until the user confirms "Start a new
 storage key" in a dialog. That makes a new data key with a new version number and Keystore
 alias (no number is reused); the old wrapped key and the unreadable accounts are kept as
 they are and can only come back from a backup. The app never deletes an unreadable account
@@ -269,8 +271,9 @@ it in the system preview. It is not cleared automatically.
   rest only. In return, showing the list, "next code", export and import no longer cost a
   Keystore operation per account.
 - **Legacy copies stay for one release.** On an upgraded device every converted row keeps
-  its old ciphertext in `legacySecretBlob`, and the legacy Keystore key stays, so the
-  conversion can be undone; this version has no cleanup. Replacing or deleting an account
+  its old ciphertext in `legacySecretBlob`, and the legacy Keystore key stays. Reads fall
+  back to that copy when a data key is lost; there is no code to undo the conversion, and
+  this version has no cleanup. Replacing or deleting an account
   removes its copy.
 - **The new code has not run on a device yet.** The migration, the data key on the write
   paths, the progress screen and the storage-key banner are covered by JVM tests; their
@@ -281,6 +284,17 @@ it in the system preview. It is not cleared automatically.
 - **Permanently invalidated keys** are handled as lost (covered by JVM tests only): the
   app's keys need no user authentication, so a device cannot be made to invalidate them
   for a test.
+- **A key broken for good but reported like a temporary error is a dead end.** Only a
+  missing key, `KeyPermanentlyInvalidatedException` and a failed authentication count as
+  definite; every other Keystore failure (for example `UnrecoverableKeyException`, or an
+  invalid key blob after a secure-hardware reset, if a device reports it that way) is
+  treated as temporary. If the newest wrapping key fails like that on every start, adding
+  and importing stay refused with "Try again", converted accounts show "Code temporarily
+  unavailable" (the legacy copy is not used for temporary errors), and "Start a new storage
+  key" is never offered; clearing the app's data is then the only way out, and only a
+  backup brings the accounts back. The same failure of the legacy key leaves its rows
+  unconverted and retried on every start. Which exceptions real devices raise here has not
+  been checked.
 
 ## Reporting a vulnerability
 

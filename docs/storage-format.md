@@ -264,6 +264,13 @@ of the startup gate after the first ("Try again", "Start a new storage key") cal
 invalidate them when the screen lock changes; `KeyPermanentlyInvalidatedException` is
 handled as lost in case a device raises it anyway (covered by JVM tests only).
 
+Every other Keystore failure counts as temporary, also one that never goes away (for
+example `UnrecoverableKeyException`, if a device reports a broken key that way). For the
+newest key that is a dead end by design of the rules above: writes keep failing with "Try
+again", rows are not read from their legacy copy, and no new key is offered. Which
+exceptions real devices raise for broken keys has not been checked (see
+[SECURITY.md](../SECURITY.md#known-limitations-and-planned-work)).
+
 Rules that hold in every state:
 
 - Reading never creates a data key or a Keystore key.
@@ -409,6 +416,10 @@ them and import a backup that contains them.
 - `EnvelopeMigrationInstrumentedTest` (device; written and compiled, not run on a device
   yet): the migration under WAL and `TRUNCATE` journaling, a kill and resume, a data key
   resolved inside a real Room `withTransaction` (both journal modes), the legacy-copy
-  fallback, and a lost wrapping key followed by a confirmed new key.
+  fallback, a lost wrapping key followed by a confirmed new key, and the real SQL of the
+  conversion's compare-and-set (every refusal clause).
+- `StorageScreenTest` (device, Compose; written and compiled, not run yet): the progress
+  screen hides the list, the add button and the backup menu; the banners; the new-key
+  dialog; the refused import; the temporary row.
 - `DatabaseMigrationsTest` (JVM) and `MigrationTest`, `SchemaVersion2InstrumentedTest`
   (device): the migration and the version 2 SQL.
