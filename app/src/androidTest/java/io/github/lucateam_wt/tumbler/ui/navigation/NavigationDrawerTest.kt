@@ -18,6 +18,8 @@ import androidx.compose.ui.test.assertIsNotDisplayed
 import androidx.compose.ui.test.assertIsNotSelected
 import androidx.compose.ui.test.assertIsSelected
 import androidx.compose.ui.test.getUnclippedBoundsInRoot
+import androidx.compose.ui.test.hasAnyAncestor
+import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onNodeWithTag
@@ -184,7 +186,7 @@ class NavigationDrawerTest {
 
         assertDrawerClosed()
         assertFalse("Back left the screen instead of closing the drawer", composeRule.activity.isFinishing)
-        composeRule.onNodeWithText(string(R.string.accounts_title)).assertIsDisplayed()
+        openButton().assertIsDisplayed()
     }
 
     @Test
@@ -302,7 +304,8 @@ class NavigationDrawerTest {
             DrawerTags.ABOUT to R.string.about_title,
         )
         for ((entry, label) in entries) {
-            val text = composeRule.onNodeWithText(string(label), useUnmergedTree = true)
+            // "Accounts" is also the top bar title: take the label inside the entry.
+            val text = composeRule.onNode(hasText(string(label)) and hasAnyAncestor(hasTestTag(entry)), useUnmergedTree = true)
             assertNotClipped(text, sheet.right)
             val item = tag(entry).getUnclippedBoundsInRoot()
             val bounds = text.getUnclippedBoundsInRoot()
