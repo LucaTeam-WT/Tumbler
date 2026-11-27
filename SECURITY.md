@@ -287,12 +287,15 @@ it in the system preview. It is not cleared automatically.
   install was tried once on that phone: a clean install of `main` (PR A), 11 accounts
   (9 TOTP, 2 HOTP) restored from a backup file, then this build installed over it
   without uninstalling. The progress screen showed ("0 of 11", then "7 of 11"), then the
-  list with every account; TOTP codes matched an independent computation, HOTP codes
-  matched the RFC 4226 values and the counter was kept, and later cold starts no longer
-  showed the progress screen. Importing that backup again into the migrated app skipped
+  list with every account; the TOTP codes shown for the visible accounts (7 accounts,
+  all sharing one test secret) were all equal and matched an independent computation,
+  the code of the HOTP account with the RFC 4226 test secret matched the RFC values
+  (counter 4 after the upgrade, then 5) and its counter was kept, and later cold starts
+  no longer showed the progress screen. Importing that backup again into the migrated app skipped
   10 accounts and showed 1 conflict (the HOTP account: counter 5 on the device, 4 in the
   backup); Replace asked for two confirmations and kept the larger counter, so the next
-  code was the counter-5 value. Not verified: a release (R8) build and an upgrade on it,
+  code was the counter-5 value. Not verified: the other HOTP account (counter set to the
+  maximum) after the upgrade, a release (R8) build and an upgrade on it,
   other devices and Android versions, the progress screen and banner at font scale 1.3
   and with TalkBack, a manual kill during the migration on real data (the instrumented
   kill-and-resume test passes), the new-key flow done by hand on a device (the
