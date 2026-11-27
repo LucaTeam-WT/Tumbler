@@ -1,10 +1,12 @@
 package io.github.lucateam_wt.tumbler.ui.accounts
 
 import androidx.activity.ComponentActivity
+import androidx.compose.ui.semantics.ProgressBarRangeInfo
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.SemanticsMatcher
 import androidx.compose.ui.test.assert
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.assertRangeInfoEquals
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
@@ -65,14 +67,19 @@ class StorageScreenTest {
         show(AccountListUiState(isLoading = true, accounts = listOf(totp), migration = MigrationProgress(3, 8)))
 
         composeRule.onNodeWithText(string(R.string.storage_migrating_title)).assertIsDisplayed()
-        composeRule.onNodeWithText(string(R.string.storage_migrating_progress, 3, 8)).assertIsDisplayed()
+        // "N of M" reaches tests and TalkBack only through the bar: the visible "3 of 8" line under
+        // it clears its own semantics so it is not read twice, so it is not in the tree at all.
         composeRule.onNodeWithTag(StorageTags.MIGRATION_PROGRESS)
+            .assertIsDisplayed()
             .assert(
                 SemanticsMatcher.expectValue(
                     SemanticsProperties.ContentDescription,
                     listOf(plural(R.plurals.storage_migrating_description, 8, 3, 8)),
                 ),
             )
+            .assertRangeInfoEquals(ProgressBarRangeInfo(3f / 8f, 0f..1f))
+        composeRule.onNodeWithText(string(R.string.storage_migrating_progress, 3, 8), useUnmergedTree = true)
+            .assertDoesNotExist()
         composeRule.onNodeWithTag(AccountListTags.ADD_BUTTON).assertDoesNotExist()
         composeRule.onNodeWithTag(AccountListTags.MORE_OPTIONS).assertDoesNotExist()
         composeRule.onNodeWithTag(AccountListTags.row(totp.id)).assertDoesNotExist()
