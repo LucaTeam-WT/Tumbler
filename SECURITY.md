@@ -236,9 +236,10 @@ it in the system preview. It is not cleared automatically.
   takes about 0.33 s per account, so export and import take seconds per ten accounts
   (about 5.5 minutes each for 1000; figures in
   [docs/backup-format.md](docs/backup-format.md), item 11). The time to show the account
-  list was measured later with 11 accounts only (see "Startup time" below). With the schema version 2 changes the whole instrumented suite
-  ran again (116 tests, no failures, none skipped); the review fixes made after that run
-  are covered by JVM tests only so far. No round trip has been done on a release build.
+  list was measured later with 11 accounts only (see "Startup time" below). With the
+  schema version 2 changes the whole instrumented suite ran again (116 tests, no failures,
+  none skipped), and with the data key it ran again there (131 tests, no failures, none
+  skipped). No round trip has been done on a release build.
 - **Accessibility services receive the backup password.** The backup password fields are
   marked as password fields (`Password` semantics) and draw only mask characters, but
   their editable text holds the real password, and an enabled accessibility service
@@ -275,11 +276,28 @@ it in the system preview. It is not cleared automatically.
   back to that copy when a data key is lost; there is no code to undo the conversion, and
   this version has no cleanup. Replacing or deleting an account
   removes its copy.
-- **The new code has not run on a device yet.** The migration, the data key on the write
-  paths, the progress screen and the storage-key banner are covered by JVM tests; their
-  instrumented tests (WAL and `TRUNCATE` journaling, a real Room transaction, kill and
-  resume, the legacy-copy fallback, a lost wrapping key) are written and compile but have
-  not been run. An upgrade over an existing install has not been tried.
+- **The new code ran on one phone only.** The migration, the data key on the write
+  paths, the progress screen and the storage-key banner are covered by JVM tests. Their
+  instrumented tests (WAL and `TRUNCATE` journaling, a real Room transaction, the real
+  conversion SQL, kill and resume, the legacy-copy fallback, a lost wrapping key) and the
+  Compose `StorageScreenTest` passed on the PKG110 (Android 17, StrongBox, debug build)
+  in a run of the whole instrumented suite: 131 tests, no failures, none skipped. One
+  test was fixed first: it looked for a text that `clearAndSetSemantics` removes on
+  purpose, and now checks the progress bar's label and value. An upgrade over an existing
+  install was tried once on that phone: a clean install of `main` (PR A), 11 accounts
+  (9 TOTP, 2 HOTP) restored from a backup file, then this build installed over it
+  without uninstalling. The progress screen showed ("0 of 11", then "7 of 11"), then the
+  list with every account; TOTP codes matched an independent computation, HOTP codes
+  matched the RFC 4226 values and the counter was kept, and later cold starts no longer
+  showed the progress screen. Importing that backup again into the migrated app skipped
+  10 accounts and showed 1 conflict (the HOTP account: counter 5 on the device, 4 in the
+  backup); Replace asked for two confirmations and kept the larger counter, so the next
+  code was the counter-5 value. Not verified: a release (R8) build and an upgrade on it,
+  other devices and Android versions, the progress screen and banner at font scale 1.3
+  and with TalkBack, a manual kill during the migration on real data (the instrumented
+  kill-and-resume test passes), the new-key flow done by hand on a device (the
+  instrumented lost-key test passes), export and import with the data key measured on a
+  device, and removing the legacy copies in a later release.
 - **Startup time was measured on one phone only.** PKG110 (Android 17, StrongBox), debug
   build, 11 accounts (9 TOTP, 2 HOTP). Each run was a cold start launched with
   `adb shell monkey` and polled with `uiautomator dump` until at least 6 codes were

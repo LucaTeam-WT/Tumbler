@@ -413,13 +413,13 @@ them and import a backup that contains them.
   call inside any transaction (counted by an auditing transaction runner).
 - `AccountListStorageTest` (JVM): the list waits for the gate, the progress, the banners,
   temporary rows, the new-key and retry actions, adds that wait or are refused.
-- `EnvelopeMigrationInstrumentedTest` (device; written and compiled, not run on a device
-  yet): the migration under WAL and `TRUNCATE` journaling, a kill and resume, a data key
+- `EnvelopeMigrationInstrumentedTest` (device; 8 tests, passed on one Android 17 phone
+  in a 131-test run of the whole instrumented suite): the migration under WAL and `TRUNCATE` journaling, a kill and resume, a data key
   resolved inside a real Room `withTransaction` (both journal modes), the legacy-copy
   fallback, a lost wrapping key followed by a confirmed new key, and the real SQL of the
   conversion's compare-and-set (every refusal clause).
-- `StorageScreenTest` (device, Compose; written and compiled, not run yet): the progress
-  screen hides the list, the add button and the backup menu; the banners; the new-key
+- `StorageScreenTest` (device, Compose; 7 tests, passed in the same run): the progress
+  screen (checked through the progress bar's label and value) hides the list, the add button and the backup menu; the banners; the new-key
   dialog; the refused import; the temporary row.
 - `DatabaseMigrationsTest` (JVM) and `MigrationTest`, `SchemaVersion2InstrumentedTest`
   (device): the migration and the version 2 SQL.

@@ -764,9 +764,11 @@ does what, and what is left:
     now runs within one 30-minute budget and logs each phase (below).
     After those fixes and the following review fixes, the whole suite ran again on the
     same phone: 111 tests, 0 failures, 0 skipped (the 1000-account measurement is below).
-    Not run on a device yet: the tests added or changed with the latest review fixes
+    The tests added or changed with the latest review fixes
     (`BackupScreensTest.exportedMessageWarnsThatThePasswordCannotBeRecovered`, which now
-    checks the warning as its own string in English and Vietnamese).
+    checks the warning as its own string in English and Vietnamese) passed later on the
+    same phone, in a 131-test run of the whole suite with the data key (no failures, none
+    skipped).
     - *B1:* `BackupServiceInstrumentedTest` (a round trip with the default parameters into
       an empty database and into one with conflicts, the abort path, a cancellation inside
       the import's last insert, and the Conscrypt damage matrix: a modified file maps to
