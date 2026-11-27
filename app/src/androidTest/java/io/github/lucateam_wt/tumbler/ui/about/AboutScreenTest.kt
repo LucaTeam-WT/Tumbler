@@ -8,7 +8,6 @@ import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.semantics.getOrNull
 import androidx.compose.ui.test.SemanticsMatcher
-import androidx.compose.ui.test.SemanticsNodeInteraction
 import androidx.compose.ui.test.assert
 import androidx.compose.ui.test.assertHasClickAction
 import androidx.compose.ui.test.assertIsDisplayed
@@ -16,14 +15,11 @@ import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
-import androidx.compose.ui.test.performScrollTo
-import androidx.compose.ui.test.performSemanticsAction
-import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.unit.Density
 import io.github.lucateam_wt.tumbler.R
+import io.github.lucateam_wt.tumbler.ui.assertTextsFit
 import io.github.lucateam_wt.tumbler.ui.theme.TumblerTheme
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
@@ -124,22 +120,14 @@ class AboutScreenTest {
     fun nothingIsClippedAtFontScale13() {
         show(fontScale = 1.3f)
 
-        for (text in listOf(
+        val texts = listOf(
             string(R.string.app_name),
             string(R.string.about_version, "1.2.3", 42L),
             string(R.string.about_license_title),
             "GPL-3.0-or-later",
             string(R.string.about_source_title),
             "https://github.com/LucaTeam-WT/Tumbler",
-        )) {
-            assertNotClipped(composeRule.onNodeWithText(text, useUnmergedTree = true))
-        }
-    }
-
-    private fun assertNotClipped(node: SemanticsNodeInteraction) {
-        node.performScrollTo().assertIsDisplayed()
-        val layouts = mutableListOf<TextLayoutResult>()
-        node.performSemanticsAction(SemanticsActions.GetTextLayoutResult) { it(layouts) }
-        assertFalse("text overflows", layouts.single().hasVisualOverflow)
+        )
+        assertTextsFit(*texts.map { composeRule.onNodeWithText(it, useUnmergedTree = true) }.toTypedArray())
     }
 }

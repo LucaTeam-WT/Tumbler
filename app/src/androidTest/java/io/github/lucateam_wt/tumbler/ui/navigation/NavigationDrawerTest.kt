@@ -7,10 +7,8 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.Role
-import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.SemanticsMatcher
-import androidx.compose.ui.test.SemanticsNodeInteraction
 import androidx.compose.ui.test.assert
 import androidx.compose.ui.test.assertHasClickAction
 import androidx.compose.ui.test.assertIsDisplayed
@@ -26,15 +24,12 @@ import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.test.performClick
-import androidx.compose.ui.test.performScrollTo
-import androidx.compose.ui.test.performSemanticsAction
 import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.test.swipeLeft
 import androidx.compose.ui.test.swipeRight
-import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.unit.Density
-import androidx.compose.ui.unit.Dp
 import io.github.lucateam_wt.tumbler.R
+import io.github.lucateam_wt.tumbler.ui.assertTextsFit
 import io.github.lucateam_wt.tumbler.ui.accounts.AccountItem
 import io.github.lucateam_wt.tumbler.ui.accounts.AccountListScreen
 import io.github.lucateam_wt.tumbler.ui.accounts.AccountListUiState
@@ -294,8 +289,8 @@ class NavigationDrawerTest {
         openButton().performClick()
 
         val sheet = tag(DrawerTags.SHEET).getUnclippedBoundsInRoot()
-        assertNotClipped(composeRule.onNodeWithText(string(R.string.app_name), useUnmergedTree = true), sheet.right)
-        assertNotClipped(composeRule.onNodeWithText(string(R.string.drawer_backup), useUnmergedTree = true), sheet.right)
+        val header = composeRule.onNodeWithText(string(R.string.app_name), useUnmergedTree = true)
+        val section = composeRule.onNodeWithText(string(R.string.drawer_backup), useUnmergedTree = true)
         val entries = mapOf(
             DrawerTags.ACCOUNTS to R.string.accounts_title,
             DrawerTags.EXPORT to R.string.backup_export_menu,
@@ -303,21 +298,19 @@ class NavigationDrawerTest {
             DrawerTags.SETTINGS to R.string.settings_title,
             DrawerTags.ABOUT to R.string.about_title,
         )
-        for ((entry, label) in entries) {
-            // "Accounts" is also the top bar title: take the label inside the entry.
-            val text = composeRule.onNode(hasText(string(label)) and hasAnyAncestor(hasTestTag(entry)), useUnmergedTree = true)
-            assertNotClipped(text, sheet.right)
+        // "Accounts" is also the top bar title: take each label inside its entry.
+        val labels = entries.mapValues { (entry, label) ->
+            composeRule.onNode(hasText(string(label)) and hasAnyAncestor(hasTestTag(entry)), useUnmergedTree = true)
+        }
+        assertTextsFit(header, section, *labels.values.toTypedArray())
+
+        for (text in listOf(header, section) + labels.values) {
+            assertTrue("text runs past the drawer", text.getUnclippedBoundsInRoot().right <= sheet.right)
+        }
+        for ((entry, text) in labels) {
             val item = tag(entry).getUnclippedBoundsInRoot()
             val bounds = text.getUnclippedBoundsInRoot()
-            assertTrue("${string(label)} sticks out of its entry", bounds.top >= item.top && bounds.bottom <= item.bottom)
+            assertTrue("$entry label sticks out of its entry", bounds.top >= item.top && bounds.bottom <= item.bottom)
         }
-    }
-
-    private fun assertNotClipped(node: SemanticsNodeInteraction, sheetRight: Dp) {
-        node.performScrollTo().assertIsDisplayed()
-        val layouts = mutableListOf<TextLayoutResult>()
-        node.performSemanticsAction(SemanticsActions.GetTextLayoutResult) { it(layouts) }
-        assertFalse("text overflows", layouts.single().hasVisualOverflow)
-        assertTrue("text runs past the drawer", node.getUnclippedBoundsInRoot().right <= sheetRight)
     }
 }

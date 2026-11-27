@@ -11,10 +11,8 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.Role
-import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.SemanticsMatcher
-import androidx.compose.ui.test.SemanticsNodeInteraction
 import androidx.compose.ui.test.assert
 import androidx.compose.ui.test.assertHasClickAction
 import androidx.compose.ui.test.assertIsDisplayed
@@ -25,15 +23,13 @@ import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
-import androidx.compose.ui.test.performSemanticsAction
 import androidx.compose.ui.text.AnnotatedString
-import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.unit.Density
 import io.github.lucateam_wt.tumbler.R
+import io.github.lucateam_wt.tumbler.ui.assertTextsFit
 import io.github.lucateam_wt.tumbler.settings.ThemeMode
 import io.github.lucateam_wt.tumbler.ui.theme.TumblerTheme
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
@@ -141,20 +137,16 @@ class SettingsScreenTest {
     fun nothingIsClippedAtFontScale13() {
         show(fontScale = 1.3f)
 
-        assertNotClipped(composeRule.onNodeWithText(string(R.string.settings_theme), useUnmergedTree = true))
-        for (mode in ThemeMode.entries) {
-            val text = composeRule.onNodeWithText(string(labels.getValue(mode)), useUnmergedTree = true)
-            assertNotClipped(text)
+        val title = composeRule.onNodeWithText(string(R.string.settings_theme), useUnmergedTree = true)
+        val options = ThemeMode.entries.associateWith { mode ->
+            composeRule.onNodeWithText(string(labels.getValue(mode)), useUnmergedTree = true)
+        }
+        assertTextsFit(title, *options.values.toTypedArray())
+
+        for ((mode, text) in options) {
             val row = option(mode).getUnclippedBoundsInRoot()
             val label = text.getUnclippedBoundsInRoot()
             assertTrue("$mode label is outside its row", label.top >= row.top && label.bottom <= row.bottom)
         }
-    }
-
-    private fun assertNotClipped(node: SemanticsNodeInteraction) {
-        node.assertIsDisplayed()
-        val layouts = mutableListOf<TextLayoutResult>()
-        node.performSemanticsAction(SemanticsActions.GetTextLayoutResult) { it(layouts) }
-        assertFalse("text overflows", layouts.single().hasVisualOverflow)
     }
 }
