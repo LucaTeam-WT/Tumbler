@@ -22,6 +22,8 @@
     <string name="action_delete_for">Xóa %1$s</string>
     <string name="account_unavailable_title">Không có mã</string>
     <string name="account_unavailable_body">Không thể giải mã tài khoản này trên thiết bị này nên không thể hiển thị mã. Bạn có thể xóa tài khoản.</string>
+    <string name="account_temporarily_unavailable_title">Mã tạm thời không có</string>
+    <string name="account_temporarily_unavailable_body">Lúc này chưa dùng được bộ nhớ an toàn. Hãy thử lại.</string>
     <string name="account_seconds_remaining">Còn %1$d giây</string>
     <string name="account_next_totp_code_description">Mã tiếp theo %1$s</string>
     <string name="account_delete">Xóa</string>
@@ -38,6 +40,7 @@
     <string name="add_cancel">Hủy</string>
     <string name="add_error_invalid_link">Đây không phải là liên kết otpauth:// hợp lệ.</string>
     <string name="add_error_storage">Không thể lưu tài khoản. Vui lòng thử lại.</string>
+    <string name="add_error_storage_key">Không thể lưu tài khoản: hãy tạo khóa lưu trữ mới trước, từ thông báo trên danh sách tài khoản.</string>
     <plurals name="add_error_label_too_long">
         <item quantity="other">Tên nhà cung cấp hoặc tên tài khoản trong liên kết này quá dài để lưu trong bản sao lưu (hơn %1$d byte).</item>
     </plurals>
@@ -154,4 +157,26 @@
     </plurals>
     <string name="backup_confirm_body">Không có gì khác trên thiết bị thay đổi.</string>
     <string name="backup_import_confirm">Nhập</string>
+    <string name="backup_import_needs_new_key">Hãy tạo khóa lưu trữ mới trước khi nhập: xem thông báo trên danh sách tài khoản.</string>
+
+    <!-- Bộ nhớ an toàn: chuyển sang khóa lưu trữ, và khi khóa đó không dùng được. -->
+    <string name="storage_migrating_title">Đang cập nhật bộ nhớ an toàn</string>
+    <string name="storage_migrating_body">Các tài khoản của bạn đang được chuyển sang khóa lưu trữ mới, từng tài khoản một. Nếu ứng dụng bị đóng, việc này sẽ tiếp tục vào lần mở sau.</string>
+    <string name="storage_migrating_progress">%1$d / %2$d</string>
+    <plurals name="storage_migrating_description">
+        <item quantity="other">Đã cập nhật %1$d trên %2$d tài khoản</item>
+    </plurals>
+    <plurals name="storage_unreadable_title">
+        <item quantity="other">Không đọc được %1$d tài khoản</item>
+    </plurals>
+    <string name="storage_unreadable_body">Chỉ có thể lấy lại chúng từ bản sao lưu: hãy xóa chúng, rồi nhập một bản sao lưu có chứa chúng.</string>
+    <string name="storage_new_key_title">Cần một khóa lưu trữ mới</string>
+    <string name="storage_new_key_body">Khóa lưu trữ trên thiết bị này không còn dùng được nên không thể thêm hoặc nhập tài khoản. Hãy tạo khóa lưu trữ mới để lưu tài khoản trở lại. Các tài khoản không đọc được vẫn ở trong danh sách; chỉ bản sao lưu mới lấy lại được chúng.</string>
+    <string name="storage_new_key_action">Tạo khóa lưu trữ mới</string>
+    <string name="storage_temporary_title">Bộ nhớ an toàn tạm thời không dùng được</string>
+    <string name="storage_temporary_body">Lúc này chưa đọc hoặc cập nhật được một số tài khoản. Vui lòng thử lại.</string>
+    <string name="storage_retry_action">Thử lại</string>
+    <string name="storage_new_key_dialog_title">Tạo khóa lưu trữ mới?</string>
+    <string name="storage_new_key_dialog_body">Tài khoản mới và tài khoản được nhập sẽ được lưu bằng khóa mới. Các tài khoản hiện không đọc được vẫn được giữ nhưng vẫn không đọc được; chỉ bản sao lưu mới lấy lại được chúng. Không thể hoàn tác.</string>
+    <string name="storage_new_key_dialog_confirm">Tạo khóa mới</string>
 </resources>

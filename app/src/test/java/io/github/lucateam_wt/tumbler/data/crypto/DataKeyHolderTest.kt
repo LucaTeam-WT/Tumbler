@@ -2,6 +2,7 @@ package io.github.lucateam_wt.tumbler.data.crypto
 
 import io.github.lucateam_wt.tumbler.domain.crypto.KeyTemporarilyUnavailableException
 import io.github.lucateam_wt.tumbler.domain.crypto.KeyUnavailableException
+import io.github.lucateam_wt.tumbler.domain.crypto.NewStorageKeyRequiredException
 import io.github.lucateam_wt.tumbler.domain.crypto.SecretCipherException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineName
@@ -396,47 +397,106 @@ class DataKeyHolderTest {
     }
 
     @Test(timeout = 20_000)
-    fun `a new version is above every account row`() {
+    fun `rows that name a version without a record need a new key, which goes above every row`() {
         store.highestRowVersion = 3
-        assertEquals(4, runBlocking { newHolder().prepareWriteKey() })
+        val holder = newHolder()
+
+        // Orphaned rows: writing is refused and nothing is created automatically.
+        failsWith<NewStorageKeyRequiredException> { holder.prepareWriteKey() }
+        assertEquals(WriteKeyStatus.NEW_KEY_REQUIRED, runBlocking { holder.writeKeyStatus() })
+        assertTrue(store.records.isEmpty())
+        assertEquals(0, wrappers.wraps.get())
+
+        assertEquals(4, runBlocking { holder.startNewKey() })
         assertEquals(setOf(4), store.records.keys)
         assertEquals("${BASE}_k4", store.records.getValue(4).kekAlias)
+        assertEquals(4, runBlocking { holder.prepareWriteKey() })
     }
 
     @Test(timeout = 20_000)
-    fun `a lost wrapping key gets a new version and keeps the old record`() {
+    fun `a lost wrapping key refuses writing until a new key is started, which keeps the old record`() {
         seedVersion1()
         val old = store.records.getValue(1)
         val oldBytes = old.wrappedKey.copyOf()
         keystore.lose(BASE)
         val holder = newHolder()
 
-        assertEquals(2, runBlocking { holder.prepareWriteKey() })
+        val refused = failsWith<NewStorageKeyRequiredException> { holder.prepareWriteKey() }
+        assertTrue(refused.cause is KeyUnavailableException)
+        assertEquals(WriteKeyStatus.NEW_KEY_REQUIRED, runBlocking { holder.writeKeyStatus() })
+        assertEquals(setOf(1), store.records.keys)
+        assertEquals(0, keystore.generations.get())
+        assertEquals(0, wrappers.wraps.get())
+
+        assertEquals(2, runBlocking { holder.startNewKey() })
         assertSame(old, store.records.getValue(1))
         assertArrayEquals(oldBytes, store.records.getValue(1).wrappedKey)
         assertEquals("${BASE}_k2", store.records.getValue(2).kekAlias)
         assertEquals(1, keystore.generations.get())
         assertFalse(BASE in keystore)
+        assertEquals(2, runBlocking { holder.prepareWriteKey() })
+        assertEquals(WriteKeyStatus.READY, runBlocking { holder.writeKeyStatus() })
+        // A second start finds the new key usable and makes nothing.
+        assertEquals(2, runBlocking { holder.startNewKey() })
+        assertEquals(1, wrappers.wraps.get())
         // Version 1 stays unreadable; nothing replaced it.
         failsWith<KeyUnavailableException> { holder.key(1) }
     }
 
     @Test(timeout = 20_000)
-    fun `an unreadable newest key blocks writing and creates nothing`() {
+    fun `an unreadable newest key blocks writing until a new key is started`() {
         seedVersion1()
         val record = store.records.getValue(1)
         store.records[1] = record.withBytes(record.wrappedKey.copyOf().also { it[30] = (it[30].toInt() xor 1).toByte() })
         val holder = newHolder()
 
         repeat(2) {
-            val e = failsWith<SecretCipherException> { holder.prepareWriteKey() }
-            assertFalse(e is KeyUnavailableException)
-            assertFalse(e is KeyTemporarilyUnavailableException)
+            val e = failsWith<NewStorageKeyRequiredException> { holder.prepareWriteKey() }
+            assertFalse(e.cause is KeyTemporarilyUnavailableException)
         }
         assertEquals(1, wrappers.unwraps.get())
         assertEquals(0, wrappers.wraps.get())
         assertEquals(0, keystore.generations.get())
         assertEquals(setOf(1), store.records.keys)
+
+        assertEquals(2, runBlocking { holder.startNewKey() })
+        assertEquals(setOf(1, 2), store.records.keys)
+        assertEquals(2, runBlocking { holder.prepareWriteKey() })
+    }
+
+    @Test(timeout = 20_000)
+    fun `the write status never creates a key`() {
+        val holder = newHolder()
+        assertEquals(WriteKeyStatus.NOT_CREATED, runBlocking { holder.writeKeyStatus() })
+        assertTrue(store.records.isEmpty())
+        assertEquals(0, keystore.generations.get())
+
+        assertEquals(1, runBlocking { holder.prepareWriteKey() })
+        resetCounters()
+        assertEquals(WriteKeyStatus.READY, runBlocking { newHolder().writeKeyStatus() })
+        assertEquals(1, wrappers.unwraps.get())
+        assertEquals(0, wrappers.wraps.get())
+
+        keystore.lookupFailure = { ProviderException("busy") }
+        assertEquals(WriteKeyStatus.TEMPORARILY_UNAVAILABLE, runBlocking { newHolder().writeKeyStatus() })
+        assertEquals(setOf(1), store.records.keys)
+        assertEquals(0, keystore.generations.get())
+    }
+
+    @Test(timeout = 20_000)
+    fun `readyKey makes no call and never unwraps`() {
+        seedVersion1()
+        val holder = newHolder()
+        assertEquals(null, holder.readyKey(1))
+        assertEquals(0, wrappers.unwraps.get())
+        assertEquals(0, store.calls.get())
+
+        val key = runBlocking { holder.key(1) }
+        store.calls.set(0)
+        assertSame(key, holder.readyKey(1))
+        assertEquals(null, holder.readyKey(2))
+        assertEquals(1, wrappers.unwraps.get())
+        assertEquals(0, store.calls.get())
     }
 
     @Test(timeout = 20_000)
@@ -450,6 +510,9 @@ class DataKeyHolderTest {
         keystore.invalidate(BASE)
         keystore.lookupFailure = null
         failsWith<KeyTemporarilyUnavailableException> { holder.prepareWriteKey() }
+        // Never a new key because of a failure that may be transient, not even when asked.
+        failsWith<KeyTemporarilyUnavailableException> { holder.startNewKey() }
+        assertEquals(WriteKeyStatus.TEMPORARILY_UNAVAILABLE, runBlocking { holder.writeKeyStatus() })
         assertEquals(0, wrappers.wraps.get())
         assertEquals(0, keystore.generations.get())
         assertEquals(setOf(1), store.records.keys)
@@ -592,7 +655,8 @@ class DataKeyHolderTest {
     @Test(timeout = 20_000)
     fun `the version number cannot overflow`() {
         store.highestRowVersion = Int.MAX_VALUE
-        failsWith<SecretCipherException> { newHolder().prepareWriteKey() }
+        failsWith<NewStorageKeyRequiredException> { newHolder().prepareWriteKey() }
+        assertEquals("No data key version left", failsWith<SecretCipherException> { newHolder().startNewKey() }.message)
         assertEquals(0, wrappers.wraps.get())
     }
 
@@ -604,7 +668,8 @@ class DataKeyHolderTest {
         store.highestRowVersion = 5
         val holder = newHolder()
 
-        assertEquals(6, runBlocking { holder.prepareWriteKey() })
+        failsWith<NewStorageKeyRequiredException> { holder.prepareWriteKey() }
+        assertEquals(6, runBlocking { holder.startNewKey() })
         assertEquals(setOf(1, 6), store.records.keys)
         assertEquals("${BASE}_k6", store.records.getValue(6).kekAlias)
         assertFalse("${BASE}_k5" in keystore)
@@ -785,7 +850,7 @@ class DataKeyHolderTest {
             release.await()
         }
         runBlocking {
-            val writer = async(Dispatchers.Default) { holder.prepareWriteKey() }
+            val writer = async(Dispatchers.Default) { holder.startNewKey() }
             inserted.await()
 
             val refused = k1.use { assertThrows(IllegalStateException::class.java) { holder.wipe() } }
@@ -822,22 +887,27 @@ class DataKeyHolderTest {
     }
 
     @Test(timeout = 20_000)
-    fun `a write key gives up after three unwraps that were each wiped under it`() {
+    fun `writeKey never unwraps, it only hands out a key that is ready`() {
         val seeded = seedVersion1()
-        lateinit var holder: DataKeyHolder
-        wrappers.beforeUnwrap = { holder.wipe() }
-        holder = newHolder()
+        val holder = newHolder()
 
-        val e = failsWith<SecretCipherException> { holder.writeKey(1) }
-        assertEquals("Data key unavailable", e.message)
-        assertEquals(3, wrappers.unwraps.get())
+        // Not unwrapped in this process yet: a retryable failure, and no Keystore call.
+        failsWith<KeyTemporarilyUnavailableException> { holder.writeKey(1) }
+        assertEquals(0, wrappers.unwraps.get())
 
-        wrappers.beforeUnwrap = {}
-        assertArrayEquals(seeded, runBlocking { holder.writeKey(1) }.bytes())
+        val ready = runBlocking { holder.key(1) }
+        assertSame(ready, runBlocking { holder.writeKey(1) })
+        assertArrayEquals(seeded, ready.bytes())
+        assertEquals(1, wrappers.unwraps.get())
+
+        // A wiped key is never handed out either.
+        holder.wipe()
+        failsWith<KeyTemporarilyUnavailableException> { holder.writeKey(1) }
+        assertEquals(1, wrappers.unwraps.get())
     }
 
     @Test(timeout = 20_000)
-    fun `prepareWriteKey gives up after three versions that each lost a race`() {
+    fun `startNewKey gives up after three versions that each lost a race`() {
         // Every insert finds a record of its version already there, whose wrapping key is then gone,
         // so each attempt moves on to the next version.
         store.beforeInsert = { ours ->
@@ -846,12 +916,26 @@ class DataKeyHolderTest {
         }
         val holder = newHolder()
 
-        val e = failsWith<SecretCipherException> { holder.prepareWriteKey() }
+        val e = failsWith<SecretCipherException> { holder.startNewKey() }
         assertEquals("Data key unavailable", e.message)
         assertEquals(3, wrappers.wraps.get())
         assertEquals(setOf(1, 2, 3), store.records.keys)
         // None of ours was stored; the records that were there are unchanged.
         store.records.values.forEach { assertArrayEquals(wellFormedGarbage(), it.wrappedKey) }
+        // The ordinary write path never moves on to another version by itself.
+        failsWith<NewStorageKeyRequiredException> { holder.prepareWriteKey() }
+        assertEquals(3, wrappers.wraps.get())
+    }
+
+    @Test(timeout = 20_000)
+    fun `the first write after a lost race with an unusable record refuses instead of making version 2`() {
+        store.beforeInsert = { ours ->
+            store.records.putIfAbsent(ours.version, WrappedDataKey(ours.version, ours.kekAlias, wellFormedGarbage(), 0L))
+            keystore.lose(ours.kekAlias)
+        }
+        failsWith<NewStorageKeyRequiredException> { newHolder().prepareWriteKey() }
+        assertEquals(1, wrappers.wraps.get())
+        assertEquals(setOf(1), store.records.keys)
     }
 
     // ---- Helpers -------------------------------------------------------------------------------

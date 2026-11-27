@@ -4,6 +4,7 @@ import io.github.lucateam_wt.tumbler.data.crypto.AesGcmSecretCipher
 import io.github.lucateam_wt.tumbler.data.crypto.KeyProvider
 import io.github.lucateam_wt.tumbler.data.db.AccountEntity
 import io.github.lucateam_wt.tumbler.domain.crypto.KeyUnavailableException
+import io.github.lucateam_wt.tumbler.domain.crypto.NewStorageKeyRequiredException
 import io.github.lucateam_wt.tumbler.domain.crypto.SecretCipher
 import io.github.lucateam_wt.tumbler.domain.crypto.SecretCipherException
 import io.github.lucateam_wt.tumbler.domain.model.OtpAccount
@@ -12,12 +13,16 @@ import io.github.lucateam_wt.tumbler.domain.model.StoredAccount
 import io.github.lucateam_wt.tumbler.domain.otp.Base32
 import io.github.lucateam_wt.tumbler.domain.otp.OtpAlgorithm
 import io.github.lucateam_wt.tumbler.domain.repository.UnreadableAccountException
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.async
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.yield
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertSame
 import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
@@ -46,13 +51,19 @@ class RoomAccountBackupStoreTest {
     /** Remembers every plaintext it hands out, so tests can check that it was wiped. */
     private class RecordingCipher(private val delegate: SecretCipher) : SecretCipher {
         val decrypted = mutableListOf<ByteArray>()
-        var encryptFailure: SecretCipherException? = null
+
+        /** Encryptions made through the store or repository (none: they seal with the data key). */
+        var encrypts = 0
+            private set
 
         /** Runs after each decryption, before the plaintext is returned. */
         var afterDecrypt: (() -> Unit)? = null
 
+        /** Seeds a legacy row, as the app did before the data key. */
+        fun seal(plaintext: ByteArray, associatedData: ByteArray): ByteArray = delegate.encrypt(plaintext, associatedData)
+
         override fun encrypt(plaintext: ByteArray, associatedData: ByteArray): ByteArray {
-            encryptFailure?.let { throw it }
+            encrypts++
             return delegate.encrypt(plaintext, associatedData)
         }
 
@@ -84,7 +95,7 @@ class RoomAccountBackupStoreTest {
     private val dao = FakeAccountDao()
     private val cipher = RecordingCipher(AesGcmSecretCipher(keyProvider))
     private val runner = RollbackRunner(dao)
-    private val dataKeys = testDataKeyHolder()
+    private val dataKeys = linkedDataKeyHolder(dao)
     private var nextId = 0
     private var now = 1_000L
     private val repository = RoomAccountRepository(dao, cipher, dataKeys, runner, idGenerator = { "id-${nextId++}" }, clock = { now++ })
@@ -100,6 +111,61 @@ class RoomAccountBackupStoreTest {
 
     private fun AccountEntity.with(type: String = this.type, digits: Int = this.digits, createdAt: Long = this.createdAt) =
         AccountEntity(id, issuer, accountName, type, algorithm, digits, period, counter, secretBlob, createdAt, keyVersion, legacySecretBlob)
+
+    /** Stores [account] in the legacy format, as the app did before the data key (a row not migrated yet). */
+    private fun addLegacy(account: OtpAccount): String {
+        val id = "id-${nextId++}"
+        dao.put(account.toEntity(id, cipher.seal(account.secret, accountAssociatedData(id)), now++))
+        return id
+    }
+
+    @Test
+    fun insertAndReplace_sealWithTheDataKeyAndReplaceDropsTheLegacyCopy() = runBlocking {
+        val legacyId = addLegacy(totp)
+        dao.put(dao.stored(legacyId).copyWith(legacySecretBlob = dao.stored(legacyId).secretBlob))
+
+        val inserted = store.writeTransaction {
+            replace(legacyId, hotp)
+            insert(totp, createdAtMillis = 3)
+        }
+
+        for (id in listOf(legacyId, inserted)) {
+            val row = dao.stored(id)
+            assertEquals(1, row.keyVersion)
+            assertEquals(2, row.secretBlob[0].toInt())
+            assertNull(row.legacySecretBlob)
+        }
+        assertEquals(hotp, repository.getAccount(legacyId))
+        assertEquals(totp, repository.getAccount(inserted))
+        assertEquals(0, cipher.encrypts)
+    }
+
+    @Test
+    fun beforeAccess_runsBeforeEveryReadAndTransaction() = runBlocking {
+        addLegacy(totp)
+        val gate = CompletableDeferred<Unit>()
+        var waits = 0
+        val gated = RoomAccountBackupStore(
+            dao, cipher, dataKeys, runner,
+            beforeAccess = {
+                waits++
+                gate.await()
+            },
+        )
+        val transactions = runner.transactions
+        val read = async { gated.readAll() }
+        val written = async { gated.writeTransaction { insert(hotp, 1) } }
+        yield()
+        assertFalse(read.isCompleted || written.isCompleted)
+        assertEquals(transactions, runner.transactions)
+        assertEquals(1, dao.size)
+
+        gate.complete(Unit)
+        assertEquals(1, read.await().size)
+        written.await()
+        assertEquals(2, waits)
+        assertEquals(2, dao.size)
+    }
 
     @Test
     fun readAll_returnsEveryAccountOldestFirstWithItsCreationTime() = runBlocking {
@@ -122,8 +188,8 @@ class RoomAccountBackupStoreTest {
 
     @Test
     fun readAll_corruptedSecret_namesTheAccountAndWipesWhatWasDecrypted() = runBlocking {
-        repository.add(totp)
-        val badId = repository.add(hotp)
+        addLegacy(totp)
+        val badId = addLegacy(hotp)
         val blob = dao.stored(badId).secretBlob.copyOf()
         blob[blob.lastIndex] = (blob[blob.lastIndex].toInt() xor 1).toByte()
         dao.put(dao.stored(badId).copyWith(secretBlob = blob))
@@ -141,8 +207,8 @@ class RoomAccountBackupStoreTest {
 
     @Test
     fun readAll_callerCancelledWhileASecretIsDecrypted_wipesThatSecretAndTheOnesBefore() = runBlocking {
-        repository.add(totp)
-        repository.add(hotp)
+        addLegacy(totp)
+        addLegacy(hotp)
         cipher.decrypted.clear()
         lateinit var reader: Job
         // The cipher runs on the store's dispatcher (IO); cancelling the caller there makes
@@ -160,7 +226,7 @@ class RoomAccountBackupStoreTest {
 
     @Test
     fun readAll_callerCancelledWhileTheOnlySecretIsDecrypted_wipesIt() = runBlocking {
-        repository.add(hotp)
+        addLegacy(hotp)
         cipher.decrypted.clear()
         lateinit var reader: Job
         cipher.afterDecrypt = { reader.cancel() }
@@ -174,7 +240,7 @@ class RoomAccountBackupStoreTest {
 
     @Test
     fun readAll_keyLost_isUnreadableWithTheKeyErrorAsCause() = runBlocking {
-        val id = repository.add(totp)
+        val id = addLegacy(totp)
         keyProvider.lost = true
 
         val error = assertThrows(UnreadableAccountException::class.java) { runBlocking { store.readAll() } }
@@ -191,7 +257,7 @@ class RoomAccountBackupStoreTest {
             { it.with(createdAt = -1) },
         )
         for ((index, change) in changes.withIndex()) {
-            val id = repository.add(totp)
+            val id = addLegacy(totp)
             dao.put(change(dao.stored(id)))
             cipher.decrypted.clear()
 
@@ -250,6 +316,7 @@ class RoomAccountBackupStoreTest {
     @Test
     fun writeTransaction_runsTheWholeBlockInOneTransactionAndPropagatesItsFailure() = runBlocking {
         val id = repository.add(hotp)
+        val transactions = runner.transactions
         val failure = IllegalStateException("abort")
 
         val thrown = assertThrows(IllegalStateException::class.java) {
@@ -263,21 +330,26 @@ class RoomAccountBackupStoreTest {
         }
 
         assertSame(failure, thrown)
-        assertEquals(1, runner.transactions)
+        assertEquals(transactions + 1, runner.transactions)
         assertEquals(listOf(id), store.readAll().map { it.id })
         assertEquals(hotp, repository.getAccount(id))
     }
 
     @Test
-    fun writeTransaction_encryptionFailure_propagatesAndWritesNothing() = runBlocking {
-        val id = repository.add(hotp)
-        cipher.encryptFailure = SecretCipherException("Encryption failed")
+    fun writeTransaction_noUsableWriteKey_writesNothingButStillRunsABlockThatOnlyReads() = runBlocking {
+        val id = addLegacy(hotp)
+        // A row names data key 4, whose record is gone: a new key must be started first.
+        dao.put(dao.stored(addLegacy(totp)).copyWith(keyVersion = 4))
+        val transactions = runner.transactions
 
-        assertThrows(SecretCipherException::class.java) { runBlocking { store.writeTransaction { insert(totp, 1) } } }
-        assertThrows(SecretCipherException::class.java) { runBlocking { store.writeTransaction { replace(id, totp) } } }
+        assertThrows(NewStorageKeyRequiredException::class.java) { runBlocking { store.writeTransaction { insert(totp, 1) } } }
+        assertThrows(NewStorageKeyRequiredException::class.java) { runBlocking { store.writeTransaction { replace(id, totp) } } }
+        assertEquals(42, store.writeTransaction { 42 })
 
-        assertEquals(1, dao.size)
+        assertEquals(transactions + 3, runner.transactions)
+        assertEquals(2, dao.size)
         assertEquals(hotp, repository.getAccount(id))
+        assertEquals(0, dao.stored(id).keyVersion)
     }
 
     @Test

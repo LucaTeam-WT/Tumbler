@@ -9,6 +9,7 @@ import io.github.lucateam_wt.tumbler.data.crypto.AndroidKeystoreKeyProvider
 import io.github.lucateam_wt.tumbler.data.db.TumblerDatabase
 import io.github.lucateam_wt.tumbler.data.repository.RoomAccountBackupStore
 import io.github.lucateam_wt.tumbler.data.repository.RoomAccountRepository
+import io.github.lucateam_wt.tumbler.data.repository.deleteTestKeys
 import io.github.lucateam_wt.tumbler.data.repository.testDataKeyHolder
 import io.github.lucateam_wt.tumbler.domain.model.OtpAccount
 import io.github.lucateam_wt.tumbler.domain.model.OtpType
@@ -109,7 +110,7 @@ class BackupServiceInstrumentedTest {
 
     @Before
     fun setUp() {
-        aliases.forEach(keyStore()::deleteEntry)
+        aliases.forEach(::deleteTestKeys)
         source = Device(context, aliases[0])
         target = Device(context, aliases[1])
     }
@@ -118,7 +119,7 @@ class BackupServiceInstrumentedTest {
     fun tearDown() {
         source.close()
         target.close()
-        aliases.forEach(keyStore()::deleteEntry)
+        aliases.forEach(::deleteTestKeys)
     }
 
     private inline fun <reified T> Any?.cast(): T {

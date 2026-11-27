@@ -163,6 +163,8 @@ internal fun TumblerApp(viewModel: AccountListViewModel, backupViewModel: Backup
                         onDelete = viewModel::delete,
                         onActionFailureShown = viewModel::actionFailureShown,
                         onExportBackup = backupViewModel::startExport,
+                        onStartNewStorageKey = viewModel::startNewStorageKey,
+                        onRetryStorage = viewModel::retryStorage,
                         onImportBackup = {
                             // A second tap while the picker opens gets false: one picker only.
                             if (backupViewModel.startImport()) {

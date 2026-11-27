@@ -1,5 +1,6 @@
 package io.github.lucateam_wt.tumbler.data.crypto
 
+import io.github.lucateam_wt.tumbler.domain.crypto.KeyTemporarilyUnavailableException
 import io.github.lucateam_wt.tumbler.domain.crypto.SecretCipherException
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
@@ -249,8 +250,9 @@ class DataKeyCipherTest {
         key.wipe()
         assertTrue(key.isWiped)
         assertNull(key.use { it.copyOf() })
-        assertThrows(SecretCipherException::class.java) { DataKeyCipher.seal(key, "acc-1", secret, random) }
-        assertThrows(SecretCipherException::class.java) { DataKeyCipher.open(key, "acc-1", payload) }
+        // Retryable: the next use unwraps the key again.
+        assertThrows(KeyTemporarilyUnavailableException::class.java) { DataKeyCipher.seal(key, "acc-1", secret, random) }
+        assertThrows(KeyTemporarilyUnavailableException::class.java) { DataKeyCipher.open(key, "acc-1", payload) }
     }
 
     @Test

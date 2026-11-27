@@ -11,7 +11,37 @@ data class AccountListUiState(
     val loadFailed: Boolean = false,
     /** A delete or next-code action failed in storage; clear it with `actionFailureShown()`. */
     val actionFailed: Boolean = false,
+    /**
+     * Set while accounts are being moved to the storage key ("N of M"); the list, adding and the
+     * backup menu are not shown until it is `null` again.
+     */
+    val migration: MigrationProgress? = null,
+    /** A message about the storage key above the list, or `null`. */
+    val storageNotice: StorageNotice? = null,
 )
+
+/** [done] of [total] accounts handled by the storage migration; [total] is at least 1. */
+data class MigrationProgress(val done: Int, val total: Int)
+
+/**
+ * What the storage banner says. [unreadableCount] counts the accounts whose secret cannot be read
+ * for good (not those that failed only this time).
+ */
+data class StorageNotice(val kind: StorageNoticeKind, val unreadableCount: Int)
+
+enum class StorageNoticeKind {
+    /**
+     * The storage key cannot be used any more: adding and importing are refused until the user
+     * confirms "Start a new storage key". Unreadable accounts (if any) can only come back from a backup.
+     */
+    NEW_KEY_REQUIRED,
+
+    /** Some accounts cannot be read for good; they can only come back from a backup. */
+    UNREADABLE,
+
+    /** A storage failure that may be transient: "Try again". */
+    TEMPORARY,
+}
 
 /**
  * The list has loaded without a storage failure and holds no account, so an export would be
@@ -19,6 +49,10 @@ data class AccountListUiState(
  */
 internal val AccountListUiState.nothingToExport: Boolean
     get() = !isLoading && !loadFailed && accounts.isEmpty()
+
+/** Adding and importing are refused until a new storage key is started. */
+internal val AccountListUiState.writesBlocked: Boolean
+    get() = storageNotice?.kind == StorageNoticeKind.NEW_KEY_REQUIRED
 
 sealed interface AccountItem {
     val id: String
@@ -52,11 +86,15 @@ sealed interface AccountItem {
         val error: HotpError? = null,
     ) : AccountItem
 
-    /** An account whose secret cannot be decrypted (for example after the key was lost). */
+    /**
+     * An account whose secret cannot be decrypted: for good (for example after the key was lost),
+     * or, if [temporary], only this time (a Keystore error that may go away; "Try again").
+     */
     data class UnavailableItem(
         override val id: String,
         override val issuer: String,
         override val accountName: String,
+        val temporary: Boolean = false,
     ) : AccountItem
 }
 
@@ -83,6 +121,9 @@ enum class AddError {
     SECRET_TOO_LONG,
 
     STORAGE_FAILED,
+
+    /** The storage key cannot be used any more; a new one must be started from the accounts list first. */
+    STORAGE_KEY_REQUIRED,
 }
 
 /** Result of the last [AccountListViewModel.add] call. */

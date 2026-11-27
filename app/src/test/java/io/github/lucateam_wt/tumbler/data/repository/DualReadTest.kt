@@ -1,5 +1,6 @@
 package io.github.lucateam_wt.tumbler.data.repository
 
+import android.security.keystore.KeyPermanentlyInvalidatedException
 import io.github.lucateam_wt.tumbler.data.crypto.AesGcmSecretCipher
 import io.github.lucateam_wt.tumbler.data.crypto.CountingWrappers
 import io.github.lucateam_wt.tumbler.data.crypto.DataKeyCipher
@@ -10,6 +11,8 @@ import io.github.lucateam_wt.tumbler.data.crypto.KeyProvider
 import io.github.lucateam_wt.tumbler.data.db.AccountEntity
 import io.github.lucateam_wt.tumbler.domain.crypto.KeyTemporarilyUnavailableException
 import io.github.lucateam_wt.tumbler.domain.crypto.KeyUnavailableException
+import io.github.lucateam_wt.tumbler.domain.crypto.NewStorageKeyRequiredException
+import io.github.lucateam_wt.tumbler.domain.crypto.SecretCipher
 import io.github.lucateam_wt.tumbler.domain.crypto.SecretCipherException
 import io.github.lucateam_wt.tumbler.domain.model.OtpAccount
 import io.github.lucateam_wt.tumbler.domain.model.OtpType
@@ -27,12 +30,14 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertSame
 import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
+import org.junit.After
 import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.Timeout
 import java.security.ProviderException
 import java.security.SecureRandom
 import java.util.Collections
+import java.util.concurrent.atomic.AtomicInteger
 import javax.crypto.AEADBadTagException
 import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
@@ -47,10 +52,18 @@ internal fun testDataKeyHolder(
 
 internal const val TEST_WRAP_ALIAS = "test_wrap_key"
 
+/** A holder over a key table that sees the highest key version of [accounts], as the Room store does. */
+internal fun linkedDataKeyHolder(
+    accounts: FakeAccountDao,
+    keys: FakeDataKeyDao = FakeDataKeyDao(),
+    wrappers: CountingWrappers = CountingWrappers(FakeKeystore()),
+) = DataKeyHolder(RoomDataKeyStore(keys, accounts), wrappers::wrapperFor, aliasBase = TEST_WRAP_ALIAS)
+
 /**
- * Both repositories read rows in either format (`docs/storage-format.md`) while writing only the
- * legacy one. Rows sealed with a data key are made here by an "earlier process" (another
- * [DataKeyHolder] over the same key table and Keystore), because the app does not write them yet.
+ * Both repositories read rows in either format (`docs/storage-format.md`), write only the data-key
+ * one, fall back to the legacy copy of a row whose data key is lost, and never unwrap or call the
+ * Keystore inside a transaction. Rows sealed with a data key by an "earlier process" are made with
+ * another [DataKeyHolder] over the same key table and Keystore.
  */
 class DualReadTest {
 
@@ -72,22 +85,65 @@ class DualReadTest {
         companion object Key : CoroutineContext.Key<InTransaction>
     }
 
-    private object MarkingRunner : TransactionRunner {
-        override suspend fun <R> inTransaction(block: suspend () -> R): R = withContext(InTransaction()) { block() }
+    /** The legacy cipher, counting decrypts and keeping every plaintext it returned. */
+    private class CountingLegacyCipher(private val delegate: SecretCipher) : SecretCipher {
+        val decrypts = AtomicInteger()
+        val encrypts = AtomicInteger()
+        val returned: MutableList<ByteArray> = Collections.synchronizedList(mutableListOf())
+
+        override fun encrypt(plaintext: ByteArray, associatedData: ByteArray): ByteArray {
+            encrypts.incrementAndGet()
+            return delegate.encrypt(plaintext, associatedData)
+        }
+
+        override fun decrypt(payload: ByteArray, associatedData: ByteArray): ByteArray {
+            decrypts.incrementAndGet()
+            return delegate.decrypt(payload, associatedData).also { returned += it }
+        }
+    }
+
+    /**
+     * Marks the transaction's coroutines, and records every transaction during which a Keystore
+     * operation ran (a wrap, an unwrap, a key generation or a legacy decrypt). The tests here run one
+     * operation at a time, so any such operation belongs to the open transaction.
+     */
+    private inner class AuditingRunner : TransactionRunner {
+        val transactions = AtomicInteger()
+        val withKeystoreWork = AtomicInteger()
+
+        override suspend fun <R> inTransaction(block: suspend () -> R): R = withContext(InTransaction()) {
+            transactions.incrementAndGet()
+            val before = keystoreOperations()
+            try {
+                block()
+            } finally {
+                if (keystoreOperations() != before) withKeystoreWork.incrementAndGet()
+            }
+        }
     }
 
     private val keystore = FakeKeystore()
     private val wrappers = CountingWrappers(keystore)
     private val keyTable = FakeDataKeyStore()
     private val legacyKeys = LegacyKeys()
-    private val legacyCipher = AesGcmSecretCipher(legacyKeys)
+    private val legacyCipher = CountingLegacyCipher(AesGcmSecretCipher(legacyKeys))
     private val dao = FakeAccountDao()
+    private val runner = AuditingRunner()
 
     /** This process's holder: nothing unwrapped yet. */
     private val dataKeys = testDataKeyHolder(keyTable, wrappers)
-    private val repository = RoomAccountRepository(dao, legacyCipher, dataKeys, MarkingRunner)
-    private val store = RoomAccountBackupStore(dao, legacyCipher, dataKeys, MarkingRunner)
+    private val repository = RoomAccountRepository(dao, legacyCipher, dataKeys, runner)
+    private val store = RoomAccountBackupStore(dao, legacyCipher, dataKeys, runner)
     private val random = SecureRandom()
+
+    private fun keystoreOperations() =
+        wrappers.wraps.get() + wrappers.unwraps.get() + keystore.generations.get() + legacyCipher.decrypts.get()
+
+    /** PR A must-do (b): no test here may unwrap or call the Keystore inside a transaction. */
+    @After
+    fun noKeystoreWorkInsideATransaction() {
+        assertEquals("transactions with Keystore work", 0, runner.withKeystoreWork.get())
+    }
 
     // RFC 4226 appendix D: secret "12345678901234567890", counter 0 -> 755224, 1 -> 287082.
     private val hotp = OtpAccount("Bank", "bob", OtpType.HOTP, "12345678901234567890".toByteArray(Charsets.US_ASCII))
@@ -102,11 +158,18 @@ class DualReadTest {
 
         assertEquals(totp, repository.getAccount("l"))
         assertEquals(listOf(totp), store.readAll().map { it.account })
-        assertEquals(listOf(totp), store.writeTransaction { readAll() }.map { it.account })
         assertEquals(0, keyTable.calls.get())
         assertEquals(0, wrappers.unwraps.get())
         assertEquals(0, wrappers.wraps.get())
         assertEquals(0, keystore.generations.get())
+
+        // A write transaction resolves the write key first (on a fresh install it makes version 1),
+        // outside the transaction, and decrypts the legacy row before it opens.
+        legacyCipher.returned.clear()
+        assertEquals(listOf(totp), store.writeTransaction { readAll() }.map { it.account })
+        assertEquals(setOf(1), keyTable.records.keys)
+        assertEquals(1, keystore.generations.get())
+        assertTrue(legacyCipher.returned.all { secret -> secret.all { it == 0.toByte() } })
     }
 
     @Test
@@ -181,19 +244,118 @@ class DualReadTest {
     }
 
     @Test
-    fun theDataKeyRecordIsReadInTheCallersTransaction() = runBlocking<Unit> {
+    fun keysAreUnwrappedBeforeATransactionAndTheWriteKeysRecordIsReadInIt() = runBlocking<Unit> {
         putSealed("h", hotp, 1)
+        putLegacy("l", totp, 2)
         resetCounters()
         val inTransaction = Collections.synchronizedList(mutableListOf<Boolean>())
         keyTable.beforeCall = { inTransaction += currentCoroutineContext()[InTransaction] != null }
 
+        // A new process: the first next code unwraps outside its transaction, which then only reads memory.
         assertTrue(repository.nextHotpCode("h") is NextHotpCodeResult.Code)
-        assertEquals(listOf(true), inTransaction)
+        assertEquals(listOf(false), inTransaction)
+        assertEquals(1, wrappers.unwraps.get())
 
-        // A new process reading inside a backup write transaction.
-        val other = RoomAccountBackupStore(dao, legacyCipher, testDataKeyHolder(keyTable, wrappers), MarkingRunner)
-        other.writeTransaction { readAll() }
-        assertEquals(listOf(true, true), inTransaction)
+        // A write reads the record of its key inside the transaction that commits the row.
+        inTransaction.clear()
+        val added = repository.add(totp)
+        assertEquals(listOf(false, true), inTransaction)
+
+        // Another new process importing: both keys and the legacy row are resolved before its transaction.
+        inTransaction.clear()
+        val other = RoomAccountBackupStore(dao, legacyCipher, testDataKeyHolder(keyTable, wrappers), runner)
+        val ids = other.writeTransaction {
+            insert(hotp, 9)
+            readAll().map { it.id }
+        }
+        assertEquals(listOf("h", "l", added).sorted(), ids.filter { it in setOf("h", "l", added) }.sorted())
+        assertEquals(listOf(true), inTransaction.filter { it })
+        assertEquals(2, wrappers.unwraps.get())
+        assertTrue(runner.transactions.get() >= 3)
+    }
+
+    @Test
+    fun aRowWhoseDataKeyIsLostFallsBackToItsLegacyCopy() = runBlocking<Unit> {
+        val sealed = putSealed("s", hotp, 1)
+        val copy = legacyCipher.encrypt(hotp.secret, accountAssociatedData("s"))
+        dao.put(sealed.copyWith(legacySecretBlob = copy))
+        keystore.lose(TEST_WRAP_ALIAS)
+        resetCounters()
+
+        assertEquals(hotp, repository.getAccount("s"))
+        assertEquals(listOf(hotp), store.readAll().map { it.account })
+        legacyCipher.returned.clear()
+        assertEquals(NextHotpCodeResult.Code("755224", 1), repository.nextHotpCode("s"))
+        assertEquals(listOf(hotp.copy(counter = 1)), store.writeTransaction { readAll() }.map { it.account })
+        // Read only: the row keeps its sealed payload, key version and legacy copy.
+        val row = dao.stored("s")
+        assertArrayEquals(sealed.secretBlob, row.secretBlob)
+        assertEquals(sealed.keyVersion, row.keyVersion)
+        assertArrayEquals(copy, row.legacySecretBlob)
+        assertEquals(0, wrappers.wraps.get())
+        assertEquals(0, keystore.generations.get())
+        assertTrue(legacyCipher.returned.all { secret -> secret.all { it == 0.toByte() } })
+    }
+
+    @Test
+    fun aRecordThatDoesNotUnwrapFallsBackToo() = runBlocking<Unit> {
+        val sealed = putSealed("s", totp, 1)
+        dao.put(sealed.copyWith(legacySecretBlob = legacyCipher.encrypt(totp.secret, accountAssociatedData("s"))))
+        resetCounters()
+        wrappers.failUnwrapsWith = { SecretCipherException("Decryption failed", AEADBadTagException("Tag mismatch")) }
+
+        assertEquals(totp, repository.getAccount("s"))
+        assertEquals(1, legacyCipher.decrypts.get())
+    }
+
+    @Test
+    fun aTransientKeystoreErrorNeverFallsBackAndIsNotAnUnreadableAccount() = runBlocking<Unit> {
+        val sealed = putSealed("s", totp, 1)
+        dao.put(sealed.copyWith(legacySecretBlob = legacyCipher.encrypt(totp.secret, accountAssociatedData("s"))))
+        resetCounters()
+        keystore.lookupFailure = { ProviderException("busy") }
+
+        assertThrows(KeyTemporarilyUnavailableException::class.java) { runBlocking { repository.getAccount("s") } }
+        assertThrows(KeyTemporarilyUnavailableException::class.java) { runBlocking { store.readAll() } }
+        assertThrows(KeyTemporarilyUnavailableException::class.java) { runBlocking { store.writeTransaction { readAll() } } }
+        assertSame(NextHotpCodeResult.NotHotp, repository.nextHotpCode("s"))
+        assertEquals(0, legacyCipher.decrypts.get())
+    }
+
+    @Test
+    fun aTransientLegacyErrorIsNotAnUnreadableAccount() = runBlocking<Unit> {
+        putLegacy("l", totp, 1)
+        val failing = RoomAccountBackupStore(dao, FailingCipher(ProviderException("busy")), dataKeys, runner)
+
+        assertThrows(KeyTemporarilyUnavailableException::class.java) { runBlocking { failing.readAll() } }
+        assertThrows(KeyTemporarilyUnavailableException::class.java) { runBlocking { failing.writeTransaction { readAll() } } }
+    }
+
+    @Test
+    fun noFallbackWhenTheLegacyKeyIsGoneToo() = runBlocking<Unit> {
+        val sealed = putSealed("s", totp, 1)
+        dao.put(sealed.copyWith(legacySecretBlob = legacyCipher.encrypt(totp.secret, accountAssociatedData("s"))))
+        keystore.lose(TEST_WRAP_ALIAS)
+        legacyKeys.lost = true
+
+        assertThrows(KeyUnavailableException::class.java) { runBlocking { repository.getAccount("s") } }
+        assertEquals("s", assertThrows(UnreadableAccountException::class.java) { runBlocking { store.readAll() } }.accountId)
+    }
+
+    @Test
+    fun aRowChangedBetweenPrepareAndTheTransactionIsRetryableNotUnreadable() = runBlocking<Unit> {
+        putLegacy("l", totp, 1)
+        assertThrows(KeyTemporarilyUnavailableException::class.java) {
+            runBlocking {
+                legacyCipher.returned.clear()
+                store.writeTransaction {
+                    // Another writer replaced the row after it was prepared (simulated in the transaction).
+                    dao.put(dao.stored("l").copyWith(secretBlob = legacyCipher.encrypt(hotp.secret, accountAssociatedData("l"))))
+                    readAll()
+                }
+            }
+        }
+        assertTrue(legacyCipher.returned.all { secret -> secret.all { it == 0.toByte() } })
     }
 
     @Test
@@ -267,34 +429,73 @@ class DualReadTest {
     }
 
     @Test
-    fun writesStayLegacyAndNeverCreateADataKey() = runBlocking<Unit> {
+    fun writesUseOneDataKeyBoundToTheIdAndNeverTheLegacyKey() = runBlocking<Unit> {
         val added = repository.add(totp)
         val inserted = store.writeTransaction { insert(hotp, 5) }
 
-        for (id in listOf(added, inserted)) {
+        val key = dataKeys.key(1)
+        for ((id, account) in listOf(added to totp, inserted to hotp)) {
             val row = dao.stored(id)
-            assertEquals(0, row.keyVersion)
+            assertEquals(1, row.keyVersion)
             assertNull(row.legacySecretBlob)
-            assertEquals(1, row.secretBlob[0].toInt())
+            assertEquals(2, row.secretBlob[0].toInt())
+            assertArrayEquals(account.secret, DataKeyCipher.open(key, id, row.secretBlob))
         }
-        assertEquals(0, keyTable.calls.get())
-        assertEquals(0, wrappers.wraps.get())
-        assertEquals(0, keystore.generations.get())
+        assertThrows(SecretCipherException::class.java) { DataKeyCipher.open(key, inserted, dao.stored(added).secretBlob) }
+        // One key: created by the first write, before its transaction; a fresh nonce per secret.
+        assertEquals(setOf(1), keyTable.records.keys)
+        assertEquals(1, wrappers.wraps.get())
+        assertEquals(1, keystore.generations.get())
+        assertFalse(dao.stored(added).secretBlob.copyOfRange(2, 14).contentEquals(dao.stored(inserted).secretBlob.copyOfRange(2, 14)))
+        assertEquals(0, legacyCipher.encrypts.get())
+        assertEquals(0, legacyCipher.decrypts.get())
     }
 
     @Test
-    fun replaceMakesADataKeyRowLegacyAndDropsItsLegacyCopy() = runBlocking<Unit> {
+    fun replaceSealsWithTheDataKeyAndDropsTheLegacyCopy() = runBlocking<Unit> {
         val sealed = putSealed("s", totp, 1)
         dao.put(sealed.copyWith(legacySecretBlob = legacyCipher.encrypt(totp.secret, accountAssociatedData("s"))))
 
         store.writeTransaction { replace("s", hotp) }
 
         val replaced = dao.stored("s")
-        assertEquals(0, replaced.keyVersion)
+        assertEquals(1, replaced.keyVersion)
         assertNull(replaced.legacySecretBlob)
-        assertEquals(1, replaced.secretBlob[0].toInt())
+        assertEquals(2, replaced.secretBlob[0].toInt())
         assertFalse(replaced.secretBlob.contentEquals(sealed.secretBlob))
         assertEquals(hotp, repository.getAccount("s"))
+    }
+
+    @Test
+    fun anInvalidatedWrappingKeyCountsAsLostNotAsTransient() = runBlocking<Unit> {
+        putSealed("s", totp, 1)
+        resetCounters()
+        wrappers.failUnwrapsWith = {
+            SecretCipherException("Decryption failed", KeyPermanentlyInvalidatedException())
+        }
+
+        assertThrows(KeyUnavailableException::class.java) { runBlocking { repository.getAccount("s") } }
+        assertThrows(NewStorageKeyRequiredException::class.java) { runBlocking { dataKeys.prepareWriteKey() } }
+        // Cached like a lost key: no second unwrap until the failures are forgotten.
+        assertThrows(KeyUnavailableException::class.java) { runBlocking { repository.getAccount("s") } }
+        assertEquals(1, wrappers.unwraps.get())
+    }
+
+    @Test
+    fun anInvalidatedLegacyKeyCountsAsLostNotAsTransient() = runBlocking<Unit> {
+        putLegacy("l", totp, 1)
+        val invalidated = FailingCipher(KeyPermanentlyInvalidatedException())
+
+        assertThrows(KeyUnavailableException::class.java) {
+            runBlocking { RoomAccountRepository(dao, invalidated, dataKeys, runner).getAccount("l") }
+        }
+    }
+
+    /** A legacy cipher whose decrypt fails the way AesGcmSecretCipher wraps a Keystore error. */
+    private class FailingCipher(private val cause: Exception) : SecretCipher {
+        override fun encrypt(plaintext: ByteArray, associatedData: ByteArray): ByteArray = error("not used")
+        override fun decrypt(payload: ByteArray, associatedData: ByteArray): ByteArray =
+            throw SecretCipherException("Decryption failed", cause)
     }
 
     /** Stores [account] as row [id], sealed with a data key that an earlier process made and stored. */

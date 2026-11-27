@@ -1,8 +1,6 @@
 package io.github.lucateam_wt.tumbler.data.repository
 
 import io.github.lucateam_wt.tumbler.data.crypto.WrappedDataKey
-import io.github.lucateam_wt.tumbler.data.db.DataKeyDao
-import io.github.lucateam_wt.tumbler.data.db.DataKeyEntity
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
@@ -19,21 +17,6 @@ class RoomDataKeyStoreTest {
     /** A lock regression in the data-key code would hang instead of failing. */
     @get:Rule
     val timeout: Timeout = Timeout.seconds(30)
-
-    /** Mirrors `INSERT OR IGNORE`: -1 when the version exists, which is left unchanged. */
-    private class FakeDataKeyDao : DataKeyDao {
-        val rows = sortedMapOf<Int, DataKeyEntity>()
-
-        override suspend fun get(version: Int): DataKeyEntity? = rows[version]
-
-        override suspend fun getAll(): List<DataKeyEntity> = rows.values.toList()
-
-        override suspend fun insertIfAbsent(entity: DataKeyEntity): Long {
-            if (entity.version in rows) return -1
-            rows[entity.version] = entity
-            return entity.version.toLong()
-        }
-    }
 
     private val dataKeys = FakeDataKeyDao()
     private val accounts = FakeAccountDao()

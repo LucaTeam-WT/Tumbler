@@ -1,6 +1,7 @@
 package io.github.lucateam_wt.tumbler.data.crypto
 
 import androidx.annotation.VisibleForTesting
+import io.github.lucateam_wt.tumbler.domain.crypto.KeyTemporarilyUnavailableException
 import io.github.lucateam_wt.tumbler.domain.crypto.SecretCipherException
 import java.security.GeneralSecurityException
 import java.security.ProviderException
@@ -18,7 +19,9 @@ import javax.crypto.spec.SecretKeySpec
  * 65566 bytes. See `docs/storage-format.md`.
  *
  * Every failure is a [SecretCipherException] with a fixed message that never contains key
- * material, plaintext, nonces or associated data. A new [Cipher] is made per call.
+ * material, plaintext, nonces or associated data. A key that was wiped gives the retryable
+ * [KeyTemporarilyUnavailableException]: the next use unwraps it again. A new [Cipher] is made per
+ * call.
  */
 internal object DataKeyCipher {
 
@@ -36,7 +39,7 @@ internal object DataKeyCipher {
         val associatedData = EnvelopeFormat.secretAssociatedData(keyVersion, accountId)
         val nonce = ByteArray(EnvelopeFormat.NONCE_BYTES).also(random::nextBytes)
         val blob = key.use { sealWith(it, nonce, plaintext, associatedData) }
-            ?: throw SecretCipherException("Data key unavailable")
+            ?: throw KeyTemporarilyUnavailableException()
         return SealedSecret(keyVersion, blob)
     }
 
@@ -48,7 +51,7 @@ internal object DataKeyCipher {
         checkPayload(payload)
         val associatedData = EnvelopeFormat.secretAssociatedData(key.version, accountId)
         return key.use { openWith(it, payload, associatedData) }
-            ?: throw SecretCipherException("Data key unavailable")
+            ?: throw KeyTemporarilyUnavailableException()
     }
 
     /**

@@ -3,15 +3,34 @@ package io.github.lucateam_wt.tumbler.data.repository
 import io.github.lucateam_wt.tumbler.data.db.AccountDao
 import io.github.lucateam_wt.tumbler.data.db.AccountEntity
 import io.github.lucateam_wt.tumbler.data.db.AccountSummaryRow
+import io.github.lucateam_wt.tumbler.data.db.LegacySecretRow
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.update
+import java.util.concurrent.atomic.AtomicInteger
 
-/** In-memory [AccountDao] that mirrors the Room queries' semantics. */
-class FakeAccountDao : AccountDao {
+/**
+ * In-memory [AccountDao] that mirrors the Room queries' semantics. [dataKeyVersions] is the set of
+ * versions in the `data_keys` table, for the `EXISTS` check of [migrateSecret]; by default there is
+ * none, so a test that migrates must wire it.
+ */
+class FakeAccountDao(private val dataKeyVersions: () -> Set<Int> = { emptySet() }) : AccountDao {
 
     private val rows = MutableStateFlow<Map<String, AccountEntity>>(emptyMap())
+
+    /** Runs before each [advanceCounter] in the calling coroutine (to hold callers between their read and write). */
+    @Volatile
+    var beforeAdvance: suspend (id: String) -> Unit = {}
+
+    /** Runs before each [migrateSecret] in the calling coroutine (to change the row meanwhile, or to fail). */
+    @Volatile
+    var beforeMigrate: suspend (id: String) -> Unit = {}
+
+    private val migrated = AtomicInteger()
+
+    /** How many [migrateSecret] calls wrote a row. */
+    val migrations: Int get() = migrated.get()
 
     fun stored(id: String): AccountEntity = checkNotNull(rows.value[id])
 
@@ -46,6 +65,7 @@ class FakeAccountDao : AccountDao {
     }
 
     override suspend fun advanceCounter(id: String, expectedCounter: Long, expectedSecretBlob: ByteArray): Int {
+        beforeAdvance(id)
         var updated = 0
         // One atomic compare-and-set on the whole map, like the single SQL UPDATE.
         rows.update { map ->
@@ -85,6 +105,28 @@ class FakeAccountDao : AccountDao {
     override suspend fun delete(id: String) = rows.update { it - id }
 
     override suspend fun highestKeyVersion(): Int? = rows.value.values.maxOfOrNull { it.keyVersion }
+
+    override suspend fun legacyRows(): List<LegacySecretRow> =
+        getAll().filter { it.keyVersion == 0 }.map { LegacySecretRow(it.id, it.secretBlob) }
+
+    override suspend fun migrateSecret(id: String, secretBlob: ByteArray, keyVersion: Int, expectedSecretBlob: ByteArray): Int {
+        beforeMigrate(id)
+        var updated = 0
+        // One atomic compare-and-set on the whole map, like the single SQL UPDATE.
+        rows.update { map ->
+            val row = map[id]
+            val matches = row != null && row.keyVersion == 0 && row.secretBlob.contentEquals(expectedSecretBlob) &&
+                keyVersion >= 1 && keyVersion in dataKeyVersions()
+            updated = if (matches) 1 else 0
+            if (row != null && matches) {
+                map + (id to row.copyWith(secretBlob = secretBlob, keyVersion = keyVersion, legacySecretBlob = expectedSecretBlob))
+            } else {
+                map
+            }
+        }
+        if (updated == 1) migrated.incrementAndGet()
+        return updated
+    }
 }
 
 fun AccountEntity.copyWith(

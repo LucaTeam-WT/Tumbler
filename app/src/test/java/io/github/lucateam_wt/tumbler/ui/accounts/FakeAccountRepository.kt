@@ -47,6 +47,10 @@ class FakeAccountRepository : AccountRepository {
     var nextHotpCodeCalls = 0
         private set
 
+    /** How many times [observeAccounts] was called. */
+    var observeCalls = 0
+        private set
+
     /** How many times [forgetCachedReadFailures] was called. */
     var forgetCachedReadFailuresCalls = 0
         private set
@@ -69,6 +73,7 @@ class FakeAccountRepository : AccountRepository {
     }
 
     override fun observeAccounts(): Flow<List<AccountSummary>> {
+        observeCalls++
         observeFailure?.let { failure -> return flow { throw failure } }
         return summaries
     }

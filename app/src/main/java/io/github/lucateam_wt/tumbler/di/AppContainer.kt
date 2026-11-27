@@ -7,23 +7,33 @@ import io.github.lucateam_wt.tumbler.data.crypto.AndroidKeystoreKeyProvider
 import io.github.lucateam_wt.tumbler.data.crypto.DataKeyHolder
 import io.github.lucateam_wt.tumbler.data.crypto.keystoreDataKeyWrapper
 import io.github.lucateam_wt.tumbler.data.db.TumblerDatabase
+import io.github.lucateam_wt.tumbler.data.repository.MigratingStorageGate
 import io.github.lucateam_wt.tumbler.data.repository.RoomAccountBackupStore
 import io.github.lucateam_wt.tumbler.data.repository.RoomAccountRepository
 import io.github.lucateam_wt.tumbler.data.repository.RoomDataKeyStore
+import io.github.lucateam_wt.tumbler.data.repository.SecretMigrator
+import io.github.lucateam_wt.tumbler.data.repository.legacySecretReader
 import io.github.lucateam_wt.tumbler.domain.crypto.SecretCipher
 import io.github.lucateam_wt.tumbler.domain.repository.AccountRepository
+import io.github.lucateam_wt.tumbler.domain.repository.StorageGate
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 
 /** Manual dependency graph of the app; every object is created on first use. */
 class AppContainer(private val context: Context) {
 
     private val database: TumblerDatabase by lazy { TumblerDatabase.getInstance(context) }
 
+    /** Lives as long as the process: work that must not stop with a screen (the storage migration). */
+    private val processScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+
+    /** The legacy Keystore key; only used to decrypt rows (and legacy copies) written before the data key. */
     private val secretCipher: SecretCipher by lazy { AesGcmSecretCipher(AndroidKeystoreKeyProvider()) }
 
     /**
-     * The process's data keys, shared by every reader so each is unwrapped at most once. Only rows
-     * sealed with a data key use it, and the app does not write such rows yet: today it is never
-     * asked for a key, so it makes no database or Keystore call.
+     * The process's data keys, shared by every reader and writer so each is unwrapped at most once
+     * per process. New secrets are sealed with the newest one.
      */
     private val dataKeys: DataKeyHolder by lazy {
         DataKeyHolder(RoomDataKeyStore(database), ::keystoreDataKeyWrapper)
@@ -33,8 +43,20 @@ class AppContainer(private val context: Context) {
         RoomAccountRepository(database, secretCipher, dataKeys)
     }
 
+    /**
+     * Converts legacy rows to the data key at startup (`docs/storage-format.md`) and tells whether
+     * new secrets can be saved. The accounts list and the backup wait for it.
+     */
+    val storageGate: StorageGate by lazy {
+        MigratingStorageGate(
+            SecretMigrator(database.accountDao(), legacySecretReader(secretCipher), dataKeys),
+            dataKeys,
+            processScope,
+        )
+    }
+
     /** Backup export and import, used by the backup screens through `BackupViewModel`. */
     internal val backupService: BackupService by lazy {
-        BackupService(RoomAccountBackupStore(database, secretCipher, dataKeys))
+        BackupService(RoomAccountBackupStore(database, secretCipher, dataKeys, beforeAccess = { storageGate.awaitReady() }))
     }
 }

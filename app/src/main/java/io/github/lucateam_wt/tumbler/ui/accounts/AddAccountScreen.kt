@@ -112,6 +112,7 @@ fun AddAccountScreen(
                                     AccountLimits.MAX_SECRET_BYTES,
                                 )
                             AddError.STORAGE_FAILED -> stringResource(R.string.add_error_storage)
+                            AddError.STORAGE_KEY_REQUIRED -> stringResource(R.string.add_error_storage_key)
                             null -> stringResource(R.string.add_link_hint)
                         },
                     )
