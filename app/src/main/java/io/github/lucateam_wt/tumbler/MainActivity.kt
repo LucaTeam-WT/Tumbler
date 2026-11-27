@@ -31,6 +31,8 @@ class MainActivity : ComponentActivity() {
                 TumblerApp(
                     viewModel = viewModel(factory = AccountListViewModel.Factory),
                     backupViewModel = viewModel(factory = BackupViewModel.Factory),
+                    themeMode = themeMode,
+                    onThemeModeChange = settings::setThemeMode,
                 )
             }
         }

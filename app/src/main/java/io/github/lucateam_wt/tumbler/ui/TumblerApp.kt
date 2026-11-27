@@ -20,6 +20,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
@@ -29,6 +30,11 @@ import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import io.github.lucateam_wt.tumbler.settings.ThemeMode
+import io.github.lucateam_wt.tumbler.ui.about.AboutScreen
+import io.github.lucateam_wt.tumbler.ui.about.SOURCE_CODE_URL
+import io.github.lucateam_wt.tumbler.ui.about.appVersion
+import io.github.lucateam_wt.tumbler.ui.about.openLink
 import io.github.lucateam_wt.tumbler.ui.accounts.AccountListScreen
 import io.github.lucateam_wt.tumbler.ui.accounts.AccountListViewModel
 import io.github.lucateam_wt.tumbler.ui.accounts.AddAccountScreen
@@ -42,16 +48,17 @@ import io.github.lucateam_wt.tumbler.ui.backup.ImportReviewScreen
 import io.github.lucateam_wt.tumbler.ui.backup.PlanReview
 import io.github.lucateam_wt.tumbler.ui.backup.ReviewNotice
 import io.github.lucateam_wt.tumbler.ui.backup.suggestedBackupFileName
+import io.github.lucateam_wt.tumbler.ui.settings.SettingsScreen
 import java.time.LocalDate
 
-/** Duration of the slide and fade between the accounts list and the add screen. */
+/** Duration of the slide and fade between two screens (list, add, settings, about, import review). */
 private const val SCREEN_TRANSITION_MILLIS = 300
 
 /** The incoming and outgoing screens move by this fraction of the screen width. */
 private const val SCREEN_SLIDE_FRACTION = 4
 
 /**
- * Forward (to the add screen): the new screen enters from the end while the old one shifts a
+ * Forward (away from the list): the new screen enters from the end while the old one shifts a
  * little toward the start and fades. Back: the reverse. The direction follows the layout direction.
  */
 internal fun screenTransition(forward: Boolean, layoutDirection: LayoutDirection): ContentTransform {
@@ -65,7 +72,7 @@ internal fun screenTransition(forward: Boolean, layoutDirection: LayoutDirection
 }
 
 /** The screens of the app, in the order the transitions go "forward". */
-private enum class Screen { LIST, ADD, IMPORT_REVIEW }
+private enum class Screen { LIST, ADD, SETTINGS, ABOUT, IMPORT_REVIEW }
 
 /** What the root shows: the screen, and for the import review its content. */
 private data class ShownScreen(val screen: Screen, val review: PlanReview? = null, val notice: ReviewNotice? = null)
@@ -86,13 +93,20 @@ private fun BackupUiState.shownReview(): ShownScreen? = when (this) {
 }
 
 /**
- * Root of the UI: switches between the accounts list, the add screen and the import review,
- * and hosts the backup dialogs and the system file pickers. The backup flow lives in
- * [backupViewModel] and is never saved: after process death it starts again from the list.
+ * Root of the UI: switches between the accounts list, the add screen, Settings, About and the
+ * import review, and hosts the backup dialogs and the system file pickers. The backup flow lives
+ * in [backupViewModel] and is never saved: after process death it starts again from the list.
+ * [themeMode] is the current theme choice, shown and changed on the Settings screen.
  */
 @Composable
-internal fun TumblerApp(viewModel: AccountListViewModel, backupViewModel: BackupViewModel) {
-    var showAdd by rememberSaveable { mutableStateOf(false) }
+internal fun TumblerApp(
+    viewModel: AccountListViewModel,
+    backupViewModel: BackupViewModel,
+    themeMode: ThemeMode = ThemeMode.SYSTEM,
+    onThemeModeChange: (ThemeMode) -> Unit = {},
+) {
+    // The screen chosen by the user (list, add, settings or about); the import review overrides it.
+    var page by rememberSaveable { mutableStateOf(Screen.LIST) }
     val state by viewModel.uiState.collectAsStateWithLifecycle()
     val addState by viewModel.addState.collectAsStateWithLifecycle()
     val backupState by backupViewModel.state.collectAsStateWithLifecycle()
@@ -111,7 +125,7 @@ internal fun TumblerApp(viewModel: AccountListViewModel, backupViewModel: Backup
     }
 
     fun closeAdd() {
-        showAdd = false
+        page = Screen.LIST
         viewModel.resetAddState()
     }
 
@@ -123,9 +137,10 @@ internal fun TumblerApp(viewModel: AccountListViewModel, backupViewModel: Backup
         backupViewModel.reloadRequests.collect { viewModel.reload() }
     }
 
-    val shown = backupState.shownReview() ?: ShownScreen(if (showAdd) Screen.ADD else Screen.LIST)
+    val shown = backupState.shownReview() ?: ShownScreen(page)
 
     BackHandler(enabled = shown.screen == Screen.ADD, onBack = ::closeAdd)
+    BackHandler(enabled = shown.screen == Screen.SETTINGS || shown.screen == Screen.ABOUT) { page = Screen.LIST }
     // Back on the review cancels the import; while it is being written, Back does nothing.
     BackHandler(enabled = shown.screen == Screen.IMPORT_REVIEW, onBack = backupViewModel::cancelImport)
 
@@ -157,7 +172,7 @@ internal fun TumblerApp(viewModel: AccountListViewModel, backupViewModel: Backup
                     )
                     Screen.LIST -> AccountListScreen(
                         state = state,
-                        onAddClick = { showAdd = true },
+                        onAddClick = { page = Screen.ADD },
                         onCopyCode = { copyCodeToClipboard(context, it) },
                         onNextHotpCode = viewModel::nextHotpCode,
                         onDelete = viewModel::delete,
@@ -175,6 +190,16 @@ internal fun TumblerApp(viewModel: AccountListViewModel, backupViewModel: Backup
                                 }
                             }
                         },
+                    )
+                    Screen.SETTINGS -> SettingsScreen(
+                        themeMode = themeMode,
+                        onThemeModeChange = onThemeModeChange,
+                        onBack = { page = Screen.LIST },
+                    )
+                    Screen.ABOUT -> AboutScreen(
+                        version = remember(context) { context.appVersion() },
+                        onOpenSource = { context.openLink(SOURCE_CODE_URL) },
+                        onBack = { page = Screen.LIST },
                     )
                     Screen.IMPORT_REVIEW -> ImportReviewScreen(
                         review = checkNotNull(target.review),
