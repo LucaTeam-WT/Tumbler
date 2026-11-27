@@ -833,15 +833,29 @@ does what, and what is left:
       several minutes for 1000. The read took about one scrypt because the device it was
       planned against was empty; on a device with accounts, the read and the import each
       add one Keystore decryption per account already there. The time to show the account
-      list (one Keystore decryption per account as well) was not measured.
+      list (one Keystore decryption per account as well) was not measured in this test;
+      a later startup measurement with 11 accounts follows below.
 
       These figures were measured before the data key. Since then the secrets are sealed in
       software with one data key, which is unwrapped once per process: export, import and
       the account list make no Keystore call per account once it is ready (a row read
       through its legacy copy still costs one). An upgraded device converts each stored
-      secret once at startup, with one Keystore decryption per account. None of this has
-      been measured on a device yet; the test's setup and its sample lines now time the
-      data key instead.
+      secret once at startup, with one Keystore decryption per account. Export and import
+      with the data key have not been measured on a device yet; the test's setup and its
+      sample lines now time the data key instead.
+
+      Startup was measured on the same phone (StrongBox), debug build, 11 accounts (9 TOTP,
+      2 HOTP). Each run was a cold start launched with `adb shell monkey` and polled with
+      `uiautomator dump` until at least 6 codes were visible. Every figure includes roughly
+      2–3 s of tool overhead, so the figures compare builds and are not app-only times:
+
+      | Build | Time to at least 6 visible codes |
+      |---|---|
+      | Before the data key, one Keystore decryption per account (PR A, on `main`) | 8.1, 8.1, 8.3 s |
+      | With the data key, after the migration | 3.2, 3.4, 3.6 s |
+      | With the data key, one-time first launch over legacy rows (progress screen shown, "0 of 11" then "7 of 11 accounts updated") | 8.5 s in total |
+
+      Other devices, release builds and other account counts have not been measured.
     - *Still to do:* `BackupPayloadTest.decode_rejectsMalformedUtf8` and the golden
       password's NFD and longest-decomposition cases as instrumented tests; the
       `Character` whitespace tables across API levels (26 to current), for item 7; the

@@ -236,7 +236,7 @@ it in the system preview. It is not cleared automatically.
   takes about 0.33 s per account, so export and import take seconds per ten accounts
   (about 5.5 minutes each for 1000; figures in
   [docs/backup-format.md](docs/backup-format.md), item 11). The time to show the account
-  list was not measured. With the schema version 2 changes the whole instrumented suite
+  list was measured later with 11 accounts only (see "Startup time" below). With the schema version 2 changes the whole instrumented suite
   ran again (116 tests, no failures, none skipped); the review fixes made after that run
   are covered by JVM tests only so far. No round trip has been done on a release build.
 - **Accessibility services receive the backup password.** The backup password fields are
@@ -279,8 +279,21 @@ it in the system preview. It is not cleared automatically.
   paths, the progress screen and the storage-key banner are covered by JVM tests; their
   instrumented tests (WAL and `TRUNCATE` journaling, a real Room transaction, kill and
   resume, the legacy-copy fallback, a lost wrapping key) are written and compile but have
-  not been run. An upgrade over an existing install has not been tried, and the startup
-  time with the migration has not been measured.
+  not been run. An upgrade over an existing install has not been tried.
+- **Startup time was measured on one phone only.** PKG110 (Android 17, StrongBox), debug
+  build, 11 accounts (9 TOTP, 2 HOTP). Each run was a cold start launched with
+  `adb shell monkey` and polled with `uiautomator dump` until at least 6 codes were
+  visible. Every figure includes roughly 2–3 s of tool overhead, so the figures compare
+  builds and are not app-only times:
+  - the previous build, one Keystore decryption per account (PR A, on `main`): 8.1, 8.1
+    and 8.3 s;
+  - this version after the migration: 3.2, 3.4 and 3.6 s;
+  - this version's one-time first launch over legacy rows (progress screen shown, "0 of
+    11" then "7 of 11 accounts updated"): 8.5 s in total.
+
+  Measured separately on the same phone: about 0.32 s per Keystore decryption or
+  encryption and about 4 s per scrypt. Other devices, release builds and other account
+  counts have not been measured.
 - **Permanently invalidated keys** are handled as lost (covered by JVM tests only): the
   app's keys need no user authentication, so a device cannot be made to invalidate them
   for a test.
