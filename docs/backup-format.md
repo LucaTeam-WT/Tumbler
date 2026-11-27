@@ -3,8 +3,8 @@
 **Status:** format version 1. Implemented in
 `app/src/main/java/io/github/lucateam_wt/tumbler/backup/` and covered by JVM unit tests and
 instrumented tests. `BackupService` connects it to the stored accounts (see
-[Export and import service](#export-and-import-service)), and the accounts screen's menu
-runs it ([Export and import screens](#export-and-import-screens)).
+[Export and import service](#export-and-import-service)), and the accounts screen's navigation
+drawer runs it ([Export and import screens](#export-and-import-screens)).
 
 This document is normative: it should be precise enough to write an independent reader.
 The unit tests include one (`SpecCodec` in
@@ -484,8 +484,9 @@ could also move the counter below the one the import kept.
 ## Export and import screens
 
 `ui/backup/` (`BackupViewModel` with the sealed `BackupUiState`, the dialogs, the import
-review screen and `BackupFile`) runs the service. Both flows start from the overflow menu
-(three dots) of the accounts screen. The system file pickers need no permission.
+review screen and `BackupFile`) runs the service. Both flows start from the navigation drawer
+of the accounts screen (Backup: "Export backup", "Import backup"). The system file pickers
+need no permission.
 
 **Export.** With no accounts, "Export backup" shows a short message instead of the
 dialog. Otherwise:

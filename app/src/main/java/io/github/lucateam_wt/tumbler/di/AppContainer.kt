@@ -16,6 +16,8 @@ import io.github.lucateam_wt.tumbler.data.repository.legacySecretReader
 import io.github.lucateam_wt.tumbler.domain.crypto.SecretCipher
 import io.github.lucateam_wt.tumbler.domain.repository.AccountRepository
 import io.github.lucateam_wt.tumbler.domain.repository.StorageGate
+import io.github.lucateam_wt.tumbler.settings.SettingsRepository
+import io.github.lucateam_wt.tumbler.settings.SharedPreferencesSettingsRepository
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -52,6 +54,16 @@ class AppContainer(private val context: Context) {
             SecretMigrator(database.accountDao(), legacySecretReader(secretCipher), dataKeys),
             dataKeys,
             processScope,
+        )
+    }
+
+    /**
+     * The user's settings (the theme), in a private SharedPreferences file. Independent of the
+     * database and the Keystore: reading it opens neither.
+     */
+    val settingsRepository: SettingsRepository by lazy {
+        SharedPreferencesSettingsRepository(
+            context.getSharedPreferences(SharedPreferencesSettingsRepository.FILE_NAME, Context.MODE_PRIVATE),
         )
     }
 

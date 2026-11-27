@@ -48,10 +48,15 @@ io.github.lucateam_wt.tumbler
 │   ├── otp/       # Base32, Hotp, Totp, OtpAuthUri parser
 │   └── repository/ # AccountRepository, AccountBackupStore and StorageGate (StorageState: Preparing N of M / Ready with WriteAccess) interfaces
 ├── ui/        # Compose screens, components, theme
-│   ├── accounts/  # compact-row accounts list (long-press menu; overflow menu with export/import; the next TOTP code shows in the last 10 s and is never stored; list item motion, empty/list crossfade, smooth countdown ring with pure helpers in RingMotion.kt), add screen, AccountListViewModel (reload after an import; reads the list only once the storage gate is ready, again on each new gate outcome), UI state, StorageViews (migration progress screen, storage-key banner, confirmed new-key dialog), clipboard copy
+│   ├── accounts/  # compact-row accounts list (long-press menu; menu button that opens the navigation drawer; the next TOTP code shows in the last 10 s and is never stored; list item motion, empty/list crossfade, smooth countdown ring with pure helpers in RingMotion.kt), add screen, AccountListViewModel (reload after an import; reads the list only once the storage gate is ready, again on each new gate outcome), UI state, StorageViews (migration progress screen, storage-key banner, confirmed new-key dialog), clipboard copy
+│   ├── navigation/ # AppDrawer: ModalNavigationDrawer content (Accounts, Backup: Export/Import, Settings, About), DrawerTags, pure drawerAccess(state) (hidden during the migration progress, Import refused while a new storage key is required)
+│   ├── settings/  # SettingsScreen (one section per setting; today only Theme as a radio group)
+│   ├── about/     # AboutScreen (name, versionName/versionCode from PackageManager, license, source link via ACTION_VIEW), AppVersion helpers
 │   ├── backup/    # BackupViewModel (sealed BackupUiState; passwords in memory only, never saved state), password/progress/confirm/message dialogs, import review screen, SAF document wrapper (BackupFile, partial-file delete)
 │   ├── theme/     # Material 3 theme (dynamic color, dark mode)
-│   └── TumblerApp.kt  # root composable: switches list <-> add <-> import review with AnimatedContent (slide + fade, no navigation library), hosts the SAF pickers and backup dialogs
-├── di/        # AppContainer (manual DI, lazy: repository, backup service, storage gate in a process-lifetime scope, one shared DataKeyHolder; view model factories read it; Hilt is not used yet)
+│   └── TumblerApp.kt  # root composable: switches list <-> add / settings / about <-> import review with AnimatedContent (slide + fade, no navigation library), hosts the SAF pickers and backup dialogs
+├── settings/  # ThemeMode (System/Light/Dark, stable stored values), SettingsRepository interface, SharedPreferencesSettingsRepository (one private file, tumbler_settings; display preferences only, never a secret)
+├── di/        # AppContainer (manual DI, lazy: repository, backup service, settings repository, storage gate in a process-lifetime scope, one shared DataKeyHolder; view model factories read it; Hilt is not used yet)
+├── MainActivity.kt  # applies the theme choice (TumblerTheme + system bar icons) and hosts TumblerApp
 └── TumblerApplication.kt  # owns the AppContainer
 ```

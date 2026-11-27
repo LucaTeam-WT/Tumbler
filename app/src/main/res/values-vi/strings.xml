@@ -48,7 +48,8 @@
         <item quantity="other">Khóa bí mật trong liên kết này quá dài để lưu trong bản sao lưu (hơn %1$d byte).</item>
     </plurals>
 
-    <string name="accounts_more_options">Tùy chọn khác</string>
+    <string name="drawer_open">Mở menu điều hướng</string>
+    <string name="drawer_backup">Sao lưu</string>
     <string name="backup_export_menu">Xuất bản sao lưu</string>
     <string name="backup_import_menu">Nhập bản sao lưu</string>
     <string name="backup_export_no_accounts">Không có tài khoản nào để xuất.</string>
@@ -179,4 +180,17 @@
     <string name="storage_new_key_dialog_title">Tạo khóa lưu trữ mới?</string>
     <string name="storage_new_key_dialog_body">Tài khoản mới và tài khoản được nhập sẽ được lưu bằng khóa mới. Các tài khoản hiện không đọc được vẫn được giữ nhưng vẫn không đọc được; chỉ bản sao lưu mới lấy lại được chúng. Không thể hoàn tác.</string>
     <string name="storage_new_key_dialog_confirm">Tạo khóa mới</string>
+
+    <string name="settings_title">Cài đặt</string>
+    <string name="settings_theme">Chủ đề</string>
+    <string name="settings_theme_system">Theo hệ thống</string>
+    <string name="settings_theme_light">Sáng</string>
+    <string name="settings_theme_dark">Tối</string>
+
+    <string name="about_title">Giới thiệu</string>
+    <string name="about_version">Phiên bản %1$s (%2$d)</string>
+    <string name="about_license_title">Giấy phép</string>
+    <string name="about_source_title">Mã nguồn</string>
+    <string name="about_source_open">Mở trong trình duyệt</string>
+    <string name="about_link_unavailable">Không có ứng dụng nào trên thiết bị này mở được liên kết.</string>
 </resources>

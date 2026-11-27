@@ -53,8 +53,8 @@ import io.github.lucateam_wt.tumbler.backup.ConflictDecision.SKIP
 import io.github.lucateam_wt.tumbler.backup.ConflictReason
 import io.github.lucateam_wt.tumbler.ui.accounts.AccountItem
 import io.github.lucateam_wt.tumbler.ui.accounts.AccountListScreen
-import io.github.lucateam_wt.tumbler.ui.accounts.AccountListTags
 import io.github.lucateam_wt.tumbler.ui.accounts.AccountListUiState
+import io.github.lucateam_wt.tumbler.ui.navigation.DrawerTags
 import io.github.lucateam_wt.tumbler.ui.theme.TumblerTheme
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -115,15 +115,15 @@ class BackupScreensTest {
         var imports = 0
         showList(oneAccount, onExport = { exports++ }, onImport = { imports++ }, fontScale = fontScale)
 
-        composeRule.onNodeWithTag(AccountListTags.MORE_OPTIONS)
-            .assert(hasDescription(string(R.string.accounts_more_options)))
+        composeRule.onNodeWithTag(DrawerTags.OPEN_BUTTON)
+            .assert(hasDescription(string(R.string.drawer_open)))
             .assertHasClickAction()
             .performClick()
-        composeRule.onNodeWithTag(AccountListTags.MENU_EXPORT).assertIsDisplayed()
+        composeRule.onNodeWithTag(DrawerTags.EXPORT).assertIsDisplayed()
         composeRule.onNodeWithText(string(R.string.backup_export_menu)).assertIsDisplayed().performClick()
         assertEquals(1, exports)
 
-        composeRule.onNodeWithTag(AccountListTags.MORE_OPTIONS).performClick()
+        composeRule.onNodeWithTag(DrawerTags.OPEN_BUTTON).performClick()
         composeRule.onNodeWithText(string(R.string.backup_import_menu)).assertIsDisplayed().performClick()
         assertEquals(1, imports)
     }
@@ -140,14 +140,14 @@ class BackupScreensTest {
         var imports = 0
         showList(AccountListUiState(isLoading = false), onExport = { exports++ }, onImport = { imports++ })
 
-        composeRule.onNodeWithTag(AccountListTags.MORE_OPTIONS).performClick()
-        composeRule.onNodeWithTag(AccountListTags.MENU_EXPORT).performClick()
+        composeRule.onNodeWithTag(DrawerTags.OPEN_BUTTON).performClick()
+        composeRule.onNodeWithTag(DrawerTags.EXPORT).performClick()
 
         composeRule.onNodeWithText(string(R.string.backup_export_no_accounts)).assertIsDisplayed()
         assertEquals(0, exports)
         // Importing into an empty list is the normal way to restore a backup.
-        composeRule.onNodeWithTag(AccountListTags.MORE_OPTIONS).performClick()
-        composeRule.onNodeWithTag(AccountListTags.MENU_IMPORT).performClick()
+        composeRule.onNodeWithTag(DrawerTags.OPEN_BUTTON).performClick()
+        composeRule.onNodeWithTag(DrawerTags.IMPORT).performClick()
         assertEquals(1, imports)
     }
 
