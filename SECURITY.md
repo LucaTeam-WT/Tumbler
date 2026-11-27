@@ -19,10 +19,12 @@ separately and is not a promise of a date.
 
 **Storage.** Accounts live in a Room (SQLite) database named `lucaauth.db` in the
 app-private storage (`TumblerDatabase`). The app's own code writes no files in its storage
-other than the Room database and the journal files SQLite keeps next to it: `-wal` and
+other than the Room database, the journal files SQLite keeps next to it (`-wal` and
 `-shm` in write-ahead logging, which Room uses by default, or `-journal` in the rollback
-journal (`TRUNCATE`) mode that Room uses instead on low-RAM devices. It uses no
-`SharedPreferences` or external storage. The only other file it writes is an encrypted
+journal (`TRUNCATE`) mode that Room uses instead on low-RAM devices), and one private
+`SharedPreferences` file, `tumbler_settings.xml` (`SharedPreferencesSettingsRepository`),
+which holds only the theme choice from Settings (`system`, `light` or `dark`): no secret,
+no account data. It uses no external storage. The only other file it writes is an encrypted
 export, to a document the user creates with the system file picker (see
 [Encrypted export and import](#encrypted-export-and-import)). (Android and the libraries the app uses may keep their own files
 in app-private storage, such as caches or the Compose/ART profile data; the app's code
@@ -140,7 +142,7 @@ key) never leave the device.
 
 ### Encrypted export and import
 
-The accounts screen's menu exports every account into one file and imports such a file
+The navigation drawer of the accounts screen (Backup: Export, Import) exports every account into one file and imports such a file
 (`BackupService`, `ui/backup/`; the format is specified in
 [docs/backup-format.md](docs/backup-format.md)).
 
@@ -191,7 +193,9 @@ The accounts screen's menu exports every account into one file and imports such 
 
 **Network and telemetry.** The app declares no `INTERNET` permission (and no other
 permission), sets `android:usesCleartextTraffic="false"`, contains no analytics or
-crash-reporting SDK, and the app's own code contains no logging calls.
+crash-reporting SDK, and the app's own code contains no logging calls. The About screen's
+source code link is handed to another app (a browser) with an `ACTION_VIEW` intent, which
+needs no permission; Tumbler itself makes no network request for it.
 
 **Exported components.** Only the launcher activity (`MainActivity`) is exported. The
 `androidx.profileinstaller` library adds one more exported component to the merged
