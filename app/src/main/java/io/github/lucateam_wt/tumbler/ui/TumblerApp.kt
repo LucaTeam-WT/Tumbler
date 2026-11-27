@@ -180,6 +180,8 @@ internal fun TumblerApp(
                         onExportBackup = backupViewModel::startExport,
                         onStartNewStorageKey = viewModel::startNewStorageKey,
                         onRetryStorage = viewModel::retryStorage,
+                        onOpenSettings = { page = Screen.SETTINGS },
+                        onOpenAbout = { page = Screen.ABOUT },
                         onImportBackup = {
                             // A second tap while the picker opens gets false: one picker only.
                             if (backupViewModel.startImport()) {

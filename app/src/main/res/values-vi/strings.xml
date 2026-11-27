@@ -48,7 +48,8 @@
         <item quantity="other">Khóa bí mật trong liên kết này quá dài để lưu trong bản sao lưu (hơn %1$d byte).</item>
     </plurals>
 
-    <string name="accounts_more_options">Tùy chọn khác</string>
+    <string name="drawer_open">Mở menu điều hướng</string>
+    <string name="drawer_backup">Sao lưu</string>
     <string name="backup_export_menu">Xuất bản sao lưu</string>
     <string name="backup_import_menu">Nhập bản sao lưu</string>
     <string name="backup_export_no_accounts">Không có tài khoản nào để xuất.</string>

@@ -51,7 +51,8 @@
         <item quantity="other">The secret in this link is too long to fit in a backup (more than %1$d bytes).</item>
     </plurals>
 
-    <string name="accounts_more_options">More options</string>
+    <string name="drawer_open">Open navigation menu</string>
+    <string name="drawer_backup">Backup</string>
     <string name="backup_export_menu">Export backup</string>
     <string name="backup_import_menu">Import backup</string>
     <string name="backup_export_no_accounts">There are no accounts to export.</string>

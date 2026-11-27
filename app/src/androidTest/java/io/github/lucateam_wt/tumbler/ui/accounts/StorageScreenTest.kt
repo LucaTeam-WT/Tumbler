@@ -12,6 +12,7 @@ import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import io.github.lucateam_wt.tumbler.R
+import io.github.lucateam_wt.tumbler.ui.navigation.DrawerTags
 import io.github.lucateam_wt.tumbler.ui.theme.TumblerTheme
 import org.junit.Assert.assertEquals
 import org.junit.Rule
@@ -63,7 +64,7 @@ class StorageScreenTest {
         AccountListUiState(isLoading = false, accounts = items.toList(), storageNotice = notice)
 
     @Test
-    fun migrationShowsNOfMAndHidesTheListTheAddButtonAndTheBackupMenu() {
+    fun migrationShowsNOfMAndHidesTheListTheAddButtonAndTheDrawerButton() {
         show(AccountListUiState(isLoading = true, accounts = listOf(totp), migration = MigrationProgress(3, 8)))
 
         composeRule.onNodeWithText(string(R.string.storage_migrating_title)).assertIsDisplayed()
@@ -81,7 +82,7 @@ class StorageScreenTest {
         composeRule.onNodeWithText(string(R.string.storage_migrating_progress, 3, 8), useUnmergedTree = true)
             .assertDoesNotExist()
         composeRule.onNodeWithTag(AccountListTags.ADD_BUTTON).assertDoesNotExist()
-        composeRule.onNodeWithTag(AccountListTags.MORE_OPTIONS).assertDoesNotExist()
+        composeRule.onNodeWithTag(DrawerTags.OPEN_BUTTON).assertDoesNotExist()
         composeRule.onNodeWithTag(AccountListTags.row(totp.id)).assertDoesNotExist()
     }
 
@@ -117,8 +118,8 @@ class StorageScreenTest {
     fun importIsRefusedWithAMessageWhileANewKeyIsRequired() {
         show(listWith(StorageNotice(StorageNoticeKind.NEW_KEY_REQUIRED, unreadableCount = 0), totp))
 
-        composeRule.onNodeWithTag(AccountListTags.MORE_OPTIONS).performClick()
-        composeRule.onNodeWithTag(AccountListTags.MENU_IMPORT).performClick()
+        composeRule.onNodeWithTag(DrawerTags.OPEN_BUTTON).performClick()
+        composeRule.onNodeWithTag(DrawerTags.IMPORT).performClick()
 
         assertEquals(0, imports)
         composeRule.onNodeWithText(string(R.string.backup_import_needs_new_key)).assertIsDisplayed()
